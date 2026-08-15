@@ -19,6 +19,7 @@ class DiscoveryService(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val peers = linkedMapOf<String, DiscoveredPeer>()
     private val resolvingServices = mutableSetOf<String>()
+    private var isStarted = false
 
     private val registrationListener = object : NsdManager.RegistrationListener {
         override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
@@ -70,6 +71,9 @@ class DiscoveryService(
     }
 
     fun start() {
+        if (isStarted) return
+        isStarted = true
+
         val serviceInfo = NsdServiceInfo().apply {
             serviceName = identity.deviceName
             serviceType = SERVICE_TYPE
@@ -81,11 +85,26 @@ class DiscoveryService(
             setAttribute("features", identity.features.joinToString(","))
         }
 
-        nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
-        nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        runCatching {
+            nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+        }.onFailure {
+            Log.e(TAG, "Could not register service", it)
+        }
+
+        runCatching {
+            nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        }.onFailure {
+            Log.e(TAG, "Could not start discovery", it)
+        }
     }
 
     fun stop() {
+        if (!isStarted) return
+        isStarted = false
+        peers.clear()
+        resolvingServices.clear()
+        publishPeers()
+
         runCatching { nsdManager.unregisterService(registrationListener) }
         runCatching { nsdManager.stopServiceDiscovery(discoveryListener) }
     }
