@@ -209,17 +209,6 @@ final class ControlServer {
         head: HTTPRequestHead,
         transferApproval: @escaping (IncomingTransferRequest) -> Bool
     ) {
-        guard let rawFileName = head.headers["x-file-name"], !rawFileName.isEmpty else {
-            sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"missing_file_name"}"#.data(using: .utf8)!)
-            return
-        }
-
-        let fileName = sanitizeFileName(rawFileName.removingPercentEncoding ?? rawFileName)
-        guard !fileName.isEmpty else {
-            sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"invalid_file_name"}"#.data(using: .utf8)!)
-            return
-        }
-
         guard let contentLength = head.contentLength, contentLength >= 0 else {
             sendJSON(connection: connection, status: "411 Length Required", body: #"{"error":"missing_content_length"}"#.data(using: .utf8)!)
             return
@@ -228,9 +217,6 @@ final class ControlServer {
         guard let senderId = head.headers["x-linkbridge-device-id"],
               let senderUUID = UUID(uuidString: senderId),
               let timestamp = head.headers["x-linkbridge-timestamp"],
-              let expectedSha256 = head.headers["x-linkbridge-file-sha256"],
-              let plaintextLengthText = head.headers["x-linkbridge-plaintext-length"],
-              let plaintextLength = Int(plaintextLengthText),
               let encryption = head.headers["x-linkbridge-encryption"],
               let suppliedSignature = head.headers["x-linkbridge-signature"],
               let peer = TrustedPeerStore().find(deviceId: senderUUID),
@@ -249,9 +235,8 @@ final class ControlServer {
             "/transfer/upload",
             senderId,
             timestamp,
-            rawFileName,
-            String(contentLength),
-            expectedSha256
+            Security.encryptionScheme,
+            String(contentLength)
         ].joined(separator: "\n")
 
         guard let expectedSignature = Security.hmacSHA256Base64(secret: authToken, message: signaturePayload),
@@ -260,32 +245,22 @@ final class ControlServer {
             return
         }
 
-        let request = IncomingTransferRequest(
-            senderName: peer.deviceName,
-            senderId: senderUUID,
-            fileName: fileName,
-            bytes: plaintextLength
-        )
-        guard transferApproval(request) else {
-            sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
-            return
-        }
-
         do {
             let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
             let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-            let destination = uniqueDestination(in: directory, fileName: fileName)
-            FileManager.default.createFile(atPath: destination.path, contents: nil)
-            let fileHandle = try FileHandle(forWritingTo: destination)
             let decryptor = try ChunkedDecryptor(secret: authToken)
             var hasher = SHA256()
             var receivedEncrypted = 0
             var received = 0
+            var metadata: IncomingFileMetadata?
+            var destination: URL?
+            var fileHandle: FileHandle?
 
             func consumePlaintext(_ data: Data) throws {
                 guard !data.isEmpty else { return }
+                guard let fileHandle else { throw UploadError.outputNotReady }
                 try fileHandle.write(contentsOf: data)
                 hasher.update(data: data)
                 received += data.count
@@ -298,6 +273,26 @@ final class ControlServer {
                 let chunk = Data(data.prefix(remaining))
                 receivedEncrypted += chunk.count
                 try decryptor.consume(chunk) { plaintext in
+                    if metadata == nil {
+                        let parsed = try JSONDecoder().decode(IncomingFileMetadata.self, from: plaintext)
+                        let fileName = sanitizeFileName(parsed.fileName)
+                        guard !fileName.isEmpty else { throw UploadError.invalidMetadata }
+                        let request = IncomingTransferRequest(
+                            senderName: peer.deviceName,
+                            senderId: senderUUID,
+                            fileName: fileName,
+                            bytes: parsed.bytes
+                        )
+                        guard transferApproval(request) else { throw UploadError.transferDeclined }
+
+                        let fileURL = uniqueDestination(in: directory, fileName: fileName)
+                        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+                        fileHandle = try FileHandle(forWritingTo: fileURL)
+                        destination = fileURL
+                        metadata = IncomingFileMetadata(fileName: fileName, bytes: parsed.bytes, sha256: parsed.sha256)
+                        return
+                    }
+
                     try consumePlaintext(plaintext)
                 }
             }
@@ -307,14 +302,18 @@ final class ControlServer {
             func finish() {
                 do {
                     try decryptor.finalize()
-                    try fileHandle.close()
+                    try fileHandle?.close()
                     let sha256 = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-                    guard received == plaintextLength else {
+                    guard let metadata, let destination else {
+                        sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"missing_encrypted_metadata"}"#.data(using: .utf8)!)
+                        return
+                    }
+                    guard received == metadata.bytes else {
                         try? FileManager.default.removeItem(at: destination)
                         sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"plaintext_length_mismatch"}"#.data(using: .utf8)!)
                         return
                     }
-                    guard sha256.caseInsensitiveCompare(expectedSha256) == .orderedSame else {
+                    guard sha256.caseInsensitiveCompare(metadata.sha256) == .orderedSame else {
                         try? FileManager.default.removeItem(at: destination)
                         sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"checksum_mismatch"}"#.data(using: .utf8)!)
                         return
@@ -336,8 +335,8 @@ final class ControlServer {
 
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { data, _, _, error in
                     if error != nil {
-                        try? fileHandle.close()
-                        try? FileManager.default.removeItem(at: destination)
+                        try? fileHandle?.close()
+                        if let destination { try? FileManager.default.removeItem(at: destination) }
                         sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"receive_failed"}"#.data(using: .utf8)!)
                         return
                     }
@@ -349,8 +348,12 @@ final class ControlServer {
                         }
                         receiveMore()
                     } catch {
-                        try? fileHandle.close()
-                        try? FileManager.default.removeItem(at: destination)
+                        try? fileHandle?.close()
+                        if let destination { try? FileManager.default.removeItem(at: destination) }
+                        if case UploadError.transferDeclined = error {
+                            sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
+                            return
+                        }
                         sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"write_failed"}"#.data(using: .utf8)!)
                     }
                 }
@@ -358,6 +361,10 @@ final class ControlServer {
 
             receiveMore()
         } catch {
+            if case UploadError.transferDeclined = error {
+                sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
+                return
+            }
             let escaped = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
             sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"save_failed","message":"\#(escaped)"}"#.data(using: .utf8)!)
         }
@@ -445,6 +452,18 @@ private struct HTTPRequest {
 private struct HTTPResponse {
     let status: String
     let body: Data
+}
+
+private struct IncomingFileMetadata: Codable {
+    let fileName: String
+    let bytes: Int
+    let sha256: String
+}
+
+private enum UploadError: Error {
+    case invalidMetadata
+    case outputNotReady
+    case transferDeclined
 }
 
 struct IncomingPairRequest {

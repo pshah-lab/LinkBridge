@@ -6,7 +6,6 @@ import java.io.InputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 import java.security.MessageDigest
 
 class ControlClient {
@@ -85,23 +84,27 @@ class ControlClient {
             }
 
             val encryptedFile = File.createTempFile("linkbridge-upload-", ".enc")
+            val encryptedMetadata = JSONObject()
+                .put("fileName", fileName)
+                .put("bytes", size)
+                .put("sha256", sha256)
+                .toString()
+                .toByteArray(Charsets.UTF_8)
             val contentLength = encryptedFile.outputStream().use { output ->
                 (openInputStream() ?: error("Could not reopen selected file for encryption")).use { input ->
-                    Security.encryptChunked(localToken, input, output) { read ->
+                    Security.encryptChunked(localToken, input, output, metadata = encryptedMetadata) { read ->
                         onProgress(read, size)
                     }
                 }
             }
             val timestamp = System.currentTimeMillis().toString()
-            val encodedFileName = URLEncoder.encode(fileName, "UTF-8")
             val signaturePayload = listOf(
                 "POST",
                 "/transfer/upload",
                 localIdentity.deviceId,
                 timestamp,
-                encodedFileName,
-                contentLength.toString(),
-                sha256
+                Security.ENCRYPTION_SCHEME,
+                contentLength.toString()
             ).joinToString("\n")
             val signature = Security.hmacSha256Base64(localToken, signaturePayload)
 
@@ -112,11 +115,8 @@ class ControlClient {
                 readTimeout = 30000
                 doOutput = true
                 setRequestProperty("Content-Type", "application/octet-stream")
-                setRequestProperty("X-File-Name", encodedFileName)
                 setRequestProperty("X-LinkBridge-Device-Id", localIdentity.deviceId)
                 setRequestProperty("X-LinkBridge-Timestamp", timestamp)
-                setRequestProperty("X-LinkBridge-File-Sha256", sha256)
-                setRequestProperty("X-LinkBridge-Plaintext-Length", size.toString())
                 setRequestProperty("X-LinkBridge-Encryption", Security.ENCRYPTION_SCHEME)
                 setRequestProperty("X-LinkBridge-Signature", signature)
                 setRequestProperty("Content-Length", contentLength.toString())
@@ -126,13 +126,13 @@ class ControlClient {
             try {
                 connection.outputStream.use { output ->
                     encryptedFile.inputStream().use { input ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                        }
                     }
-                }
                 }
             } finally {
                 encryptedFile.delete()

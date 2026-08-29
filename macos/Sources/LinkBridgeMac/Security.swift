@@ -35,6 +35,7 @@ enum Security {
         inputURL: URL,
         outputURL: URL,
         secret: String,
+        metadata: Data? = nil,
         onProgress: (UInt64) -> Void = { _ in }
     ) throws -> UInt64 {
         guard let keyData = Data(base64Encoded: secret) else {
@@ -52,26 +53,34 @@ enum Security {
         var encryptedBytes: UInt64 = 0
         var plainBytes: UInt64 = 0
 
+        if let metadata {
+            encryptedBytes += try writeEncryptedRecord(metadata, key: key, output: output)
+        }
+
         while true {
             let chunk = try input.read(upToCount: chunkSize) ?? Data()
             if chunk.isEmpty { break }
 
-            let nonce = AES.GCM.Nonce()
-            let sealed = try AES.GCM.seal(chunk, using: key, nonce: nonce)
-            let nonceData = nonce.withUnsafeBytes { Data($0) }
-            let sealedData = sealed.ciphertext + sealed.tag
-            let lengthData = UInt32(sealedData.count).bigEndianData
-
-            try output.write(contentsOf: nonceData)
-            try output.write(contentsOf: lengthData)
-            try output.write(contentsOf: sealedData)
-
-            encryptedBytes += UInt64(nonceData.count + lengthData.count + sealedData.count)
+            encryptedBytes += try writeEncryptedRecord(chunk, key: key, output: output)
             plainBytes += UInt64(chunk.count)
             onProgress(plainBytes)
         }
 
         return encryptedBytes
+    }
+
+    private static func writeEncryptedRecord(_ data: Data, key: SymmetricKey, output: FileHandle) throws -> UInt64 {
+        let nonce = AES.GCM.Nonce()
+        let sealed = try AES.GCM.seal(data, using: key, nonce: nonce)
+        let nonceData = nonce.withUnsafeBytes { Data($0) }
+        let sealedData = sealed.ciphertext + sealed.tag
+        let lengthData = UInt32(sealedData.count).bigEndianData
+
+        try output.write(contentsOf: nonceData)
+        try output.write(contentsOf: lengthData)
+        try output.write(contentsOf: sealedData)
+
+        return UInt64(nonceData.count + lengthData.count + sealedData.count)
     }
 }
 

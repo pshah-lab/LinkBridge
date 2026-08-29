@@ -9,9 +9,9 @@ import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.URLDecoder
 import java.security.MessageDigest
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -68,9 +68,6 @@ class ReceiveServer(
             return
         }
 
-        val fileName = sanitizeFileName(
-            URLDecoder.decode(request.headers["x-file-name"] ?: "received-file", "UTF-8")
-        )
         val contentLength = request.headers["content-length"]?.toLongOrNull()
         if (contentLength == null || contentLength < 0) {
             socket.writeJsonResponse(400, """{"error":"missing_content_length"}""")
@@ -78,14 +75,12 @@ class ReceiveServer(
         }
         val senderId = request.headers["x-linkbridge-device-id"]
         val timestamp = request.headers["x-linkbridge-timestamp"]
-        val expectedSha256 = request.headers["x-linkbridge-file-sha256"]
-        val plaintextLength = request.headers["x-linkbridge-plaintext-length"]?.toLongOrNull()
         val encryption = request.headers["x-linkbridge-encryption"]
         val suppliedSignature = request.headers["x-linkbridge-signature"]
         val trustedPeer = TrustedPeerStore(context).find(senderId)
         val authToken = trustedPeer?.authToken
 
-        if (senderId == null || timestamp == null || expectedSha256 == null || plaintextLength == null || suppliedSignature == null || authToken == null) {
+        if (senderId == null || timestamp == null || suppliedSignature == null || authToken == null) {
             socket.writeJsonResponse(401, """{"error":"unpaired_or_unsigned"}""")
             return
         }
@@ -99,9 +94,8 @@ class ReceiveServer(
             "/transfer/upload",
             senderId,
             timestamp,
-            request.headers["x-file-name"] ?: "received-file",
-            contentLength.toString(),
-            expectedSha256
+            Security.ENCRYPTION_SCHEME,
+            contentLength.toString()
         ).joinToString("\n")
         val expectedSignature = Security.hmacSha256Base64(authToken, signaturePayload)
         if (!Security.timingSafeEquals(expectedSignature, suppliedSignature)) {
@@ -109,58 +103,80 @@ class ReceiveServer(
             return
         }
 
-        val approval = IncomingTransferRequest(
-            senderName = trustedPeer.deviceName,
-            senderId = senderId,
-            fileName = fileName,
-            bytes = plaintextLength
-        )
-        if (!onApprovalRequested(approval)) {
-            socket.writeJsonResponse(403, """{"error":"transfer_declined"}""")
-            return
-        }
-
+        var savedUri: android.net.Uri? = null
         runCatching {
             val resolver = context.contentResolver
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LinkBridge")
-                    put(MediaStore.Downloads.IS_PENDING, 1)
+            val digest = MessageDigest.getInstance("SHA-256")
+            var metadata: IncomingFileMetadata? = null
+            var output: OutputStream? = null
+            var received = 0L
+
+            try {
+                Security.decryptChunkedRecords(authToken, input, contentLength) { plain ->
+                    val currentMetadata = metadata
+                    if (currentMetadata == null) {
+                        val parsed = IncomingFileMetadata.fromEncryptedJson(plain)
+                        val approval = IncomingTransferRequest(
+                            senderName = trustedPeer.deviceName,
+                            senderId = senderId,
+                            fileName = parsed.fileName,
+                            bytes = parsed.bytes
+                        )
+                        if (!onApprovalRequested(approval)) {
+                            throw TransferDeclinedException()
+                        }
+
+                        val values = ContentValues().apply {
+                            put(MediaStore.Downloads.DISPLAY_NAME, parsed.fileName)
+                            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LinkBridge")
+                                put(MediaStore.Downloads.IS_PENDING, 1)
+                            }
+                        }
+
+                        savedUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                            ?: error("Could not create Downloads item")
+                        output = resolver.openOutputStream(savedUri!!)
+                            ?: error("Could not open output stream")
+                        metadata = parsed
+                        return@decryptChunkedRecords
+                    }
+
+                    output?.write(plain) ?: error("Output stream was not opened")
+                    digest.update(plain, 0, plain.size)
+                    received += plain.size
+                    onStatus("Receiving ${currentMetadata.fileName}\n${formatBytes(received)} / ${formatBytes(currentMetadata.bytes)}")
                 }
+            } finally {
+                output?.close()
             }
 
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: error("Could not create Downloads item")
-
-            val digest = MessageDigest.getInstance("SHA-256")
-            var received = 0L
-            var progress = 0L
-
-            resolver.openOutputStream(uri)?.use { output ->
-                received = Security.decryptChunked(authToken, input, contentLength, output) { plain, count ->
-                    digest.update(plain, 0, count)
-                    progress += count
-                    onStatus("Receiving $fileName\n${formatBytes(progress)} / ${formatBytes(plaintextLength)}")
-                }
-            } ?: error("Could not open output stream")
+            val finalMetadata = metadata ?: error("Missing encrypted transfer metadata")
+            if (received != finalMetadata.bytes) {
+                error("Plaintext length mismatch")
+            }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.clear()
+                val values = ContentValues()
                 values.put(MediaStore.Downloads.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
+                savedUri?.let { resolver.update(it, values, null, null) }
             }
 
             val sha256 = digest.digest().toHexString()
-            if (!sha256.equals(expectedSha256, ignoreCase = true)) {
-                resolver.delete(uri, null, null)
+            if (!sha256.equals(finalMetadata.sha256, ignoreCase = true)) {
+                savedUri?.let { resolver.delete(it, null, null) }
                 socket.writeJsonResponse(400, """{"error":"checksum_mismatch"}""")
                 return
             }
-            onStatus("Received $fileName\nSaved to Downloads/LinkBridge.")
-            socket.writeJsonResponse(200, """{"status":"received","fileName":"$fileName","bytes":$received,"sha256":"$sha256"}""")
+            onStatus("Received ${finalMetadata.fileName}\nSaved to Downloads/LinkBridge.")
+            socket.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
+            savedUri?.let { context.contentResolver.delete(it, null, null) }
+            if (error is TransferDeclinedException) {
+                socket.writeJsonResponse(403, """{"error":"transfer_declined"}""")
+                return
+            }
             Log.e(TAG, "Receive failed", error)
             onStatus("Receive failed\n${error.localizedMessage}")
             socket.writeJsonResponse(500, """{"error":"save_failed"}""")
@@ -222,6 +238,32 @@ data class IncomingTransferRequest(
     val fileName: String,
     val bytes: Long
 )
+
+private data class IncomingFileMetadata(
+    val fileName: String,
+    val bytes: Long,
+    val sha256: String
+) {
+    companion object {
+        fun fromEncryptedJson(bytes: ByteArray): IncomingFileMetadata {
+            val json = org.json.JSONObject(bytes.toString(Charsets.UTF_8))
+            return IncomingFileMetadata(
+                fileName = sanitizeMetadataFileName(json.getString("fileName")),
+                bytes = json.getLong("bytes"),
+                sha256 = json.getString("sha256")
+            )
+        }
+
+        private fun sanitizeMetadataFileName(fileName: String): String {
+            return fileName
+                .replace(Regex("""[/\\:]"""), "-")
+                .trim()
+                .ifBlank { "received-file" }
+        }
+    }
+}
+
+private class TransferDeclinedException : RuntimeException("Transfer declined")
 
 private data class HttpRequestHeader(
     val startLine: String,

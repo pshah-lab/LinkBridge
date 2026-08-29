@@ -5,16 +5,21 @@ enum FileSender {
     static func send(filePath: String, endpoint: String) throws {
         let fileURL = URL(fileURLWithPath: filePath)
         let fileName = fileURL.lastPathComponent
-        let encodedFileName = fileName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? fileName
         let fileSize = try fileSize(at: fileURL)
         let sha256 = try sha256Hex(of: fileURL)
         let identity = IdentityStore().loadOrCreate()
+        let metadata = try JSONSerialization.data(withJSONObject: [
+            "fileName": fileName,
+            "bytes": fileSize,
+            "sha256": sha256
+        ])
         let encryptedURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("linkbridge-upload-\(UUID().uuidString).enc")
         let encryptedSize = try Security.encryptChunkedFile(
             inputURL: fileURL,
             outputURL: encryptedURL,
-            secret: identity.authToken
+            secret: identity.authToken,
+            metadata: metadata
         )
         defer { try? FileManager.default.removeItem(at: encryptedURL) }
 
@@ -24,9 +29,8 @@ enum FileSender {
             "/transfer/upload",
             identity.deviceId.uuidString,
             timestamp,
-            encodedFileName,
-            String(encryptedSize),
-            sha256
+            Security.encryptionScheme,
+            String(encryptedSize)
         ].joined(separator: "\n")
         guard let signature = Security.hmacSHA256Base64(secret: identity.authToken, message: signaturePayload) else {
             throw SenderError.signatureFailed
@@ -41,11 +45,8 @@ enum FileSender {
         var request = URLRequest(url: URL(string: "http://\(host):\(port)/transfer/upload")!)
         request.httpMethod = "POST"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.setValue(encodedFileName, forHTTPHeaderField: "X-File-Name")
         request.setValue(identity.deviceId.uuidString, forHTTPHeaderField: "X-LinkBridge-Device-Id")
         request.setValue(timestamp, forHTTPHeaderField: "X-LinkBridge-Timestamp")
-        request.setValue(sha256, forHTTPHeaderField: "X-LinkBridge-File-Sha256")
-        request.setValue(String(fileSize), forHTTPHeaderField: "X-LinkBridge-Plaintext-Length")
         request.setValue(Security.encryptionScheme, forHTTPHeaderField: "X-LinkBridge-Encryption")
         request.setValue(signature, forHTTPHeaderField: "X-LinkBridge-Signature")
         request.setValue(String(encryptedSize), forHTTPHeaderField: "Content-Length")

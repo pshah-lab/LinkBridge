@@ -36,6 +36,7 @@ object Security {
         secret: String,
         input: InputStream,
         output: OutputStream,
+        metadata: ByteArray? = null,
         onProgress: (bytesRead: Long) -> Unit = {}
     ): Long {
         val key = SecretKeySpec(Base64.decode(secret, Base64.NO_WRAP), "AES")
@@ -44,26 +45,51 @@ object Security {
         var encryptedBytes = 0L
         var plainBytes = 0L
 
+        if (metadata != null) {
+            encryptedBytes += writeEncryptedRecord(key, random, output, metadata, metadata.size)
+        }
+
         while (true) {
             val read = input.read(buffer)
             if (read < 0) break
 
-            val nonce = ByteArray(12)
-            random.nextBytes(nonce)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
-            val sealed = cipher.doFinal(buffer, 0, read)
-            val lengthBytes = ByteBuffer.allocate(4).putInt(sealed.size).array()
-
-            output.write(nonce)
-            output.write(lengthBytes)
-            output.write(sealed)
-            encryptedBytes += nonce.size + lengthBytes.size + sealed.size
+            encryptedBytes += writeEncryptedRecord(key, random, output, buffer, read)
             plainBytes += read
             onProgress(plainBytes)
         }
 
         return encryptedBytes
+    }
+
+    fun decryptChunkedRecords(
+        secret: String,
+        input: InputStream,
+        encryptedLength: Long,
+        onChunk: (plainBytes: ByteArray) -> Unit
+    ): Long {
+        val key = SecretKeySpec(Base64.decode(secret, Base64.NO_WRAP), "AES")
+        var remaining = encryptedLength
+        var plainBytes = 0L
+
+        while (remaining > 0) {
+            val nonce = input.readExact(12)
+            remaining -= 12
+            val sealedLength = ByteBuffer.wrap(input.readExact(4)).int
+            remaining -= 4
+            require(sealedLength > 0 && sealedLength <= CHUNK_SIZE + 16) { "Invalid encrypted chunk length" }
+            require(remaining >= sealedLength) { "Encrypted body ended before chunk completed" }
+
+            val sealed = input.readExact(sealedLength)
+            remaining -= sealedLength
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, nonce))
+            val plain = cipher.doFinal(sealed)
+
+            onChunk(plain)
+            plainBytes += plain.size
+        }
+
+        return plainBytes
     }
 
     fun decryptChunked(
@@ -97,6 +123,26 @@ object Security {
         }
 
         return plainBytes
+    }
+
+    private fun writeEncryptedRecord(
+        key: SecretKeySpec,
+        random: SecureRandom,
+        output: OutputStream,
+        plain: ByteArray,
+        plainLength: Int
+    ): Long {
+        val nonce = ByteArray(12)
+        random.nextBytes(nonce)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
+        val sealed = cipher.doFinal(plain, 0, plainLength)
+        val lengthBytes = ByteBuffer.allocate(4).putInt(sealed.size).array()
+
+        output.write(nonce)
+        output.write(lengthBytes)
+        output.write(sealed)
+        return (nonce.size + lengthBytes.size + sealed.size).toLong()
     }
 }
 
