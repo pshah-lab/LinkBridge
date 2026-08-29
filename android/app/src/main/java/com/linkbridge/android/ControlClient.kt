@@ -3,6 +3,7 @@ package com.linkbridge.android
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.InputStream
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -25,7 +26,7 @@ class ControlClient {
         }
     }
 
-    fun pair(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<Unit> {
+    fun pair(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<String?> {
         return runCatching {
             val url = URL("http://${peer.endpoint}/pair/request")
             val body = JSONObject()
@@ -34,6 +35,7 @@ class ControlClient {
                 .put("platform", localIdentity.platform)
                 .put("protocolVersion", localIdentity.protocolVersion)
                 .put("features", JSONArray(localIdentity.features))
+                .put("authToken", localIdentity.authToken)
                 .toString()
                 .toByteArray()
 
@@ -50,6 +52,9 @@ class ControlClient {
             if (connection.responseCode !in 200..299) {
                 error("Pair request failed: HTTP ${connection.responseCode}")
             }
+            connection.inputStream.use { stream ->
+                JSONObject(stream.bufferedReader().readText()).optString("authToken").ifBlank { null }
+            }
         }
     }
 
@@ -57,13 +62,49 @@ class ControlClient {
         peer: DiscoveredPeer,
         fileName: String,
         size: Long,
-        inputStream: InputStream,
+        localIdentity: DeviceIdentity,
+        trustedPeer: TrustedPeer?,
+        openInputStream: () -> InputStream?,
         onProgress: (bytesSent: Long, totalBytes: Long) -> Unit = { _, _ -> }
     ): Result<Unit> {
         return runCatching {
             require(size >= 0) { "Selected file size is unknown; choose a file provider that exposes file size." }
-            val digest = MessageDigest.getInstance("SHA-256")
-            val contentLength = size
+            trustedPeer?.authToken
+                ?: error("This Mac must be paired again before secure transfer.")
+            val localToken = localIdentity.authToken
+                ?: error("This Android device must be paired again before secure transfer.")
+            val sha256 = (openInputStream() ?: error("Could not open selected file")).use { input ->
+                val preHash = MessageDigest.getInstance("SHA-256")
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    preHash.update(buffer, 0, read)
+                }
+                preHash.digest().toHexString()
+            }
+
+            val encryptedFile = File.createTempFile("linkbridge-upload-", ".enc")
+            val contentLength = encryptedFile.outputStream().use { output ->
+                (openInputStream() ?: error("Could not reopen selected file for encryption")).use { input ->
+                    Security.encryptChunked(localToken, input, output) { read ->
+                        onProgress(read, size)
+                    }
+                }
+            }
+            val timestamp = System.currentTimeMillis().toString()
+            val encodedFileName = URLEncoder.encode(fileName, "UTF-8")
+            val signaturePayload = listOf(
+                "POST",
+                "/transfer/upload",
+                localIdentity.deviceId,
+                timestamp,
+                encodedFileName,
+                contentLength.toString(),
+                sha256
+            ).joinToString("\n")
+            val signature = Security.hmacSha256Base64(localToken, signaturePayload)
+
             val url = URL("http://${peer.endpoint}/transfer/upload")
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
@@ -71,27 +112,32 @@ class ControlClient {
                 readTimeout = 30000
                 doOutput = true
                 setRequestProperty("Content-Type", "application/octet-stream")
-                setRequestProperty("X-File-Name", URLEncoder.encode(fileName, "UTF-8"))
+                setRequestProperty("X-File-Name", encodedFileName)
+                setRequestProperty("X-LinkBridge-Device-Id", localIdentity.deviceId)
+                setRequestProperty("X-LinkBridge-Timestamp", timestamp)
+                setRequestProperty("X-LinkBridge-File-Sha256", sha256)
+                setRequestProperty("X-LinkBridge-Plaintext-Length", size.toString())
+                setRequestProperty("X-LinkBridge-Encryption", Security.ENCRYPTION_SCHEME)
+                setRequestProperty("X-LinkBridge-Signature", signature)
                 setRequestProperty("Content-Length", contentLength.toString())
                 setFixedLengthStreamingMode(contentLength)
             }
 
-            connection.outputStream.use { output ->
-                inputStream.use { input ->
+            try {
+                connection.outputStream.use { output ->
+                    encryptedFile.inputStream().use { input ->
                     val buffer = ByteArray(64 * 1024)
-                    var sent = 0L
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
-                        digest.update(buffer, 0, read)
                         output.write(buffer, 0, read)
-                        sent += read
-                        onProgress(sent, contentLength)
                     }
                 }
+                }
+            } finally {
+                encryptedFile.delete()
             }
 
-            val sha256 = digest.digest().toHexString()
             if (connection.responseCode !in 200..299) {
                 val message = connection.errorStream?.bufferedReader()?.readText()
                 error("Upload failed: HTTP ${connection.responseCode}${message?.let { " $it" } ?: ""}")

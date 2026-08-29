@@ -6,6 +6,15 @@ struct DeviceIdentity: Codable {
     let platform: String
     let protocolVersion: Int
     let features: [String]
+    let authToken: String
+}
+
+struct PublicDeviceIdentity: Codable {
+    let deviceId: UUID
+    let deviceName: String
+    let platform: String
+    let protocolVersion: Int
+    let features: [String]
 }
 
 final class IdentityStore {
@@ -19,9 +28,22 @@ final class IdentityStore {
     }
 
     func loadOrCreate() -> DeviceIdentity {
-        if let data = try? Data(contentsOf: fileURL),
-           let identity = try? JSONDecoder().decode(DeviceIdentity.self, from: data) {
-            return identity
+        if let data = try? Data(contentsOf: fileURL) {
+            if let identity = try? JSONDecoder().decode(DeviceIdentity.self, from: data) {
+                return identity
+            }
+            if let legacy = try? JSONDecoder().decode(LegacyDeviceIdentity.self, from: data) {
+                let migrated = DeviceIdentity(
+                    deviceId: legacy.deviceId,
+                    deviceName: legacy.deviceName,
+                    platform: legacy.platform,
+                    protocolVersion: legacy.protocolVersion,
+                    features: legacy.features,
+                    authToken: Security.generateToken()
+                )
+                persist(migrated)
+                return migrated
+            }
         }
 
         let identity = DeviceIdentity(
@@ -29,9 +51,15 @@ final class IdentityStore {
             deviceName: Host.current().localizedName ?? "Mac",
             platform: "macos",
             protocolVersion: 1,
-            features: ["file-transfer", "display-send", "display-receive"]
+            features: ["file-transfer", "display-send", "display-receive"],
+            authToken: Security.generateToken()
         )
 
+        persist(identity)
+        return identity
+    }
+
+    private func persist(_ identity: DeviceIdentity) {
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
@@ -42,8 +70,13 @@ final class IdentityStore {
         } catch {
             print("Warning: could not persist identity: \(error.localizedDescription)")
         }
-
-        return identity
     }
 }
 
+private struct LegacyDeviceIdentity: Codable {
+    let deviceId: UUID
+    let deviceName: String
+    let platform: String
+    let protocolVersion: Int
+    let features: [String]
+}

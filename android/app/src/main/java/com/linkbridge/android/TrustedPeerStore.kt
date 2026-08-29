@@ -26,7 +26,12 @@ class TrustedPeerStore(context: Context) {
 
     fun isTrusted(deviceId: String?): Boolean {
         if (deviceId == null) return false
-        return load().any { it.deviceId == deviceId }
+        return load().any { it.deviceId == deviceId && it.authToken != null }
+    }
+
+    fun find(deviceId: String?): TrustedPeer? {
+        if (deviceId == null) return null
+        return load().firstOrNull { it.deviceId == deviceId }
     }
 
     companion object {
@@ -39,7 +44,8 @@ data class TrustedPeer(
     val deviceName: String,
     val platform: String,
     val host: String,
-    val port: Int
+    val port: Int,
+    val authToken: String?
 )
 
 private fun TrustedPeer.toJson(): JSONObject {
@@ -49,6 +55,7 @@ private fun TrustedPeer.toJson(): JSONObject {
         .put("platform", platform)
         .put("host", host)
         .put("port", port)
+        .put("authToken", authToken)
 }
 
 private fun JSONObject.toTrustedPeer(): TrustedPeer {
@@ -57,7 +64,7 @@ private fun JSONObject.toTrustedPeer(): TrustedPeer {
         deviceName = getString("deviceName"),
         platform = getString("platform"),
         host = getString("host"),
-        port = getInt("port")
+        port = getInt("port"),
+        authToken = optString("authToken").ifBlank { null }
     )
 }
-

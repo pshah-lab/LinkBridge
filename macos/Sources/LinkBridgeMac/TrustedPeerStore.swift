@@ -7,6 +7,7 @@ struct TrustedPeer: Codable {
     let protocolVersion: Int
     let features: [String]
     let pairedAt: Date
+    let authToken: String?
 }
 
 final class TrustedPeerStore {
@@ -44,5 +45,8 @@ final class TrustedPeerStore {
 
         return peers
     }
-}
 
+    func find(deviceId: UUID) -> TrustedPeer? {
+        load().first { $0.deviceId == deviceId }
+    }
+}

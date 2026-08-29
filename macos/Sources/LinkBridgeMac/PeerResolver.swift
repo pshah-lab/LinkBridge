@@ -21,6 +21,14 @@ final class PeerResolver: NSObject {
     private var netServices: [NetService] = []
     private var resolvedPeers: [ResolvedPeer] = []
     private var didResolveTargetPeer = false
+    private let localDeviceId: UUID?
+    private let localPort: UInt16?
+
+    init(localDeviceId: UUID? = nil, localPort: UInt16? = nil) {
+        self.localDeviceId = localDeviceId
+        self.localPort = localPort
+        super.init()
+    }
 
     func resolveAndroidPeer(timeout: TimeInterval = 5) -> ResolvedPeer? {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
@@ -48,7 +56,7 @@ final class PeerResolver: NSObject {
         browser.cancel()
         netServices.forEach { $0.stop() }
 
-        return resolvedPeers.first { $0.platform == "android" } ?? resolvedPeers.first
+        return resolvedPeers.first { $0.platform == "android" }
     }
 }
 
@@ -64,6 +72,14 @@ extension PeerResolver: NetServiceDelegate {
         let deviceId = txt["deviceId"]
             .map { String(decoding: $0, as: UTF8.self) }
             .flatMap(UUID.init(uuidString:))
+
+        if deviceId == localDeviceId || (platform == "macos" && UInt16(sender.port) == localPort) {
+            return
+        }
+
+        guard platform == "android" else {
+            return
+        }
 
         resolvedPeers.append(
             ResolvedPeer(

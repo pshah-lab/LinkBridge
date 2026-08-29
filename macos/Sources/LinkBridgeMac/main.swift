@@ -14,7 +14,8 @@ if arguments.count == 2, arguments[1] == "ui" {
         exit(1)
     }
 } else if arguments.count == 3, arguments[1] == "send-peer" {
-    let resolver = PeerResolver()
+    let identity = IdentityStore().loadOrCreate()
+    let resolver = PeerResolver(localDeviceId: identity.deviceId, localPort: 49152)
     guard let peer = resolver.resolveAndroidPeer() else {
         print("Send failed: no Android LinkBridge peer found on local Wi-Fi")
         exit(1)

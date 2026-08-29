@@ -1,6 +1,7 @@
 package com.linkbridge.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -23,6 +24,8 @@ import android.widget.TextView
 import android.widget.Toast
 import java.text.DecimalFormat
 import java.util.concurrent.Executors
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.TimeUnit
 import com.linkbridge.android.Ui.body
 import com.linkbridge.android.Ui.pad
 import com.linkbridge.android.Ui.section
@@ -60,13 +63,18 @@ class MainActivity : Activity() {
         }
         discoveryService.start()
 
-        receiveServer = ReceiveServer(this, CONTROL_PORT) { status ->
-            runOnUiThread {
-                receiveStatusText.text = status
-                receiveStatusText.background = Ui.rounded(Ui.SURFACE, radiusDp = 14f, strokeColor = Ui.LINE)
-                addActivityLog(status, isOutgoing = false)
-            }
-        }
+        receiveServer = ReceiveServer(
+            context = this,
+            port = CONTROL_PORT,
+            onStatus = { status ->
+                runOnUiThread {
+                    receiveStatusText.text = status
+                    receiveStatusText.background = Ui.rounded(Ui.SURFACE, radiusDp = 14f, strokeColor = Ui.LINE)
+                    addActivityLog(status, isOutgoing = false)
+                }
+            },
+            onApprovalRequested = { request -> approveIncomingTransfer(request) }
+        )
 
         val rootScroll = ScrollView(this).apply {
             setBackgroundColor(Ui.BACKGROUND)
@@ -311,6 +319,22 @@ class MainActivity : Activity() {
         Toast.makeText(this, "Copied Android Device UUID!", Toast.LENGTH_SHORT).show()
     }
 
+    private fun approveIncomingTransfer(request: IncomingTransferRequest): Boolean {
+        val result = SynchronousQueue<Boolean>()
+
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle("Accept incoming file?")
+                .setMessage("${request.senderName} wants to send ${request.fileName} (${formatBytes(request.bytes)}).")
+                .setPositiveButton("Accept") { _, _ -> result.offer(true) }
+                .setNegativeButton("Decline") { _, _ -> result.offer(false) }
+                .setOnCancelListener { result.offer(false) }
+                .show()
+        }
+
+        return result.poll(60, TimeUnit.SECONDS) ?: false
+    }
+
     private fun renderPeers(peers: List<DiscoveredPeer>) {
         emptyPeersText.visibility = if (peers.isEmpty()) View.VISIBLE else View.GONE
         peersContainer.removeAllViews()
@@ -441,14 +465,15 @@ class MainActivity : Activity() {
             val result = controlClient.pair(peer, identity)
             runOnUiThread {
                 result
-                    .onSuccess {
+                    .onSuccess { peerAuthToken ->
                         trustedPeerStore.save(
                             TrustedPeer(
                                 deviceId = device.deviceId,
                                 deviceName = device.deviceName,
                                 platform = device.platform,
                                 host = peer.host,
-                                port = peer.port
+                                port = peer.port,
+                                authToken = peerAuthToken
                             )
                         )
                         pairButton.visibility = View.GONE
@@ -493,13 +518,19 @@ class MainActivity : Activity() {
         connectionStatusText.background = Ui.rounded(Ui.WARNING_BG, radiusDp = 14f, strokeColor = Ui.WARNING)
 
         networkExecutor.execute {
-            val result = contentResolver.openInputStream(uri)?.let { input ->
-                controlClient.uploadFile(peer, fileInfo.name, fileInfo.size, input) { sent, total ->
+            val trustedPeer = selectedDevice?.let { trustedPeerStore.find(it.deviceId) }
+            val result = controlClient.uploadFile(
+                peer = peer,
+                fileName = fileInfo.name,
+                size = fileInfo.size,
+                localIdentity = identity,
+                trustedPeer = trustedPeer,
+                openInputStream = { contentResolver.openInputStream(uri) }
+            ) { sent, total ->
                     runOnUiThread {
                         connectionStatusText.text = "Sending ${fileInfo.name}\n${formatBytes(sent)} / ${formatBytes(total)}"
                     }
                 }
-            } ?: Result.failure(IllegalStateException("Could not open selected file"))
 
             runOnUiThread {
                 sendFileButton.isEnabled = true

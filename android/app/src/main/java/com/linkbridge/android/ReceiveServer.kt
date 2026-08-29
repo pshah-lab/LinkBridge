@@ -20,7 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ReceiveServer(
     private val context: Context,
     private val port: Int,
-    private val onStatus: (String) -> Unit
+    private val onStatus: (String) -> Unit,
+    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true }
 ) {
     private val running = AtomicBoolean(false)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -75,6 +76,49 @@ class ReceiveServer(
             socket.writeJsonResponse(400, """{"error":"missing_content_length"}""")
             return
         }
+        val senderId = request.headers["x-linkbridge-device-id"]
+        val timestamp = request.headers["x-linkbridge-timestamp"]
+        val expectedSha256 = request.headers["x-linkbridge-file-sha256"]
+        val plaintextLength = request.headers["x-linkbridge-plaintext-length"]?.toLongOrNull()
+        val encryption = request.headers["x-linkbridge-encryption"]
+        val suppliedSignature = request.headers["x-linkbridge-signature"]
+        val trustedPeer = TrustedPeerStore(context).find(senderId)
+        val authToken = trustedPeer?.authToken
+
+        if (senderId == null || timestamp == null || expectedSha256 == null || plaintextLength == null || suppliedSignature == null || authToken == null) {
+            socket.writeJsonResponse(401, """{"error":"unpaired_or_unsigned"}""")
+            return
+        }
+        if (encryption != Security.ENCRYPTION_SCHEME) {
+            socket.writeJsonResponse(400, """{"error":"encryption_required"}""")
+            return
+        }
+
+        val signaturePayload = listOf(
+            "POST",
+            "/transfer/upload",
+            senderId,
+            timestamp,
+            request.headers["x-file-name"] ?: "received-file",
+            contentLength.toString(),
+            expectedSha256
+        ).joinToString("\n")
+        val expectedSignature = Security.hmacSha256Base64(authToken, signaturePayload)
+        if (!Security.timingSafeEquals(expectedSignature, suppliedSignature)) {
+            socket.writeJsonResponse(401, """{"error":"invalid_signature"}""")
+            return
+        }
+
+        val approval = IncomingTransferRequest(
+            senderName = trustedPeer.deviceName,
+            senderId = senderId,
+            fileName = fileName,
+            bytes = plaintextLength
+        )
+        if (!onApprovalRequested(approval)) {
+            socket.writeJsonResponse(403, """{"error":"transfer_declined"}""")
+            return
+        }
 
         runCatching {
             val resolver = context.contentResolver
@@ -91,19 +135,14 @@ class ReceiveServer(
                 ?: error("Could not create Downloads item")
 
             val digest = MessageDigest.getInstance("SHA-256")
-            var remaining = contentLength
             var received = 0L
-            val buffer = ByteArray(64 * 1024)
+            var progress = 0L
 
             resolver.openOutputStream(uri)?.use { output ->
-                while (remaining > 0) {
-                    val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                    if (read < 0) error("Connection closed before file completed")
-                    output.write(buffer, 0, read)
-                    digest.update(buffer, 0, read)
-                    remaining -= read
-                    received += read
-                    onStatus("Receiving $fileName\n${formatBytes(received)} / ${formatBytes(contentLength)}")
+                received = Security.decryptChunked(authToken, input, contentLength, output) { plain, count ->
+                    digest.update(plain, 0, count)
+                    progress += count
+                    onStatus("Receiving $fileName\n${formatBytes(progress)} / ${formatBytes(plaintextLength)}")
                 }
             } ?: error("Could not open output stream")
 
@@ -114,6 +153,11 @@ class ReceiveServer(
             }
 
             val sha256 = digest.digest().toHexString()
+            if (!sha256.equals(expectedSha256, ignoreCase = true)) {
+                resolver.delete(uri, null, null)
+                socket.writeJsonResponse(400, """{"error":"checksum_mismatch"}""")
+                return
+            }
             onStatus("Received $fileName\nSaved to Downloads/LinkBridge.")
             socket.writeJsonResponse(200, """{"status":"received","fileName":"$fileName","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
@@ -172,6 +216,13 @@ class ReceiveServer(
     }
 }
 
+data class IncomingTransferRequest(
+    val senderName: String,
+    val senderId: String,
+    val fileName: String,
+    val bytes: Long
+)
+
 private data class HttpRequestHeader(
     val startLine: String,
     val headers: Map<String, String>
@@ -193,4 +244,3 @@ private data class HttpRequestHeader(
 private fun ByteArray.toHexString(): String {
     return joinToString(separator = "") { byte -> "%02x".format(byte) }
 }
-

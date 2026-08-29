@@ -8,6 +8,29 @@ enum FileSender {
         let encodedFileName = fileName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? fileName
         let fileSize = try fileSize(at: fileURL)
         let sha256 = try sha256Hex(of: fileURL)
+        let identity = IdentityStore().loadOrCreate()
+        let encryptedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("linkbridge-upload-\(UUID().uuidString).enc")
+        let encryptedSize = try Security.encryptChunkedFile(
+            inputURL: fileURL,
+            outputURL: encryptedURL,
+            secret: identity.authToken
+        )
+        defer { try? FileManager.default.removeItem(at: encryptedURL) }
+
+        let timestamp = String(Int(Date().timeIntervalSince1970 * 1000))
+        let signaturePayload = [
+            "POST",
+            "/transfer/upload",
+            identity.deviceId.uuidString,
+            timestamp,
+            encodedFileName,
+            String(encryptedSize),
+            sha256
+        ].joined(separator: "\n")
+        guard let signature = Security.hmacSHA256Base64(secret: identity.authToken, message: signaturePayload) else {
+            throw SenderError.signatureFailed
+        }
 
         let parts = endpoint.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2, let port = UInt16(parts[1]) else {
@@ -19,12 +42,18 @@ enum FileSender {
         request.httpMethod = "POST"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.setValue(encodedFileName, forHTTPHeaderField: "X-File-Name")
-        request.setValue(String(fileSize), forHTTPHeaderField: "Content-Length")
+        request.setValue(identity.deviceId.uuidString, forHTTPHeaderField: "X-LinkBridge-Device-Id")
+        request.setValue(timestamp, forHTTPHeaderField: "X-LinkBridge-Timestamp")
+        request.setValue(sha256, forHTTPHeaderField: "X-LinkBridge-File-Sha256")
+        request.setValue(String(fileSize), forHTTPHeaderField: "X-LinkBridge-Plaintext-Length")
+        request.setValue(Security.encryptionScheme, forHTTPHeaderField: "X-LinkBridge-Encryption")
+        request.setValue(signature, forHTTPHeaderField: "X-LinkBridge-Signature")
+        request.setValue(String(encryptedSize), forHTTPHeaderField: "Content-Length")
 
         let semaphore = DispatchSemaphore(value: 0)
         var result: Result<Data, Error>?
 
-        URLSession.shared.uploadTask(with: request, fromFile: fileURL) { body, response, error in
+        URLSession.shared.uploadTask(with: request, fromFile: encryptedURL) { body, response, error in
             if let error {
                 result = .failure(error)
             } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -72,6 +101,7 @@ private enum SenderError: Error, CustomStringConvertible {
     case invalidEndpoint
     case httpStatus(Int, Data)
     case checksumMissing
+    case signatureFailed
 
     var description: String {
         switch self {
@@ -81,6 +111,8 @@ private enum SenderError: Error, CustomStringConvertible {
             return "Upload failed with HTTP \(status): \(String(decoding: body, as: UTF8.self))"
         case .checksumMissing:
             return "Upload response did not include the expected checksum"
+        case .signatureFailed:
+            return "Could not sign upload request"
         }
     }
 }

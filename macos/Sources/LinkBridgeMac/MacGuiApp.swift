@@ -329,7 +329,15 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         let identity = identityStore.loadOrCreate()
         self.currentIdentity = identity
 
-        let server = ControlServer(identity: identity)
+        let server = ControlServer(
+            identity: identity,
+            pairApproval: { [weak self] request in
+                self?.approveIncomingPair(request) ?? false
+            },
+            transferApproval: { [weak self] request in
+                self?.approveIncomingTransfer(request) ?? false
+            }
+        )
         let discovery = DiscoveryService(identity: identity, port: server.port)
 
         server.start()
@@ -337,6 +345,46 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
 
         self.controlServer = server
         self.discoveryService = discovery
+    }
+
+    private func approveIncomingPair(_ request: IncomingPairRequest) -> Bool {
+        presentApprovalAlert(
+            title: "Accept pairing request?",
+            message: "\(request.deviceName) wants to pair with this Mac for LinkBridge transfers."
+        )
+    }
+
+    private func approveIncomingTransfer(_ request: IncomingTransferRequest) -> Bool {
+        presentApprovalAlert(
+            title: "Accept incoming file?",
+            message: "\(request.senderName) wants to send \(request.fileName) (\(ByteCountFormatter.string(fromByteCount: Int64(request.bytes), countStyle: .file)))."
+        )
+    }
+
+    private func presentApprovalAlert(title: String, message: String) -> Bool {
+        let presentAlert = {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.addButton(withTitle: "Accept")
+            alert.addButton(withTitle: "Decline")
+            alert.alertStyle = .informational
+
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+
+        if Thread.isMainThread {
+            return presentAlert()
+        }
+
+        var isApproved = false
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            isApproved = presentAlert()
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return isApproved
     }
 
     private func buildWindow() {
@@ -742,7 +790,8 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         sendButton.isEnabled = false
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let resolver = PeerResolver()
+            let identity = self.currentIdentity
+            let resolver = PeerResolver(localDeviceId: identity?.deviceId, localPort: self.controlServer?.port)
             let peer = resolver.resolveAndroidPeer(timeout: 4)
             DispatchQueue.main.async {
                 self.resolvedPeer = peer

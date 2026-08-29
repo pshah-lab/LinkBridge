@@ -8,10 +8,19 @@ final class ControlServer {
 
     private let listener: NWListener
     private let trustedPeerStore = TrustedPeerStore()
+    private let pairApproval: (IncomingPairRequest) -> Bool
+    private let transferApproval: (IncomingTransferRequest) -> Bool
 
-    init(identity: DeviceIdentity, preferredPort: UInt16 = 49152) {
+    init(
+        identity: DeviceIdentity,
+        preferredPort: UInt16 = 49152,
+        pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in true },
+        transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true }
+    ) {
         self.identity = identity
         self.port = preferredPort
+        self.pairApproval = pairApproval
+        self.transferApproval = transferApproval
 
         do {
             self.listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: preferredPort)!)
@@ -21,9 +30,9 @@ final class ControlServer {
     }
 
     func start() {
-        listener.newConnectionHandler = { [identity, trustedPeerStore] connection in
+        listener.newConnectionHandler = { [identity, trustedPeerStore, pairApproval, transferApproval] connection in
             connection.start(queue: .main)
-            Self.handle(connection: connection, identity: identity, trustedPeerStore: trustedPeerStore)
+            Self.handle(connection: connection, identity: identity, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval, transferApproval: transferApproval)
         }
 
         listener.stateUpdateHandler = { state in
@@ -33,7 +42,13 @@ final class ControlServer {
         listener.start(queue: .main)
     }
 
-    private static func handle(connection: NWConnection, identity: DeviceIdentity, trustedPeerStore: TrustedPeerStore) {
+    private static func handle(
+        connection: NWConnection,
+        identity: DeviceIdentity,
+        trustedPeerStore: TrustedPeerStore,
+        pairApproval: @escaping (IncomingPairRequest) -> Bool,
+        transferApproval: @escaping (IncomingTransferRequest) -> Bool
+    ) {
         receiveRequestHead(connection: connection) { head in
             guard let head else {
                 connection.cancel()
@@ -41,7 +56,7 @@ final class ControlServer {
             }
 
             if head.startLine.hasPrefix("POST /transfer/upload") {
-                handleUpload(connection: connection, head: head)
+                handleUpload(connection: connection, head: head, transferApproval: transferApproval)
                 return
             }
 
@@ -53,11 +68,19 @@ final class ControlServer {
                     responseBody = #"{"status":"ok"}"#.data(using: .utf8)!
                     status = "200 OK"
                 } else if request.startLine.hasPrefix("GET /device") {
-                    responseBody = (try? JSONEncoder().encode(identity)) ?? Data()
+                    let publicIdentity = PublicDeviceIdentity(
+                        deviceId: identity.deviceId,
+                        deviceName: identity.deviceName,
+                        platform: identity.platform,
+                        protocolVersion: identity.protocolVersion,
+                        features: identity.features
+                    )
+                    responseBody = (try? JSONEncoder().encode(publicIdentity)) ?? Data()
                     status = "200 OK"
                 } else if request.startLine.hasPrefix("POST /pair/request") {
-                    responseBody = handlePairRequest(body: request.body, trustedPeerStore: trustedPeerStore)
-                    status = "200 OK"
+                    let pairResponse = handlePairRequest(body: request.body, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval)
+                    responseBody = pairResponse.body
+                    status = pairResponse.status
                 } else {
                     responseBody = #"{"error":"not_found"}"#.data(using: .utf8)!
                     status = "404 Not Found"
@@ -140,13 +163,27 @@ final class ControlServer {
         receiveMore()
     }
 
-    private static func handlePairRequest(body: Data, trustedPeerStore: TrustedPeerStore) -> Data {
+    private static func handlePairRequest(
+        body: Data,
+        trustedPeerStore: TrustedPeerStore,
+        pairApproval: @escaping (IncomingPairRequest) -> Bool
+    ) -> HTTPResponse {
         guard !body.isEmpty else {
-            return #"{"error":"missing_body"}"#.data(using: .utf8)!
+            return HTTPResponse(status: "400 Bad Request", body: #"{"error":"missing_body"}"#.data(using: .utf8)!)
         }
 
         do {
             let peerIdentity = try JSONDecoder().decode(DeviceIdentity.self, from: body)
+            let request = IncomingPairRequest(
+                deviceName: peerIdentity.deviceName,
+                deviceId: peerIdentity.deviceId,
+                platform: peerIdentity.platform
+            )
+
+            guard pairApproval(request) else {
+                return HTTPResponse(status: "403 Forbidden", body: #"{"error":"pair_declined"}"#.data(using: .utf8)!)
+            }
+
             trustedPeerStore.save(
                 TrustedPeer(
                     deviceId: peerIdentity.deviceId,
@@ -154,18 +191,24 @@ final class ControlServer {
                     platform: peerIdentity.platform,
                     protocolVersion: peerIdentity.protocolVersion,
                     features: peerIdentity.features,
-                    pairedAt: Date()
+                    pairedAt: Date(),
+                    authToken: peerIdentity.authToken
                 )
             )
 
-            return #"{"status":"paired"}"#.data(using: .utf8)!
+            let json = #"{"status":"paired","authToken":"\#(IdentityStore().loadOrCreate().authToken)"}"#
+            return HTTPResponse(status: "200 OK", body: Data(json.utf8))
         } catch {
             let escaped = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
-            return #"{"error":"invalid_pair_request","message":"\#(escaped)"}"#.data(using: .utf8)!
+            return HTTPResponse(status: "400 Bad Request", body: #"{"error":"invalid_pair_request","message":"\#(escaped)"}"#.data(using: .utf8)!)
         }
     }
 
-    private static func handleUpload(connection: NWConnection, head: HTTPRequestHead) {
+    private static func handleUpload(
+        connection: NWConnection,
+        head: HTTPRequestHead,
+        transferApproval: @escaping (IncomingTransferRequest) -> Bool
+    ) {
         guard let rawFileName = head.headers["x-file-name"], !rawFileName.isEmpty else {
             sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"missing_file_name"}"#.data(using: .utf8)!)
             return
@@ -182,6 +225,52 @@ final class ControlServer {
             return
         }
 
+        guard let senderId = head.headers["x-linkbridge-device-id"],
+              let senderUUID = UUID(uuidString: senderId),
+              let timestamp = head.headers["x-linkbridge-timestamp"],
+              let expectedSha256 = head.headers["x-linkbridge-file-sha256"],
+              let plaintextLengthText = head.headers["x-linkbridge-plaintext-length"],
+              let plaintextLength = Int(plaintextLengthText),
+              let encryption = head.headers["x-linkbridge-encryption"],
+              let suppliedSignature = head.headers["x-linkbridge-signature"],
+              let peer = TrustedPeerStore().find(deviceId: senderUUID),
+              let authToken = peer.authToken else {
+            sendJSON(connection: connection, status: "401 Unauthorized", body: #"{"error":"unpaired_or_unsigned"}"#.data(using: .utf8)!)
+            return
+        }
+
+        guard encryption == Security.encryptionScheme else {
+            sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"encryption_required"}"#.data(using: .utf8)!)
+            return
+        }
+
+        let signaturePayload = [
+            "POST",
+            "/transfer/upload",
+            senderId,
+            timestamp,
+            rawFileName,
+            String(contentLength),
+            expectedSha256
+        ].joined(separator: "\n")
+
+        guard let expectedSignature = Security.hmacSHA256Base64(secret: authToken, message: signaturePayload),
+              Security.timingSafeEquals(expectedSignature, suppliedSignature) else {
+            sendJSON(connection: connection, status: "401 Unauthorized", body: #"{"error":"invalid_signature"}"#.data(using: .utf8)!)
+            return
+        }
+
+        let request = IncomingTransferRequest(
+            senderName: peer.deviceName,
+            senderId: senderUUID,
+            fileName: fileName,
+            bytes: plaintextLength
+        )
+        guard transferApproval(request) else {
+            sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
+            return
+        }
+
         do {
             let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
             let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
@@ -190,22 +279,46 @@ final class ControlServer {
             let destination = uniqueDestination(in: directory, fileName: fileName)
             FileManager.default.createFile(atPath: destination.path, contents: nil)
             let fileHandle = try FileHandle(forWritingTo: destination)
+            let decryptor = try ChunkedDecryptor(secret: authToken)
             var hasher = SHA256()
+            var receivedEncrypted = 0
             var received = 0
 
-            func consume(_ data: Data) throws {
+            func consumePlaintext(_ data: Data) throws {
                 guard !data.isEmpty else { return }
                 try fileHandle.write(contentsOf: data)
                 hasher.update(data: data)
                 received += data.count
             }
 
-            try consume(head.initialBody.prefix(contentLength))
+            func consumeEncrypted(_ data: Data) throws {
+                guard !data.isEmpty else { return }
+                let remaining = contentLength - receivedEncrypted
+                guard remaining > 0 else { return }
+                let chunk = Data(data.prefix(remaining))
+                receivedEncrypted += chunk.count
+                try decryptor.consume(chunk) { plaintext in
+                    try consumePlaintext(plaintext)
+                }
+            }
+
+            try consumeEncrypted(head.initialBody)
 
             func finish() {
                 do {
+                    try decryptor.finalize()
                     try fileHandle.close()
                     let sha256 = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                    guard received == plaintextLength else {
+                        try? FileManager.default.removeItem(at: destination)
+                        sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"plaintext_length_mismatch"}"#.data(using: .utf8)!)
+                        return
+                    }
+                    guard sha256.caseInsensitiveCompare(expectedSha256) == .orderedSame else {
+                        try? FileManager.default.removeItem(at: destination)
+                        sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"checksum_mismatch"}"#.data(using: .utf8)!)
+                        return
+                    }
                     print("Received file: \(destination.path) (\(received) bytes, sha256: \(sha256))")
 
                     let json = #"{"status":"received","fileName":"\#(destination.lastPathComponent)","bytes":\#(received),"sha256":"\#(sha256)"}"#
@@ -216,7 +329,7 @@ final class ControlServer {
             }
 
             func receiveMore() {
-                if received >= contentLength {
+                if receivedEncrypted >= contentLength {
                     finish()
                     return
                 }
@@ -231,8 +344,8 @@ final class ControlServer {
 
                     do {
                         if let data {
-                            let remaining = contentLength - received
-                            try consume(data.prefix(remaining))
+                            let remaining = contentLength - receivedEncrypted
+                            try consumeEncrypted(Data(data.prefix(remaining)))
                         }
                         receiveMore()
                     } catch {
@@ -327,4 +440,22 @@ private struct HTTPRequest {
     let startLine: String
     let headers: [String: String]
     let body: Data
+}
+
+private struct HTTPResponse {
+    let status: String
+    let body: Data
+}
+
+struct IncomingPairRequest {
+    let deviceName: String
+    let deviceId: UUID
+    let platform: String
+}
+
+struct IncomingTransferRequest {
+    let senderName: String
+    let senderId: UUID
+    let fileName: String
+    let bytes: Int
 }
