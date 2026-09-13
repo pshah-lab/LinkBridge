@@ -13,6 +13,8 @@ import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -25,6 +27,8 @@ class ReceiveServer(
 ) {
     private val running = AtomicBoolean(false)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val clientExecutor: ExecutorService = Executors.newFixedThreadPool(MAX_CLIENTS)
+    private val replayCache = ConcurrentHashMap<String, Long>()
     private var serverSocket: ServerSocket? = null
 
     fun start() {
@@ -37,7 +41,8 @@ class ReceiveServer(
                     onStatus("Ready to receive files on port $port.")
                     while (running.get()) {
                         val client = socket.accept()
-                        Executors.newSingleThreadExecutor().execute {
+                        clientExecutor.execute {
+                            runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
                             client.use { handleClient(it) }
                         }
                     }
@@ -55,6 +60,7 @@ class ReceiveServer(
         running.set(false)
         runCatching { serverSocket?.close() }
         executor.shutdownNow()
+        clientExecutor.shutdownNow()
     }
 
     private fun handleClient(socket: Socket) {
@@ -73,15 +79,26 @@ class ReceiveServer(
             socket.writeJsonResponse(400, """{"error":"missing_content_length"}""")
             return
         }
+        if (contentLength > MAX_TRANSFER_BYTES) {
+            socket.writeJsonResponse(413, """{"error":"transfer_too_large"}""")
+            return
+        }
         val senderId = request.headers["x-linkbridge-device-id"]
         val timestamp = request.headers["x-linkbridge-timestamp"]
+        val transferId = request.headers["x-linkbridge-transfer-id"]
         val encryption = request.headers["x-linkbridge-encryption"]
         val suppliedSignature = request.headers["x-linkbridge-signature"]
         val trustedPeer = TrustedPeerStore(context).find(senderId)
         val authToken = trustedPeer?.authToken
 
-        if (senderId == null || timestamp == null || suppliedSignature == null || authToken == null) {
+        if (senderId == null || timestamp == null || transferId == null || suppliedSignature == null || authToken == null) {
             socket.writeJsonResponse(401, """{"error":"unpaired_or_unsigned"}""")
+            return
+        }
+        val timestampMillis = timestamp.toLongOrNull()
+        val transferUUID = runCatching { UUID.fromString(transferId) }.getOrNull()
+        if (timestampMillis == null || transferUUID == null || kotlin.math.abs(System.currentTimeMillis() - timestampMillis) > TIMESTAMP_WINDOW_MS) {
+            socket.writeJsonResponse(401, """{"error":"stale_transfer"}""")
             return
         }
         if (encryption != Security.ENCRYPTION_SCHEME) {
@@ -94,12 +111,20 @@ class ReceiveServer(
             "/transfer/upload",
             senderId,
             timestamp,
+            transferId,
             Security.ENCRYPTION_SCHEME,
             contentLength.toString()
         ).joinToString("\n")
         val expectedSignature = Security.hmacSha256Base64(authToken, signaturePayload)
         if (!Security.timingSafeEquals(expectedSignature, suppliedSignature)) {
             socket.writeJsonResponse(401, """{"error":"invalid_signature"}""")
+            return
+        }
+        val replayKey = "$senderId:$transferId"
+        val now = System.currentTimeMillis()
+        replayCache.entries.removeIf { it.value < now }
+        if (replayCache.putIfAbsent(replayKey, now + REPLAY_WINDOW_MS) != null) {
+            socket.writeJsonResponse(409, """{"error":"replayed_transfer"}""")
             return
         }
 
@@ -116,6 +141,7 @@ class ReceiveServer(
                     val currentMetadata = metadata
                     if (currentMetadata == null) {
                         val parsed = IncomingFileMetadata.fromEncryptedJson(plain)
+                        if (parsed.transferId != transferId) error("Transfer ID mismatch")
                         val approval = IncomingTransferRequest(
                             senderName = trustedPeer.deviceName,
                             senderId = senderId,
@@ -193,6 +219,7 @@ class ReceiveServer(
             if (next < 0) error("Connection closed before headers completed")
             val byte = next.toByte()
             bytes.add(byte)
+            if (bytes.size > MAX_HEADER_BYTES) error("Request headers exceed limit")
             matched = if (byte == marker[matched]) matched + 1 else if (byte == marker[0]) 1 else 0
             if (matched == marker.size) return bytes.toByteArray()
         }
@@ -229,6 +256,12 @@ class ReceiveServer(
 
     companion object {
         private const val TAG = "LinkBridgeReceive"
+        private const val MAX_CLIENTS = 4
+        private const val MAX_HEADER_BYTES = 64 * 1024
+        private const val MAX_TRANSFER_BYTES = Long.MAX_VALUE - 1024
+        private const val TIMESTAMP_WINDOW_MS = 5 * 60 * 1000L
+        private const val REPLAY_WINDOW_MS = 10 * 60 * 1000L
+        private const val SOCKET_TIMEOUT_MS = 15_000
     }
 }
 
@@ -240,6 +273,7 @@ data class IncomingTransferRequest(
 )
 
 private data class IncomingFileMetadata(
+    val transferId: String,
     val fileName: String,
     val bytes: Long,
     val sha256: String
@@ -248,6 +282,7 @@ private data class IncomingFileMetadata(
         fun fromEncryptedJson(bytes: ByteArray): IncomingFileMetadata {
             val json = org.json.JSONObject(bytes.toString(Charsets.UTF_8))
             return IncomingFileMetadata(
+                transferId = json.getString("transferId"),
                 fileName = sanitizeMetadataFileName(json.getString("fileName")),
                 bytes = json.getLong("bytes"),
                 sha256 = json.getString("sha256")

@@ -8,7 +8,10 @@ if arguments.count == 2, arguments[1] == "ui" {
     guiApp.run()
 } else if arguments.count == 4, arguments[1] == "send" {
     do {
-        try FileSender.send(filePath: arguments[3], endpoint: arguments[2])
+        let peer = PeerResolver(localPort: 49152).resolveAndroidPeer()
+        guard let peerId = peer?.deviceId,
+              let secret = TrustedPeerStore().find(deviceId: peerId)?.authToken else { throw NSError(domain: "LinkBridge", code: 1, userInfo: [NSLocalizedDescriptionKey: "Pair with the Android device first"]) }
+        try FileSender.send(filePath: arguments[3], endpoint: arguments[2], secret: secret)
     } catch {
         print("Send failed: \(error)")
         exit(1)
@@ -23,7 +26,9 @@ if arguments.count == 2, arguments[1] == "ui" {
 
     do {
         print("Resolved \(peer.deviceName) at \(peer.endpoint)")
-        try FileSender.send(filePath: arguments[2], endpoint: peer.endpoint)
+        guard let peerId = peer.deviceId,
+              let secret = TrustedPeerStore().find(deviceId: peerId)?.authToken else { throw NSError(domain: "LinkBridge", code: 1, userInfo: [NSLocalizedDescriptionKey: "Pair with the Android device first"]) }
+        try FileSender.send(filePath: arguments[2], endpoint: peer.endpoint, secret: secret)
     } catch {
         print("Send failed: \(error)")
         exit(1)

@@ -5,17 +5,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class TrustedPeerStore(context: Context) {
-    private val preferences = context.getSharedPreferences("linkbridge_trusted_peers", Context.MODE_PRIVATE)
+    private val credentials = CredentialStore(context, "trusted_peers")
 
     fun save(peer: TrustedPeer) {
         val peers = load().filterNot { it.deviceId == peer.deviceId } + peer
         val json = JSONArray()
         peers.forEach { json.put(it.toJson()) }
-        preferences.edit().putString(KEY_PEERS, json.toString()).apply()
+        credentials.putString(KEY_PEERS, json.toString())
     }
 
     fun load(): List<TrustedPeer> {
-        val raw = preferences.getString(KEY_PEERS, null) ?: return emptyList()
+        val raw = credentials.getString(KEY_PEERS) ?: return emptyList()
         val json = JSONArray(raw)
         return buildList {
             for (index in 0 until json.length()) {

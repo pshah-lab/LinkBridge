@@ -83,21 +83,21 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(36, 48, 36, 36)
+            setPadding(24, 34, 24, 28)
         }
         rootScroll.addView(root)
 
         // 1. Header View
         root.addView(buildHeaderView())
 
-        // 2. Local Device Identity Card
+        // 2. Local device identity, kept compact so the peer and transfer action stay above the fold.
         root.addView(buildIdentityCard())
 
         // 3. Nearby Mac Peers Section Header
         val nearbyHeaderStack = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 20, 0, 10)
+            setPadding(0, 24, 0, 10)
         }
         peerStatusDot = Ui.statusDot(this, Ui.WARNING)
         peerStatusDot.layoutParams = LinearLayout.LayoutParams(24, 24).apply {
@@ -111,7 +111,7 @@ class MainActivity : Activity() {
 
         // Connection / Peer Selected Status View
         connectionStatusText = TextView(this).apply {
-            body("Searching for nearby LinkBridge Mac devices on local Wi-Fi...")
+            body("Searching for a Mac on the same Wi-Fi network…")
             setTextColor(Ui.MUTED)
             pad(20, 14)
             background = Ui.rounded(Ui.SURFACE, radiusDp = 14f, strokeColor = Ui.LINE)
@@ -139,34 +139,34 @@ class MainActivity : Activity() {
         }
 
         sendFileButton = Button(this).apply {
-            text = "Send File to Mac"
+            text = "Send to Mac"
             textSize = 15f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
             background = Ui.primaryButtonDrawable()
             visibility = View.GONE
-            setPadding(0, 28, 0, 28)
+            setPadding(0, 22, 0, 22)
             setOnClickListener { openFilePicker() }
         }
 
         pairButton = Button(this).apply {
-            text = "Pair with Mac"
+            text = "Request pairing"
             textSize = 14f
             setTextColor(Ui.ACCENT)
             typeface = Typeface.DEFAULT_BOLD
             background = Ui.secondaryButtonDrawable()
             visibility = View.GONE
-            setPadding(0, 24, 0, 24)
+            setPadding(0, 20, 0, 20)
             setOnClickListener { pairSelectedPeer() }
         }
 
         refreshScanButton = Button(this).apply {
-            text = "Refresh Scan"
+            text = "Scan again"
             textSize = 14f
             setTextColor(Ui.INK)
             typeface = Typeface.DEFAULT_BOLD
             background = Ui.secondaryButtonDrawable()
-            setPadding(0, 24, 0, 24)
+            setPadding(0, 20, 0, 20)
             setOnClickListener { refreshDiscovery() }
         }
 
@@ -186,12 +186,12 @@ class MainActivity : Activity() {
 
         // 5. Incoming Status Card
         root.addView(TextView(this).apply {
-            section("INCOMING RECEIVER")
+            section("RECEIVING")
             setPadding(0, 12, 0, 8)
         })
 
         receiveStatusText = TextView(this).apply {
-            body("Ready to receive Mac files over LAN")
+            body("Ready for private transfers over local Wi-Fi")
             pad(20, 14)
             background = Ui.rounded(Ui.SURFACE, radiusDp = 14f, strokeColor = Ui.LINE)
         }
@@ -199,7 +199,7 @@ class MainActivity : Activity() {
 
         // 6. Activity History Section
         root.addView(TextView(this).apply {
-            section("TRANSFER HISTORY")
+            section("RECENT ACTIVITY")
             setPadding(0, 20, 0, 8)
         })
 
@@ -209,7 +209,7 @@ class MainActivity : Activity() {
         root.addView(activityLogContainer)
 
         val initialHistoryEmpty = TextView(this).apply {
-            body("No transfers recorded in this session.")
+            body("Your recent transfers will appear here.")
             setTextColor(Ui.MUTED)
             textSize = 13f
         }
@@ -246,7 +246,7 @@ class MainActivity : Activity() {
         header.addView(titleStack)
 
         val statusBadge = TextView(this).apply {
-            text = "PORT :49153 ACTIVE"
+            text = "ONLINE / PRIVATE"
             textSize = 10f
             setTextColor(Ui.SUCCESS)
             typeface = Typeface.DEFAULT_BOLD
@@ -266,7 +266,7 @@ class MainActivity : Activity() {
         }
 
         val headerText = TextView(this).apply {
-            section("THIS DEVICE IDENTITY")
+            section("YOUR ANDROID")
         }
         card.addView(headerText)
 
@@ -289,7 +289,7 @@ class MainActivity : Activity() {
         }
 
         val uuidText = TextView(this).apply {
-            text = "ID: $uuidShort"
+            text = "Device ID  $uuidShort"
             textSize = 12f
             setTextColor(Ui.MUTED)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f)
@@ -297,7 +297,7 @@ class MainActivity : Activity() {
         uuidRow.addView(uuidText)
 
         val copyBtn = TextView(this).apply {
-            text = "Copy ID"
+            text = "Copy"
             textSize = 11f
             setTextColor(Ui.ACCENT)
             typeface = Typeface.DEFAULT_BOLD
@@ -347,7 +347,7 @@ class MainActivity : Activity() {
 
         peers.forEach { peer ->
             val isTrusted = trustedPeerStore.isTrusted(peer.deviceId)
-            val statusLabelText = if (isTrusted) "PAIRED & READY" else "TAP TO CONNECT"
+            val statusLabelText = if (isTrusted) "TRUSTED / READY" else "TAP TO CONNECT"
 
             val peerCard = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -370,7 +370,7 @@ class MainActivity : Activity() {
             }
 
             val peerEndpointView = TextView(this).apply {
-                text = "${peer.platform ?: "macOS"} • ${peer.endpoint}"
+                text = "${peer.platform ?: "macOS"}  ·  ${peer.endpoint}"
                 textSize = 12f
                 setTextColor(Ui.MUTED)
                 setPadding(0, 2, 0, 4)
@@ -407,7 +407,7 @@ class MainActivity : Activity() {
                     .onSuccess { device ->
                         selectedDevice = device
                         val isTrusted = trustedPeerStore.isTrusted(device.deviceId)
-                        connectionStatusText.text = "Connected to ${device.deviceName}\nEndpoint: ${peer.endpoint}"
+                        connectionStatusText.text = "Connected to ${device.deviceName}\nEncrypted transfer channel ready"
                         connectionStatusText.background = Ui.rounded(Ui.SUCCESS_BG, radiusDp = 14f, strokeColor = Ui.SUCCESS)
 
                         pairButton.visibility = if (isTrusted) View.GONE else View.VISIBLE
@@ -479,7 +479,7 @@ class MainActivity : Activity() {
                         pairButton.visibility = View.GONE
                         pairButton.isEnabled = true
                         sendFileButton.visibility = View.VISIBLE
-                        connectionStatusText.text = "Paired with ${device.deviceName}\nReady for file transfer."
+                        connectionStatusText.text = "Trusted connection with ${device.deviceName}\nReady for encrypted file transfer."
                         connectionStatusText.background = Ui.rounded(Ui.SUCCESS_BG, radiusDp = 14f, strokeColor = Ui.SUCCESS)
                     }
                     .onFailure { error ->

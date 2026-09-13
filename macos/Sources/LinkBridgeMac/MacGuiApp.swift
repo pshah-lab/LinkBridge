@@ -2,6 +2,16 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
+private enum LinkTheme {
+    static let canvas = NSColor(calibratedRed: 0.957, green: 0.961, blue: 0.945, alpha: 1)
+    static let ink = NSColor(calibratedRed: 0.063, green: 0.082, blue: 0.122, alpha: 1)
+    static let muted = NSColor(calibratedRed: 0.408, green: 0.443, blue: 0.490, alpha: 1)
+    static let line = NSColor(calibratedRed: 0.851, green: 0.871, blue: 0.847, alpha: 1)
+    static let cobalt = NSColor(calibratedRed: 0.243, green: 0.384, blue: 0.910, alpha: 1)
+    static let signal = NSColor(calibratedRed: 0.208, green: 0.788, blue: 0.545, alpha: 1)
+    static let attention = NSColor(calibratedRed: 0.941, green: 0.353, blue: 0.239, alpha: 1)
+}
+
 // MARK: - Drag & Drop Zone View
 final class DragDropAreaView: NSView {
     var onFileDropped: ((URL) -> Void)?
@@ -9,8 +19,8 @@ final class DragDropAreaView: NSView {
 
     private let dashLayer = CAShapeLayer()
     private let iconImageView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "Drop Files Here to Transfer")
-    private let subtitleLabel = NSTextField(labelWithString: "Supports any file format over local Wi-Fi • Click to browse")
+    private let titleLabel = NSTextField(labelWithString: "Drop a file to send")
+    private let subtitleLabel = NSTextField(labelWithString: "Private on your network • click to browse")
     private var isHighlighted = false {
         didSet {
             needsDisplay = true
@@ -36,7 +46,7 @@ final class DragDropAreaView: NSView {
         registerForDraggedTypes([.fileURL])
 
         dashLayer.fillColor = nil
-        dashLayer.strokeColor = NSColor.systemIndigo.withAlphaComponent(0.4).cgColor
+        dashLayer.strokeColor = LinkTheme.cobalt.withAlphaComponent(0.28).cgColor
         dashLayer.lineWidth = 2
         dashLayer.lineDashPattern = [6, 4]
         layer?.addSublayer(dashLayer)
@@ -44,16 +54,16 @@ final class DragDropAreaView: NSView {
         if let symbolImage = NSImage(systemSymbolName: "arrow.down.doc.fill", accessibilityDescription: "Drop file") {
             let config = NSImage.SymbolConfiguration(pointSize: 26, weight: .bold)
             iconImageView.image = symbolImage.withSymbolConfiguration(config)
-            iconImageView.contentTintColor = NSColor.systemIndigo
+            iconImageView.contentTintColor = LinkTheme.cobalt
         }
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.font = .systemFont(ofSize: 15, weight: .bold)
-        titleLabel.textColor = NSColor.labelColor
+        titleLabel.textColor = LinkTheme.ink
         titleLabel.alignment = .center
 
         subtitleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        subtitleLabel.textColor = NSColor.secondaryLabelColor
+        subtitleLabel.textColor = LinkTheme.muted
         subtitleLabel.alignment = .center
 
         let stack = NSStackView(views: [iconImageView, titleLabel, subtitleLabel])
@@ -85,12 +95,12 @@ final class DragDropAreaView: NSView {
 
     private func updateVisuals() {
         if isHighlighted {
-            layer?.backgroundColor = NSColor.systemIndigo.withAlphaComponent(0.14).cgColor
-            dashLayer.strokeColor = NSColor.systemIndigo.cgColor
+            layer?.backgroundColor = LinkTheme.cobalt.withAlphaComponent(0.08).cgColor
+            dashLayer.strokeColor = LinkTheme.cobalt.cgColor
             dashLayer.lineWidth = 2.5
         } else {
-            layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.5).cgColor
-            dashLayer.strokeColor = NSColor.systemIndigo.withAlphaComponent(0.35).cgColor
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.72).cgColor
+            dashLayer.strokeColor = LinkTheme.cobalt.withAlphaComponent(0.28).cgColor
             dashLayer.lineWidth = 2.0
         }
     }
@@ -157,14 +167,14 @@ final class StatusDotView: NSView {
     private func updateColor() {
         switch status {
         case .online:
-            layer?.backgroundColor = NSColor.systemGreen.cgColor
-            layer?.shadowColor = NSColor.systemGreen.cgColor
+            layer?.backgroundColor = LinkTheme.signal.cgColor
+            layer?.shadowColor = LinkTheme.signal.cgColor
             layer?.shadowRadius = 4
             layer?.shadowOpacity = 0.8
             layer?.shadowOffset = .zero
         case .searching:
-            layer?.backgroundColor = NSColor.systemOrange.cgColor
-            layer?.shadowColor = NSColor.systemOrange.cgColor
+            layer?.backgroundColor = LinkTheme.attention.cgColor
+            layer?.shadowColor = LinkTheme.attention.cgColor
             layer?.shadowRadius = 3
             layer?.shadowOpacity = 0.6
             layer?.shadowOffset = .zero
@@ -217,7 +227,7 @@ final class ModernButton: NSButton {
 
         switch variant {
         case .primary:
-            layer?.backgroundColor = NSColor.systemIndigo.cgColor
+            layer?.backgroundColor = LinkTheme.cobalt.cgColor
             let font = NSFont.systemFont(ofSize: 13, weight: .bold)
             self.attributedTitle = NSAttributedString(
                 string: title,
@@ -228,7 +238,7 @@ final class ModernButton: NSButton {
                 ]
             )
             contentTintColor = .white
-            layer?.shadowColor = NSColor.systemIndigo.cgColor
+            layer?.shadowColor = LinkTheme.cobalt.cgColor
             layer?.shadowRadius = 6
             layer?.shadowOpacity = 0.35
             layer?.shadowOffset = CGSize(width: 0, height: -2)
@@ -264,7 +274,7 @@ final class ModernButton: NSButton {
         guard isEnabled else { return }
         switch variant {
         case .primary:
-            layer?.backgroundColor = NSColor.systemIndigo.blended(withFraction: 0.15, of: .white)?.cgColor
+            layer?.backgroundColor = LinkTheme.cobalt.blended(withFraction: 0.15, of: .white)?.cgColor
         case .secondary:
             layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.95).cgColor
         }
@@ -297,7 +307,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
     private let peerEndpointLabel = NSTextField(labelWithString: "Ensure Android companion app is open on the same Wi-Fi network.")
 
     private let progressIndicator = NSProgressIndicator()
-    private let statusMessageLabel = NSTextField(labelWithString: "Ready to transfer files over local network")
+    private let statusMessageLabel = NSTextField(labelWithString: "Ready when you are")
 
     private var sendButton: ModernButton!
     private var refreshButton: ModernButton!
@@ -389,40 +399,43 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
 
     private func buildWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 580),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "LinkBridge"
+        window.appearance = NSAppearance(named: .aqua)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.center()
 
-        // Glassmorphism Visual Effect View
+        // Quiet native surface keeps the transfer canvas and state readable.
         let visualEffectView = NSVisualEffectView(frame: window.contentView!.bounds)
         visualEffectView.autoresizingMask = [.width, .height]
         visualEffectView.material = .underWindowBackground
-        visualEffectView.blendingMode = .behindWindow
+        visualEffectView.blendingMode = .withinWindow
         visualEffectView.state = .active
         window.contentView?.addSubview(visualEffectView)
 
         // Root container with margins
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
+        container.wantsLayer = true
+        container.layer?.backgroundColor = LinkTheme.canvas.cgColor
         visualEffectView.addSubview(container)
 
         NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: visualEffectView.leadingAnchor, constant: 28),
-            container.trailingAnchor.constraint(equalTo: visualEffectView.trailingAnchor, constant: -28),
-            container.topAnchor.constraint(equalTo: visualEffectView.topAnchor, constant: 36),
-            container.bottomAnchor.constraint(equalTo: visualEffectView.bottomAnchor, constant: -24)
+            container.leadingAnchor.constraint(equalTo: visualEffectView.leadingAnchor, constant: 32),
+            container.trailingAnchor.constraint(equalTo: visualEffectView.trailingAnchor, constant: -32),
+            container.topAnchor.constraint(equalTo: visualEffectView.topAnchor, constant: 30),
+            container.bottomAnchor.constraint(equalTo: visualEffectView.bottomAnchor, constant: -28)
         ])
 
         let rootStack = NSStackView()
         rootStack.orientation = .vertical
         rootStack.alignment = .width
-        rootStack.spacing = 16
+        rootStack.spacing = 18
         rootStack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(rootStack)
 
@@ -433,18 +446,18 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
             rootStack.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
-        // 1. Header Section
+        // 1. Brand and local-network state
         let headerView = buildHeaderView()
         rootStack.addArrangedSubview(headerView)
 
-        // 2. Identity & Peer Status Grid (2 Panels Side-by-Side)
+        // 2. Connection rail
         let gridStack = NSStackView(views: [buildMacIdentityPanel(), buildPeerStatusPanel()])
         gridStack.orientation = .horizontal
         gridStack.distribution = .fillEqually
         gridStack.spacing = 16
         rootStack.addArrangedSubview(gridStack)
 
-        // 3. Interactive Drag & Drop Area
+        // 3. Main transfer surface
         dragDropArea.translatesAutoresizingMaskIntoConstraints = false
         dragDropArea.onFileDropped = { [weak self] fileURL in
             self?.sendFileURL(fileURL)
@@ -454,18 +467,18 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         }
         rootStack.addArrangedSubview(dragDropArea)
 
-        // 4. Action Buttons Bar & Transfer Progress Bar
+        // 4. Actions and feedback
         let actionsView = buildActionsView()
         rootStack.addArrangedSubview(actionsView)
 
-        // 5. Activity Log Panel
+        // 5. Recent activity
         let activityPanel = buildActivityPanel()
         rootStack.addArrangedSubview(activityPanel)
 
         // Layout constraints
         NSLayoutConstraint.activate([
-            dragDropArea.heightAnchor.constraint(equalToConstant: 120),
-            gridStack.heightAnchor.constraint(equalToConstant: 110)
+            dragDropArea.heightAnchor.constraint(equalToConstant: 164),
+            gridStack.heightAnchor.constraint(equalToConstant: 104)
         ])
 
         self.window = window
@@ -490,16 +503,16 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         if let logo = NSImage(systemSymbolName: "externaldrive.connected.to.line.below", accessibilityDescription: "LinkBridge") {
             let config = NSImage.SymbolConfiguration(pointSize: 24, weight: .bold)
             iconView.image = logo.withSymbolConfiguration(config)
-            iconView.contentTintColor = NSColor.systemIndigo
+            iconView.contentTintColor = LinkTheme.cobalt
         }
 
         let titleLabel = NSTextField(labelWithString: "LinkBridge")
         titleLabel.font = .systemFont(ofSize: 26, weight: .heavy)
-        titleLabel.textColor = NSColor.labelColor
+        titleLabel.textColor = LinkTheme.ink
 
-        let subtitleLabel = NSTextField(labelWithString: "Mac + Android Companion")
+        let subtitleLabel = NSTextField(labelWithString: "A local bridge for your files")
         subtitleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        subtitleLabel.textColor = NSColor.secondaryLabelColor
+        subtitleLabel.textColor = LinkTheme.muted
 
         let titlesVerticalStack = NSStackView(views: [titleLabel, subtitleLabel])
         titlesVerticalStack.orientation = .vertical
@@ -509,7 +522,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         titleStack.addArrangedSubview(iconView)
         titleStack.addArrangedSubview(titlesVerticalStack)
 
-        let badge = buildPillBadge(text: "LOCAL BRIDGE ONLINE", color: .systemGreen)
+        let badge = buildPillBadge(text: "ONLINE / PRIVATE", color: LinkTheme.signal)
         header.addArrangedSubview(titleStack)
         header.addArrangedSubview(badge)
 
@@ -519,7 +532,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
     private func buildMacIdentityPanel() -> NSView {
         let panel = createCardView()
 
-        let titleLabel = NSTextField(labelWithString: "MAC RECEIVER NODE")
+        let titleLabel = NSTextField(labelWithString: "YOUR MAC")
         titleLabel.font = .systemFont(ofSize: 10, weight: .bold)
         titleLabel.textColor = NSColor.secondaryLabelColor
 
@@ -527,7 +540,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         if let image = NSImage(systemSymbolName: "laptopcomputer", accessibilityDescription: "Mac") {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .bold)
             macIconView.image = image.withSymbolConfiguration(config)
-            macIconView.contentTintColor = NSColor.systemIndigo
+            macIconView.contentTintColor = LinkTheme.cobalt
         }
 
         macNameLabel.font = .systemFont(ofSize: 14, weight: .bold)
@@ -545,7 +558,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         let copyBtn = NSButton(title: "Copy UUID", target: self, action: #selector(copyDeviceId))
         copyBtn.bezelStyle = .inline
         copyBtn.font = .systemFont(ofSize: 10, weight: .bold)
-        copyBtn.contentTintColor = NSColor.systemIndigo
+        copyBtn.contentTintColor = LinkTheme.cobalt
         copyBtn.isBordered = false
 
         let uuidRow = NSStackView(views: [macDetailsLabel, copyBtn])
@@ -584,7 +597,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
             peerStatusDot.heightAnchor.constraint(equalToConstant: 10)
         ])
 
-        let titleLabel = NSTextField(labelWithString: "NEARBY ANDROID DEVICE")
+        let titleLabel = NSTextField(labelWithString: "ANDROID PEER")
         titleLabel.font = .systemFont(ofSize: 10, weight: .bold)
         titleLabel.textColor = NSColor.secondaryLabelColor
 
@@ -595,7 +608,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         if let image = NSImage(systemSymbolName: "iphone", accessibilityDescription: "Android") {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .bold)
             phoneIconView.image = image.withSymbolConfiguration(config)
-            phoneIconView.contentTintColor = NSColor.systemIndigo
+            phoneIconView.contentTintColor = LinkTheme.cobalt
         }
 
         peerNameLabel.font = .systemFont(ofSize: 14, weight: .bold)
@@ -635,7 +648,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         container.spacing = 10
 
         sendButton = ModernButton(
-            title: "Send File to Android",
+            title: "Send to Android",
             systemSymbolName: "paperplane.fill",
             variant: .primary,
             target: self,
@@ -643,7 +656,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         )
 
         refreshButton = ModernButton(
-            title: "Refresh Peer",
+            title: "Scan again",
             systemSymbolName: "arrow.clockwise",
             variant: .secondary,
             target: self,
@@ -651,7 +664,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         )
 
         openFolderButton = ModernButton(
-            title: "Open Downloads",
+            title: "Open files",
             systemSymbolName: "folder.fill",
             variant: .secondary,
             target: self,
@@ -674,7 +687,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         progressIndicator.isHidden = true
 
         statusMessageLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        statusMessageLabel.textColor = NSColor.secondaryLabelColor
+        statusMessageLabel.textColor = NSColor.labelColor
         statusMessageLabel.alignment = .center
 
         container.addArrangedSubview(buttonsRow)
@@ -687,7 +700,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
     private func buildActivityPanel() -> NSView {
         let panel = createCardView()
 
-        let titleLabel = NSTextField(labelWithString: "TRANSFER ACTIVITY & HISTORY")
+        let titleLabel = NSTextField(labelWithString: "TRANSFER LOG")
         titleLabel.font = .systemFont(ofSize: 10, weight: .bold)
         titleLabel.textColor = NSColor.secondaryLabelColor
 
@@ -696,7 +709,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         activityStackView.spacing = 8
         activityStackView.translatesAutoresizingMaskIntoConstraints = false
 
-        let emptyLabel = NSTextField(labelWithString: "No transfers yet in this session.")
+        let emptyLabel = NSTextField(labelWithString: "Your recent transfers will appear here.")
         emptyLabel.font = .systemFont(ofSize: 12, weight: .regular)
         emptyLabel.textColor = NSColor.tertiaryLabelColor
         activityStackView.addArrangedSubview(emptyLabel)
@@ -721,10 +734,10 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
     private func createCardView() -> NSView {
         let card = NSView()
         card.wantsLayer = true
-        card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.6).cgColor
-        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        card.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.94).cgColor
+        card.layer?.borderColor = LinkTheme.line.cgColor
         card.layer?.borderWidth = 1
-        card.layer?.cornerRadius = 14
+        card.layer?.cornerRadius = 12
         return card
     }
 
@@ -768,7 +781,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
 
         let prev = statusMessageLabel.stringValue
         statusMessageLabel.stringValue = "Copied Mac Device UUID to Clipboard!"
-        statusMessageLabel.textColor = NSColor.systemIndigo
+        statusMessageLabel.textColor = LinkTheme.cobalt
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             self.statusMessageLabel.stringValue = prev
@@ -832,6 +845,12 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         }
 
         let fileName = fileURL.lastPathComponent
+        guard let peerId = peer.deviceId,
+              let secret = TrustedPeerStore().find(deviceId: peerId)?.authToken else {
+            statusMessageLabel.stringValue = "Cannot send: Pair with this Android device first."
+            statusMessageLabel.textColor = NSColor.systemRed
+            return
+        }
         statusMessageLabel.stringValue = "Sending \(fileName) to \(peer.deviceName)..."
         statusMessageLabel.textColor = NSColor.labelColor
 
@@ -842,7 +861,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).async {
             let startTime = Date()
             do {
-                try FileSender.send(filePath: fileURL.path, endpoint: peer.endpoint)
+                try FileSender.send(filePath: fileURL.path, endpoint: peer.endpoint, secret: secret)
                 let elapsed = String(format: "%.1fs", Date().timeIntervalSince(startTime))
                 let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
                 let formattedSize = ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
@@ -852,7 +871,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
                     self.progressIndicator.isHidden = true
                     self.sendButton.isEnabled = true
                     self.statusMessageLabel.stringValue = "Successfully sent \(fileName) (\(formattedSize)) to \(peer.deviceName) in \(elapsed)."
-                    self.statusMessageLabel.textColor = NSColor.systemGreen
+                    self.statusMessageLabel.textColor = LinkTheme.signal
 
                     self.addActivityRecord(fileName: fileName, peerName: peer.deviceName, size: formattedSize, isOutgoing: true)
                 }
@@ -885,7 +904,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         if let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
             let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .bold)
             iconView.image = img.withSymbolConfiguration(config)
-            iconView.contentTintColor = isOutgoing ? NSColor.systemIndigo : NSColor.systemGreen
+            iconView.contentTintColor = isOutgoing ? LinkTheme.cobalt : LinkTheme.signal
         }
 
         let label = NSTextField(labelWithString: "\(fileName) • \(size)")

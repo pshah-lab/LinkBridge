@@ -11,26 +11,30 @@ data class DeviceIdentity(
     val platform: String = "android",
     val protocolVersion: Int = 1,
     val features: List<String> = listOf("file-transfer", "display-send", "display-receive"),
-    val authToken: String? = null
+    val authToken: String? = null,
+    val publicKey: String? = null
 )
 
 class IdentityStore(private val context: Context) {
     private val preferences = context.getSharedPreferences("linkbridge_identity", Context.MODE_PRIVATE)
+    private val credentials = CredentialStore(context, "identity")
+    private val pairingKeys = PairingKeyStore()
 
     fun loadOrCreate(): DeviceIdentity {
         val existingId = preferences.getString("device_id", null)
         val deviceId = existingId ?: UUID.randomUUID().toString().also {
             preferences.edit().putString("device_id", it).apply()
         }
-        val existingToken = preferences.getString("auth_token", null)
+        val existingToken = credentials.getString("auth_token")
         val authToken = existingToken ?: generateToken().also {
-            preferences.edit().putString("auth_token", it).apply()
+            credentials.putString("auth_token", it)
         }
 
         return DeviceIdentity(
             deviceId = deviceId,
             deviceName = android.os.Build.MODEL ?: "Android",
-            authToken = authToken
+            authToken = authToken,
+            publicKey = pairingKeys.publicKeyBase64()
         )
     }
 

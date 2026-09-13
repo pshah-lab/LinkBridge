@@ -7,8 +7,10 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.UUID
 
 class ControlClient {
+    private val pairingKeys = PairingKeyStore()
     fun fetchDevice(peer: DiscoveredPeer): Result<DeviceIdentity> {
         return runCatching {
             val url = URL("http://${peer.endpoint}/device")
@@ -34,7 +36,7 @@ class ControlClient {
                 .put("platform", localIdentity.platform)
                 .put("protocolVersion", localIdentity.protocolVersion)
                 .put("features", JSONArray(localIdentity.features))
-                .put("authToken", localIdentity.authToken)
+                .put("publicKey", localIdentity.publicKey ?: pairingKeys.publicKeyBase64())
                 .toString()
                 .toByteArray()
 
@@ -52,7 +54,9 @@ class ControlClient {
                 error("Pair request failed: HTTP ${connection.responseCode}")
             }
             connection.inputStream.use { stream ->
-                JSONObject(stream.bufferedReader().readText()).optString("authToken").ifBlank { null }
+                val response = JSONObject(stream.bufferedReader().readText())
+                val peerPublicKey = response.optString("publicKey").ifBlank { error("Peer did not provide a public key") }
+                pairingKeys.deriveSecret(peerPublicKey)
             }
         }
     }
@@ -70,7 +74,7 @@ class ControlClient {
             require(size >= 0) { "Selected file size is unknown; choose a file provider that exposes file size." }
             trustedPeer?.authToken
                 ?: error("This Mac must be paired again before secure transfer.")
-            val localToken = localIdentity.authToken
+            val localToken = trustedPeer.authToken
                 ?: error("This Android device must be paired again before secure transfer.")
             val sha256 = (openInputStream() ?: error("Could not open selected file")).use { input ->
                 val preHash = MessageDigest.getInstance("SHA-256")
@@ -85,6 +89,7 @@ class ControlClient {
 
             val encryptedFile = File.createTempFile("linkbridge-upload-", ".enc")
             val encryptedMetadata = JSONObject()
+                .put("transferId", UUID.randomUUID().toString())
                 .put("fileName", fileName)
                 .put("bytes", size)
                 .put("sha256", sha256)
@@ -98,11 +103,13 @@ class ControlClient {
                 }
             }
             val timestamp = System.currentTimeMillis().toString()
+            val transferId = JSONObject(String(encryptedMetadata, Charsets.UTF_8)).getString("transferId")
             val signaturePayload = listOf(
                 "POST",
                 "/transfer/upload",
                 localIdentity.deviceId,
                 timestamp,
+                transferId,
                 Security.ENCRYPTION_SCHEME,
                 contentLength.toString()
             ).joinToString("\n")
@@ -117,6 +124,7 @@ class ControlClient {
                 setRequestProperty("Content-Type", "application/octet-stream")
                 setRequestProperty("X-LinkBridge-Device-Id", localIdentity.deviceId)
                 setRequestProperty("X-LinkBridge-Timestamp", timestamp)
+                setRequestProperty("X-LinkBridge-Transfer-Id", transferId)
                 setRequestProperty("X-LinkBridge-Encryption", Security.ENCRYPTION_SCHEME)
                 setRequestProperty("X-LinkBridge-Signature", signature)
                 setRequestProperty("Content-Length", contentLength.toString())
@@ -166,7 +174,8 @@ class ControlClient {
             deviceName = getString("deviceName"),
             platform = getString("platform"),
             protocolVersion = getInt("protocolVersion"),
-            features = features
+            features = features,
+            publicKey = optString("publicKey").ifBlank { null }
         )
     }
 }

@@ -14,26 +14,26 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 object Ui {
-    val BACKGROUND = Color.parseColor("#F8FAFC")
+    val BACKGROUND = Color.parseColor("#F4F5F1")
     val SURFACE = Color.parseColor("#FFFFFF")
-    val INK = Color.parseColor("#0F172A")
-    val MUTED = Color.parseColor("#64748B")
-    val LINE = Color.parseColor("#E2E8F0")
-    val ACCENT = Color.parseColor("#4F46E5")
-    val ACCENT_LIGHT = Color.parseColor("#EEF2FF")
+    val INK = Color.parseColor("#10151F")
+    val MUTED = Color.parseColor("#68717D")
+    val LINE = Color.parseColor("#D9DED8")
+    val ACCENT = Color.parseColor("#3E62E8")
+    val ACCENT_LIGHT = Color.parseColor("#E8EDFF")
 
-    val SUCCESS = Color.parseColor("#10B981")
-    val WARNING = Color.parseColor("#F59E0B")
-    val DANGER = Color.parseColor("#EF4444")
+    val SUCCESS = Color.parseColor("#35C98B")
+    val WARNING = Color.parseColor("#F08A5D")
+    val DANGER = Color.parseColor("#D95C5C")
 
-    val SUCCESS_BG = Color.parseColor("#ECFDF5")
-    val WARNING_BG = Color.parseColor("#FFFBEB")
-    val DANGER_BG = Color.parseColor("#FEF2F2")
+    val SUCCESS_BG = Color.parseColor("#E7F8F0")
+    val WARNING_BG = Color.parseColor("#FFF0E9")
+    val DANGER_BG = Color.parseColor("#FCECEC")
 
     fun rounded(color: Int, radiusDp: Float = 16f, strokeColor: Int? = null, strokeWidthPx: Int = 2): GradientDrawable {
         return GradientDrawable().apply {
             setColor(color)
-            cornerRadius = radiusDp * 2.5f
+            cornerRadius = radiusDp * 2f
             strokeColor?.let { setStroke(strokeWidthPx, it) }
         }
     }
@@ -41,7 +41,7 @@ object Ui {
     fun primaryButtonDrawable(): RippleDrawable {
         val defaultBg = rounded(ACCENT, radiusDp = 12f)
         val mask = rounded(Color.BLACK, radiusDp = 12f)
-        return RippleDrawable(ColorStateList.valueOf(Color.parseColor("#818CF8")), defaultBg, mask)
+        return RippleDrawable(ColorStateList.valueOf(Color.parseColor("#5E83E8")), defaultBg, mask)
     }
 
     fun secondaryButtonDrawable(): RippleDrawable {
@@ -61,7 +61,7 @@ object Ui {
 
     fun TextView.title(textValue: String) {
         text = textValue
-        textSize = 24f
+        textSize = 30f
         setTextColor(INK)
         typeface = Typeface.DEFAULT_BOLD
     }
@@ -77,7 +77,7 @@ object Ui {
 
     fun TextView.body(textValue: String) {
         text = textValue
-        textSize = 14f
+        textSize = 15f
         setTextColor(INK)
         setLineSpacing(2f, 1.0f)
     }

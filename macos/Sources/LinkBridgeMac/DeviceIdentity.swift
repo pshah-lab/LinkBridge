@@ -7,6 +7,7 @@ struct DeviceIdentity: Codable {
     let protocolVersion: Int
     let features: [String]
     let authToken: String
+    let publicKey: String
 }
 
 struct PublicDeviceIdentity: Codable {
@@ -15,10 +16,13 @@ struct PublicDeviceIdentity: Codable {
     let platform: String
     let protocolVersion: Int
     let features: [String]
+    let publicKey: String?
 }
 
 final class IdentityStore {
     private let fileURL: URL
+    private let keychain = KeychainStore()
+    private let pairingKeys = PairingKeyStore()
 
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -29,8 +33,14 @@ final class IdentityStore {
 
     func loadOrCreate() -> DeviceIdentity {
         if let data = try? Data(contentsOf: fileURL) {
-            if let identity = try? JSONDecoder().decode(DeviceIdentity.self, from: data) {
-                return identity
+            if let stored = try? JSONDecoder().decode(PersistedIdentity.self, from: data),
+               let token = keychain.read(account: "identity.authToken") {
+                return stored.identity(authToken: token, publicKey: stored.publicKey ?? pairingKeys.publicKeyBase64)
+            }
+            if let legacy = try? JSONDecoder().decode(DeviceIdentity.self, from: data) {
+                keychain.write(legacy.authToken, account: "identity.authToken")
+                persist(legacy)
+                return legacy
             }
             if let legacy = try? JSONDecoder().decode(LegacyDeviceIdentity.self, from: data) {
                 let migrated = DeviceIdentity(
@@ -39,7 +49,8 @@ final class IdentityStore {
                     platform: legacy.platform,
                     protocolVersion: legacy.protocolVersion,
                     features: legacy.features,
-                    authToken: Security.generateToken()
+                    authToken: Security.generateToken(),
+                    publicKey: pairingKeys.publicKeyBase64
                 )
                 persist(migrated)
                 return migrated
@@ -52,7 +63,8 @@ final class IdentityStore {
             platform: "macos",
             protocolVersion: 1,
             features: ["file-transfer", "display-send", "display-receive"],
-            authToken: Security.generateToken()
+            authToken: Security.generateToken(),
+            publicKey: pairingKeys.publicKeyBase64
         )
 
         persist(identity)
@@ -65,11 +77,35 @@ final class IdentityStore {
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            let data = try JSONEncoder().encode(identity)
+            keychain.write(identity.authToken, account: "identity.authToken")
+            let data = try JSONEncoder().encode(PersistedIdentity(identity: identity))
             try data.write(to: fileURL, options: [.atomic])
         } catch {
             print("Warning: could not persist identity: \(error.localizedDescription)")
         }
+    }
+}
+
+private struct PersistedIdentity: Codable {
+    let deviceId: UUID
+    let deviceName: String
+    let platform: String
+    let protocolVersion: Int
+    let features: [String]
+    let publicKey: String?
+
+    init(identity: DeviceIdentity) {
+        deviceId = identity.deviceId
+        deviceName = identity.deviceName
+        platform = identity.platform
+        protocolVersion = identity.protocolVersion
+        features = identity.features
+        publicKey = identity.publicKey
+    }
+
+    func identity(authToken: String, publicKey: String) -> DeviceIdentity {
+        DeviceIdentity(deviceId: deviceId, deviceName: deviceName, platform: platform,
+                       protocolVersion: protocolVersion, features: features, authToken: authToken, publicKey: publicKey)
     }
 }
 

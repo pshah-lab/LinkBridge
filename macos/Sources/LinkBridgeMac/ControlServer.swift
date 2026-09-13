@@ -10,6 +10,7 @@ final class ControlServer {
     private let trustedPeerStore = TrustedPeerStore()
     private let pairApproval: (IncomingPairRequest) -> Bool
     private let transferApproval: (IncomingTransferRequest) -> Bool
+    private static let replayCache = ReplayCache()
 
     init(
         identity: DeviceIdentity,
@@ -73,7 +74,8 @@ final class ControlServer {
                         deviceName: identity.deviceName,
                         platform: identity.platform,
                         protocolVersion: identity.protocolVersion,
-                        features: identity.features
+                        features: identity.features,
+                        publicKey: identity.publicKey
                     )
                     responseBody = (try? JSONEncoder().encode(publicIdentity)) ?? Data()
                     status = "200 OK"
@@ -99,6 +101,11 @@ final class ControlServer {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
                 if let data {
                     buffer.append(data)
+                }
+
+                if buffer.count > 64 * 1024 {
+                    completion(nil)
+                    return
                 }
 
                 if error != nil {
@@ -133,6 +140,10 @@ final class ControlServer {
         completion: @escaping (HTTPRequest) -> Void
     ) {
         let expectedLength = head.contentLength ?? 0
+        guard expectedLength >= 0, expectedLength <= 64 * 1024 else {
+            completion(HTTPRequest(startLine: head.startLine, headers: head.headers, body: Data()))
+            return
+        }
         var body = head.initialBody
 
         guard body.count < expectedLength else {
@@ -173,7 +184,7 @@ final class ControlServer {
         }
 
         do {
-            let peerIdentity = try JSONDecoder().decode(DeviceIdentity.self, from: body)
+            let peerIdentity = try JSONDecoder().decode(PairRequestIdentity.self, from: body)
             let request = IncomingPairRequest(
                 deviceName: peerIdentity.deviceName,
                 deviceId: peerIdentity.deviceId,
@@ -184,6 +195,12 @@ final class ControlServer {
                 return HTTPResponse(status: "403 Forbidden", body: #"{"error":"pair_declined"}"#.data(using: .utf8)!)
             }
 
+            let macIdentity = IdentityStore().loadOrCreate()
+            guard let peerPublicKey = peerIdentity.publicKey,
+                  let sharedSecret = try? PairingKeyStore().deriveSecret(peerPublicKeyBase64: peerPublicKey) else {
+                return HTTPResponse(status: "400 Bad Request", body: #"{"error":"missing_public_key"}"#.data(using: .utf8)!)
+            }
+
             trustedPeerStore.save(
                 TrustedPeer(
                     deviceId: peerIdentity.deviceId,
@@ -192,11 +209,11 @@ final class ControlServer {
                     protocolVersion: peerIdentity.protocolVersion,
                     features: peerIdentity.features,
                     pairedAt: Date(),
-                    authToken: peerIdentity.authToken
+                    authToken: sharedSecret
                 )
             )
 
-            let json = #"{"status":"paired","authToken":"\#(IdentityStore().loadOrCreate().authToken)"}"#
+            let json = #"{"status":"paired","publicKey":"\#(macIdentity.publicKey)"}"#
             return HTTPResponse(status: "200 OK", body: Data(json.utf8))
         } catch {
             let escaped = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
@@ -217,6 +234,8 @@ final class ControlServer {
         guard let senderId = head.headers["x-linkbridge-device-id"],
               let senderUUID = UUID(uuidString: senderId),
               let timestamp = head.headers["x-linkbridge-timestamp"],
+              let transferId = head.headers["x-linkbridge-transfer-id"],
+              let transferUUID = UUID(uuidString: transferId),
               let encryption = head.headers["x-linkbridge-encryption"],
               let suppliedSignature = head.headers["x-linkbridge-signature"],
               let peer = TrustedPeerStore().find(deviceId: senderUUID),
@@ -230,11 +249,18 @@ final class ControlServer {
             return
         }
 
+        guard let timestampMillis = Int64(timestamp),
+              abs(Date().timeIntervalSince1970 * 1000 - Double(timestampMillis)) <= 5 * 60 * 1000 else {
+            sendJSON(connection: connection, status: "401 Unauthorized", body: #"{"error":"stale_transfer"}"#.data(using: .utf8)!)
+            return
+        }
+
         let signaturePayload = [
             "POST",
             "/transfer/upload",
             senderId,
             timestamp,
+            transferId,
             Security.encryptionScheme,
             String(contentLength)
         ].joined(separator: "\n")
@@ -242,6 +268,12 @@ final class ControlServer {
         guard let expectedSignature = Security.hmacSHA256Base64(secret: authToken, message: signaturePayload),
               Security.timingSafeEquals(expectedSignature, suppliedSignature) else {
             sendJSON(connection: connection, status: "401 Unauthorized", body: #"{"error":"invalid_signature"}"#.data(using: .utf8)!)
+            return
+        }
+
+        let replayKey = "\(senderId):\(transferId)"
+        guard Self.replayCache.reserve(replayKey) else {
+            sendJSON(connection: connection, status: "409 Conflict", body: #"{"error":"replayed_transfer"}"#.data(using: .utf8)!)
             return
         }
 
@@ -275,6 +307,7 @@ final class ControlServer {
                 try decryptor.consume(chunk) { plaintext in
                     if metadata == nil {
                         let parsed = try JSONDecoder().decode(IncomingFileMetadata.self, from: plaintext)
+                        guard parsed.transferId == transferUUID else { throw UploadError.invalidMetadata }
                         let fileName = sanitizeFileName(parsed.fileName)
                         guard !fileName.isEmpty else { throw UploadError.invalidMetadata }
                         let request = IncomingTransferRequest(
@@ -289,7 +322,7 @@ final class ControlServer {
                         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
                         fileHandle = try FileHandle(forWritingTo: fileURL)
                         destination = fileURL
-                        metadata = IncomingFileMetadata(fileName: fileName, bytes: parsed.bytes, sha256: parsed.sha256)
+                        metadata = IncomingFileMetadata(transferId: parsed.transferId, fileName: fileName, bytes: parsed.bytes, sha256: parsed.sha256)
                         return
                     }
 
@@ -455,9 +488,34 @@ private struct HTTPResponse {
 }
 
 private struct IncomingFileMetadata: Codable {
+    let transferId: UUID
     let fileName: String
     let bytes: Int
     let sha256: String
+}
+
+private struct PairRequestIdentity: Codable {
+    let deviceId: UUID
+    let deviceName: String
+    let platform: String
+    let protocolVersion: Int
+    let features: [String]
+    let publicKey: String?
+}
+
+private final class ReplayCache {
+    private var entries: [String: Date] = [:]
+    private let lock = NSLock()
+
+    func reserve(_ key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        entries = entries.filter { $0.value > now }
+        guard entries[key] == nil else { return false }
+        entries[key] = now.addingTimeInterval(10 * 60)
+        return true
+    }
 }
 
 private enum UploadError: Error {
