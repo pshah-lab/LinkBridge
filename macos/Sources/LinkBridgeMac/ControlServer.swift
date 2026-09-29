@@ -15,7 +15,7 @@ final class ControlServer {
     init(
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
-        pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in true },
+        pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in false },
         transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true }
     ) {
         self.identity = identity

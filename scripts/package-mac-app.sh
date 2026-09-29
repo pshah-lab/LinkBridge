@@ -8,7 +8,12 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_APP_DIR="$CONTENTS_DIR/MacOS"
 
 cd "$MACOS_DIR"
-swift build -c release
+# Newer toolchains (Swift 6.4+) can fail in the default build system with
+# "Unknown error parsing property list"; fall back to the native one.
+if ! swift build -c release; then
+    echo "Default build system failed; retrying with --build-system native"
+    swift build -c release --build-system native
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_APP_DIR"
