@@ -24,8 +24,7 @@ class PairingKeyStore {
     }
 
     fun deriveSecret(peerPublicKeyBase64: String): String {
-        val peerBytes = Base64.decode(peerPublicKeyBase64, Base64.NO_WRAP)
-        require(peerBytes.size == 65 && peerBytes[0].toInt() == 4) { "Invalid public key" }
+        val peerBytes = normalizePublicKey(peerPublicKeyBase64)
         val parameters = AlgorithmParameters.getInstance("EC").apply {
             init(ECGenParameterSpec("secp256r1"))
         }.getParameterSpec(java.security.spec.ECParameterSpec::class.java)
@@ -39,6 +38,16 @@ class PairingKeyStore {
         agreement.doPhase(peerKey, true)
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(agreement.generateSecret())
         return Base64.encodeToString(digest, Base64.NO_WRAP)
+    }
+
+    /** Returns the 65-byte uncompressed point; accepts the legacy 64-byte Mac encoding. */
+    fun normalizePublicKey(base64: String): ByteArray {
+        val bytes = Base64.decode(base64, Base64.NO_WRAP)
+        return when {
+            bytes.size == 65 && bytes[0].toInt() == 4 -> bytes
+            bytes.size == 64 -> byteArrayOf(4) + bytes
+            else -> throw IllegalArgumentException("Invalid public key")
+        }
     }
 
     private fun keyPair(): java.security.KeyPair {

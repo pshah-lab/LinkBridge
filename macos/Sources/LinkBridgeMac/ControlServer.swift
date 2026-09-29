@@ -11,6 +11,7 @@ final class ControlServer {
     private let pairApproval: (IncomingPairRequest) -> Bool
     private let transferApproval: (IncomingTransferRequest) -> Bool
     private static let replayCache = ReplayCache()
+    private static let pendingPairings = PendingPairings()
 
     init(
         identity: DeviceIdentity,
@@ -62,6 +63,13 @@ final class ControlServer {
             }
 
             receiveSmallBodyIfNeeded(connection: connection, head: head) { request in
+                if request.startLine.hasPrefix("POST /pair/finalize") {
+                    handlePairFinalize(body: request.body) { response in
+                        sendJSON(connection: connection, status: response.status, body: response.body)
+                    }
+                    return
+                }
+
                 let responseBody: Data
                 let status: String
 
@@ -80,7 +88,11 @@ final class ControlServer {
                     responseBody = (try? JSONEncoder().encode(publicIdentity)) ?? Data()
                     status = "200 OK"
                 } else if request.startLine.hasPrefix("POST /pair/request") {
-                    let pairResponse = handlePairRequest(body: request.body, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval)
+                    let pairResponse = handlePairRequest(body: request.body, identity: identity)
+                    responseBody = pairResponse.body
+                    status = pairResponse.status
+                } else if request.startLine.hasPrefix("POST /pair/confirm") {
+                    let pairResponse = handlePairConfirm(body: request.body, identity: identity, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval)
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else {
@@ -174,51 +186,99 @@ final class ControlServer {
         receiveMore()
     }
 
-    private static func handlePairRequest(
+    private static func handlePairRequest(body: Data, identity: DeviceIdentity) -> HTTPResponse {
+        guard let peerIdentity = try? JSONDecoder().decode(PairRequestIdentity.self, from: body) else {
+            return jsonError("400 Bad Request", "invalid_pair_request")
+        }
+        guard let peerPublicKey = peerIdentity.publicKey,
+              let peerKey = try? PairingKeyStore.parsePublicKey(peerPublicKey),
+              let sharedSecret = try? PairingKeyStore().deriveSecret(peerPublicKeyBase64: peerPublicKey),
+              let macKey = try? PairingKeyStore.parsePublicKey(identity.publicKey) else {
+            return jsonError("400 Bad Request", "missing_public_key")
+        }
+
+        let nonce = PairingCode.randomNonce()
+        let macKeyData = macKey.x963Representation
+        pendingPairings.begin(PendingPairing(
+            peer: peerIdentity,
+            peerKey: peerKey.x963Representation,
+            macKey: macKeyData,
+            sharedSecret: sharedSecret,
+            nonce: nonce
+        ))
+
+        let commitment = PairingCode.commitment(publicKey: macKeyData, nonce: nonce).base64EncodedString()
+        let json = #"{"status":"pending","publicKey":"\#(macKeyData.base64EncodedString())","commitment":"\#(commitment)"}"#
+        return HTTPResponse(status: "200 OK", body: Data(json.utf8))
+    }
+
+    private static func handlePairConfirm(
         body: Data,
+        identity: DeviceIdentity,
         trustedPeerStore: TrustedPeerStore,
         pairApproval: @escaping (IncomingPairRequest) -> Bool
     ) -> HTTPResponse {
-        guard !body.isEmpty else {
-            return HTTPResponse(status: "400 Bad Request", body: #"{"error":"missing_body"}"#.data(using: .utf8)!)
+        guard let confirm = try? JSONDecoder().decode(PairConfirmBody.self, from: body),
+              let peerNonce = Data(base64Encoded: confirm.nonce), peerNonce.count == 32 else {
+            return jsonError("400 Bad Request", "invalid_pair_confirm")
+        }
+        guard let pending = pendingPairings.confirm(deviceId: confirm.deviceId, peerNonce: peerNonce) else {
+            return jsonError("409 Conflict", "no_pending_pairing")
         }
 
-        do {
-            let peerIdentity = try JSONDecoder().decode(PairRequestIdentity.self, from: body)
-            let request = IncomingPairRequest(
-                deviceName: peerIdentity.deviceName,
-                deviceId: peerIdentity.deviceId,
-                platform: peerIdentity.platform
-            )
+        let code = PairingCode.code(
+            initiatorKey: pending.peerKey,
+            responderKey: pending.macKey,
+            initiatorNonce: peerNonce,
+            responderNonce: pending.nonce
+        )
+        let request = IncomingPairRequest(
+            deviceName: pending.peer.deviceName,
+            deviceId: pending.peer.deviceId,
+            platform: pending.peer.platform,
+            code: code
+        )
 
-            guard pairApproval(request) else {
-                return HTTPResponse(status: "403 Forbidden", body: #"{"error":"pair_declined"}"#.data(using: .utf8)!)
-            }
-
-            let macIdentity = IdentityStore().loadOrCreate()
-            guard let peerPublicKey = peerIdentity.publicKey,
-                  let sharedSecret = try? PairingKeyStore().deriveSecret(peerPublicKeyBase64: peerPublicKey) else {
-                return HTTPResponse(status: "400 Bad Request", body: #"{"error":"missing_public_key"}"#.data(using: .utf8)!)
-            }
-
-            trustedPeerStore.save(
-                TrustedPeer(
-                    deviceId: peerIdentity.deviceId,
-                    deviceName: peerIdentity.deviceName,
-                    platform: peerIdentity.platform,
-                    protocolVersion: peerIdentity.protocolVersion,
-                    features: peerIdentity.features,
-                    pairedAt: Date(),
-                    authToken: sharedSecret
+        // Reply first so the phone can show its code while the Mac user decides.
+        DispatchQueue.main.async {
+            let approved = pairApproval(request)
+            if approved {
+                trustedPeerStore.save(
+                    TrustedPeer(
+                        deviceId: pending.peer.deviceId,
+                        deviceName: pending.peer.deviceName,
+                        platform: pending.peer.platform,
+                        protocolVersion: pending.peer.protocolVersion,
+                        features: pending.peer.features,
+                        pairedAt: Date(),
+                        authToken: pending.sharedSecret
+                    )
                 )
-            )
-
-            let json = #"{"status":"paired","publicKey":"\#(macIdentity.publicKey)"}"#
-            return HTTPResponse(status: "200 OK", body: Data(json.utf8))
-        } catch {
-            let escaped = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
-            return HTTPResponse(status: "400 Bad Request", body: #"{"error":"invalid_pair_request","message":"\#(escaped)"}"#.data(using: .utf8)!)
+            }
+            pendingPairings.decide(deviceId: pending.peer.deviceId, approved: approved)
         }
+
+        let json = #"{"status":"awaiting_approval","nonce":"\#(pending.nonce.base64EncodedString())"}"#
+        return HTTPResponse(status: "200 OK", body: Data(json.utf8))
+    }
+
+    private static func handlePairFinalize(body: Data, completion: @escaping (HTTPResponse) -> Void) {
+        guard let finalize = try? JSONDecoder().decode(PairFinalizeBody.self, from: body) else {
+            completion(jsonError("400 Bad Request", "invalid_pair_finalize"))
+            return
+        }
+        let waiting = pendingPairings.awaitDecision(deviceId: finalize.deviceId) { approved in
+            completion(approved
+                ? HTTPResponse(status: "200 OK", body: Data(#"{"status":"paired"}"#.utf8))
+                : jsonError("403 Forbidden", "pair_declined"))
+        }
+        if !waiting {
+            completion(jsonError("409 Conflict", "no_pending_pairing"))
+        }
+    }
+
+    private static func jsonError(_ status: String, _ code: String) -> HTTPResponse {
+        HTTPResponse(status: status, body: Data(#"{"error":"\#(code)"}"#.utf8))
     }
 
     private static func handleUpload(
@@ -503,6 +563,83 @@ private struct PairRequestIdentity: Codable {
     let publicKey: String?
 }
 
+private struct PairConfirmBody: Codable {
+    let deviceId: UUID
+    let nonce: String
+}
+
+private struct PairFinalizeBody: Codable {
+    let deviceId: UUID
+}
+
+private struct PendingPairing {
+    let peer: PairRequestIdentity
+    let peerKey: Data
+    let macKey: Data
+    let sharedSecret: String
+    let nonce: Data
+    var peerNonce: Data?
+    var decision: Bool?
+    var waiters: [(Bool) -> Void] = []
+    var expiresAt = Date().addingTimeInterval(3 * 60)
+
+    init(peer: PairRequestIdentity, peerKey: Data, macKey: Data, sharedSecret: String, nonce: Data) {
+        self.peer = peer
+        self.peerKey = peerKey
+        self.macKey = macKey
+        self.sharedSecret = sharedSecret
+        self.nonce = nonce
+    }
+}
+
+/// In-flight pairings keyed by the phone's device ID. Only touched on the main queue.
+private final class PendingPairings {
+    private var entries: [UUID: PendingPairing] = [:]
+
+    func begin(_ pairing: PendingPairing) {
+        prune()
+        entries[pairing.peer.deviceId] = pairing
+    }
+
+    /// Records the phone's nonce. Only allowed once, so a MITM can't retry nonces.
+    func confirm(deviceId: UUID, peerNonce: Data) -> PendingPairing? {
+        prune()
+        guard var entry = entries[deviceId], entry.peerNonce == nil else { return nil }
+        entry.peerNonce = peerNonce
+        entries[deviceId] = entry
+        return entry
+    }
+
+    func decide(deviceId: UUID, approved: Bool) {
+        guard var entry = entries[deviceId] else { return }
+        entry.decision = approved
+        let waiters = entry.waiters
+        entry.waiters = []
+        entries[deviceId] = entry
+        waiters.forEach { $0(approved) }
+        if !waiters.isEmpty { entries[deviceId] = nil }
+    }
+
+    /// Returns false if there is no confirmed pairing to wait on.
+    func awaitDecision(deviceId: UUID, completion: @escaping (Bool) -> Void) -> Bool {
+        prune()
+        guard var entry = entries[deviceId], entry.peerNonce != nil else { return false }
+        if let decision = entry.decision {
+            entries[deviceId] = nil
+            completion(decision)
+        } else {
+            entry.waiters.append(completion)
+            entries[deviceId] = entry
+        }
+        return true
+    }
+
+    private func prune() {
+        let now = Date()
+        entries = entries.filter { $0.value.expiresAt > now || $0.value.decision == nil && !$0.value.waiters.isEmpty }
+    }
+}
+
 private final class ReplayCache {
     private var entries: [String: Date] = [:]
     private let lock = NSLock()
@@ -528,6 +665,7 @@ struct IncomingPairRequest {
     let deviceName: String
     let deviceId: UUID
     let platform: String
+    let code: String
 }
 
 struct IncomingTransferRequest {

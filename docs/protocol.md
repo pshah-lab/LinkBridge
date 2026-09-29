@@ -28,29 +28,36 @@ The advertised port is the local HTTPS control server port.
 
 ## Pairing
 
-Pairing starts with an out-of-band code shown as text and QR:
+Each device holds a P-256 key-agreement key (Keychain on macOS, AndroidKeyStore on
+Android). Public keys are sent as base64 of the 65-byte uncompressed X9.63 point
+(`0x04 || X || Y`). The shared transfer secret is `SHA-256(ECDH(x-coordinate))`.
 
-```json
-{
-  "protocol": 1,
-  "deviceId": "uuid",
-  "deviceName": "Pratham's MacBook",
-  "host": "192.168.1.24",
-  "port": 49152,
-  "publicKey": "base64-ed25519-public-key"
-}
-```
+The phone initiates. The Mac commits to a random nonce before it sees the phone's
+nonce, so an attacker in the middle cannot try keys offline until the codes match:
+its only option is a one-in-a-million guess.
 
-The peer confirms a six-digit code derived from both public keys. After confirmation, each side stores:
+1. `POST /pair/request` with `{deviceId, deviceName, platform, protocolVersion, features, publicKey}`.
+   The Mac replies `{status: "pending", publicKey, commitment}` where
+   `commitment = SHA-256("linkbridge-commit-v1" || macKey || macNonce)`.
+2. `POST /pair/confirm` with `{deviceId, nonce}` (32 random bytes, base64). Accepted once per request.
+   The Mac replies `{status: "awaiting_approval", nonce: macNonce}` and shows an approval
+   dialog. The phone checks the commitment.
+3. Both devices show
+   `code = uint32_be(SHA-256("linkbridge-code-v1" || phoneKey || macKey || phoneNonce || macNonce)[0..4]) mod 1_000_000`
+   formatted as six digits. The user compares the codes and accepts on both devices.
+4. `POST /pair/finalize` with `{deviceId}` blocks until the Mac user decides:
+   `200 {status: "paired"}` or `403 {error: "pair_declined"}`.
 
-- Peer device ID
-- Peer display name
-- Peer public key
-- Last known endpoint
+Pending pairings expire after three minutes. Headless mode (`LinkBridgeMac` with no
+arguments) declines all pairing; use `LinkBridgeMac ui`.
+
+After confirmation, each side stores the peer device ID, display name and shared secret
+(the secret goes in secure storage).
 
 ## Control Channel
 
-The control channel uses HTTPS or WebSocket over TLS.
+The control channel is plain HTTP on the LAN. Confidentiality and integrity come from
+the application layer: uploads are AES-GCM encrypted and HMAC-signed with the pairing secret.
 
 Initial endpoints:
 
@@ -59,36 +66,33 @@ GET  /health
 GET  /device
 POST /pair/request
 POST /pair/confirm
-POST /transfer/request
-POST /transfer/chunk
-POST /transfer/complete
+POST /pair/finalize
+POST /transfer/upload
 ```
 
 ## File Transfer
 
-File transfer is chunked to support progress, pause/resume, and large files.
+A transfer is a single streaming `POST /transfer/upload` to the receiver's control port.
 
-Transfer request:
+Headers:
 
-```json
-{
-  "transferId": "uuid",
-  "name": "video.mp4",
-  "size": 48129312,
-  "mimeType": "video/mp4",
-  "sha256": "hex"
-}
+```text
+X-LinkBridge-Device-Id:   sender device ID (must be a trusted peer)
+X-LinkBridge-Timestamp:   milliseconds since epoch (must be within 5 minutes)
+X-LinkBridge-Transfer-Id: uuid (rejected if seen in the last 10 minutes)
+X-LinkBridge-Encryption:  aes-gcm-chunked-v1
+X-LinkBridge-Signature:   base64 HMAC-SHA256(secret, "POST\n/transfer/upload\n<deviceId>\n<timestamp>\n<transferId>\n<scheme>\n<contentLength>")
 ```
 
-Chunk request:
+The body is a sequence of records, each `nonce(12) || length(4, big-endian) || ciphertext+tag`,
+with plaintext of at most 1 MiB. The first record is encrypted JSON metadata:
 
 ```json
-{
-  "transferId": "uuid",
-  "offset": 0,
-  "data": "base64"
-}
+{ "transferId": "uuid", "fileName": "video.mp4", "bytes": 48129312, "sha256": "hex" }
 ```
+
+The remaining records are the file contents. The receiver asks its user to accept, then checks
+the length and SHA-256 before it replies `{status: "received", fileName, bytes, sha256}`.
 
 ## Wireless Display
 

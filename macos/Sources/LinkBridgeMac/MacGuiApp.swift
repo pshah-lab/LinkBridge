@@ -359,8 +359,8 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
 
     private func approveIncomingPair(_ request: IncomingPairRequest) -> Bool {
         presentApprovalAlert(
-            title: "Accept pairing request?",
-            message: "\(request.deviceName) wants to pair with this Mac for LinkBridge transfers."
+            title: "Pair with \(request.deviceName)?",
+            message: "Pairing code: \(PairingCode.display(request.code))\n\nOnly accept if your phone shows exactly the same code. A different code means someone else on this network may be intercepting the connection."
         )
     }
 

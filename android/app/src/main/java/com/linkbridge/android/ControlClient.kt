@@ -1,5 +1,6 @@
 package com.linkbridge.android
 
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.InputStream
@@ -27,38 +28,74 @@ class ControlClient {
         }
     }
 
-    fun pair(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<String?> {
+    /** Steps 1-2: exchange keys and nonces. Returns the code to show and the derived secret. */
+    fun beginPairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<PairingSession> {
         return runCatching {
-            val url = URL("http://${peer.endpoint}/pair/request")
-            val body = JSONObject()
-                .put("deviceId", localIdentity.deviceId)
-                .put("deviceName", localIdentity.deviceName)
-                .put("platform", localIdentity.platform)
-                .put("protocolVersion", localIdentity.protocolVersion)
-                .put("features", JSONArray(localIdentity.features))
-                .put("publicKey", localIdentity.publicKey ?: pairingKeys.publicKeyBase64())
-                .toString()
-                .toByteArray()
+            val localKeyBase64 = localIdentity.publicKey ?: pairingKeys.publicKeyBase64()
+            val request = postJson(
+                peer, "/pair/request",
+                JSONObject()
+                    .put("deviceId", localIdentity.deviceId)
+                    .put("deviceName", localIdentity.deviceName)
+                    .put("platform", localIdentity.platform)
+                    .put("protocolVersion", localIdentity.protocolVersion)
+                    .put("features", JSONArray(localIdentity.features))
+                    .put("publicKey", localKeyBase64)
+            )
+            val macKeyBase64 = request.optString("publicKey").ifBlank { error("Mac did not provide a public key") }
+            val commitment = Base64.decode(request.optString("commitment").ifBlank { error("Mac is running an older LinkBridge; update it to pair") }, Base64.NO_WRAP)
+            val macKey = pairingKeys.normalizePublicKey(macKeyBase64)
+            val localKey = pairingKeys.normalizePublicKey(localKeyBase64)
+            val secret = pairingKeys.deriveSecret(macKeyBase64)
 
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 3000
-                readTimeout = 3000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Content-Length", body.size.toString())
+            val localNonce = PairingCode.randomNonce()
+            val confirm = postJson(
+                peer, "/pair/confirm",
+                JSONObject()
+                    .put("deviceId", localIdentity.deviceId)
+                    .put("nonce", Base64.encodeToString(localNonce, Base64.NO_WRAP))
+            )
+            val macNonce = Base64.decode(confirm.optString("nonce"), Base64.NO_WRAP)
+            if (!MessageDigest.isEqual(PairingCode.commitment(macKey, macNonce), commitment)) {
+                error("Pairing check failed: the Mac's reply doesn't match its commitment. Someone may be intercepting this connection.")
             }
 
-            connection.outputStream.use { it.write(body) }
-            if (connection.responseCode !in 200..299) {
-                error("Pair request failed: HTTP ${connection.responseCode}")
-            }
-            connection.inputStream.use { stream ->
-                val response = JSONObject(stream.bufferedReader().readText())
-                val peerPublicKey = response.optString("publicKey").ifBlank { error("Peer did not provide a public key") }
-                pairingKeys.deriveSecret(peerPublicKey)
+            PairingSession(
+                code = PairingCode.code(localKey, macKey, localNonce, macNonce),
+                authToken = secret
+            )
+        }
+    }
+
+    /** Step 3: wait for the Mac user to accept or decline. */
+    fun finalizePairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<Unit> {
+        return runCatching {
+            postJson(peer, "/pair/finalize", JSONObject().put("deviceId", localIdentity.deviceId), readTimeoutMs = 120_000)
+            Unit
+        }
+    }
+
+    private fun postJson(peer: DiscoveredPeer, path: String, json: JSONObject, readTimeoutMs: Int = 5000): JSONObject {
+        val body = json.toString().toByteArray()
+        val connection = (URL("http://${peer.endpoint}$path").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 3000
+            readTimeout = readTimeoutMs
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Content-Length", body.size.toString())
+        }
+        connection.outputStream.use { it.write(body) }
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            val detail = connection.errorStream?.use { it.bufferedReader().readText() }.orEmpty()
+            when {
+                detail.contains("pair_declined") -> error("Pairing was declined on the Mac")
+                detail.contains("no_pending_pairing") -> error("Pairing expired. Start again.")
+                else -> error("$path failed: HTTP $code $detail")
             }
         }
+        return connection.inputStream.use { JSONObject(it.bufferedReader().readText()) }
     }
 
     fun uploadFile(
@@ -183,3 +220,5 @@ class ControlClient {
 private fun ByteArray.toHexString(): String {
     return joinToString(separator = "") { byte -> "%02x".format(byte) }
 }
+
+data class PairingSession(val code: String, val authToken: String)

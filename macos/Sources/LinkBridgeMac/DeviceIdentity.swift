@@ -35,7 +35,8 @@ final class IdentityStore {
         if let data = try? Data(contentsOf: fileURL) {
             if let stored = try? JSONDecoder().decode(PersistedIdentity.self, from: data),
                let token = keychain.read(account: "identity.authToken") {
-                return stored.identity(authToken: token, publicKey: stored.publicKey ?? pairingKeys.publicKeyBase64)
+                // Always derive from the Keychain key; older builds persisted a 64-byte encoding.
+                return stored.identity(authToken: token, publicKey: pairingKeys.publicKeyBase64)
             }
             if let legacy = try? JSONDecoder().decode(DeviceIdentity.self, from: data) {
                 keychain.write(legacy.authToken, account: "identity.authToken")

@@ -462,10 +462,38 @@ class MainActivity : Activity() {
         connectionStatusText.background = Ui.rounded(Ui.WARNING_BG, radiusDp = 14f, strokeColor = Ui.WARNING)
 
         networkExecutor.execute {
-            val result = controlClient.pair(peer, identity)
+            val result = controlClient.beginPairing(peer, identity)
             runOnUiThread {
                 result
-                    .onSuccess { peerAuthToken ->
+                    .onSuccess { session -> confirmPairingCode(peer, device, session) }
+                    .onFailure { error -> showPairingFailure(device, error) }
+            }
+        }
+    }
+
+    private fun confirmPairingCode(peer: DiscoveredPeer, device: DeviceIdentity, session: PairingSession) {
+        val code = PairingCode.display(session.code)
+        connectionStatusText.text = "Pairing code: $code\nCheck that ${device.deviceName} shows the same code."
+        AlertDialog.Builder(this)
+            .setTitle("Pairing code  $code")
+            .setMessage("${device.deviceName} should now show this same code. If it matches, tap \"Codes match\" here and Accept on the Mac.\n\nIf the codes differ, cancel: someone may be intercepting the connection.")
+            .setCancelable(false)
+            .setPositiveButton("Codes match") { _, _ -> finishPairing(peer, device, session) }
+            .setNegativeButton("Cancel") { _, _ ->
+                pairButton.isEnabled = true
+                connectionStatusText.text = "Pairing cancelled"
+                connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
+            }
+            .show()
+    }
+
+    private fun finishPairing(peer: DiscoveredPeer, device: DeviceIdentity, session: PairingSession) {
+        connectionStatusText.text = "Waiting for you to accept on ${device.deviceName}..."
+        networkExecutor.execute {
+            val result = controlClient.finalizePairing(peer, identity)
+            runOnUiThread {
+                result
+                    .onSuccess {
                         trustedPeerStore.save(
                             TrustedPeer(
                                 deviceId = device.deviceId,
@@ -473,7 +501,7 @@ class MainActivity : Activity() {
                                 platform = device.platform,
                                 host = peer.host,
                                 port = peer.port,
-                                authToken = peerAuthToken
+                                authToken = session.authToken
                             )
                         )
                         pairButton.visibility = View.GONE
@@ -482,13 +510,15 @@ class MainActivity : Activity() {
                         connectionStatusText.text = "Trusted connection with ${device.deviceName}\nReady for encrypted file transfer."
                         connectionStatusText.background = Ui.rounded(Ui.SUCCESS_BG, radiusDp = 14f, strokeColor = Ui.SUCCESS)
                     }
-                    .onFailure { error ->
-                        pairButton.isEnabled = true
-                        connectionStatusText.text = "Pairing failed with ${device.deviceName}\n${error.localizedMessage ?: "Unknown error"}"
-                        connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
-                    }
+                    .onFailure { error -> showPairingFailure(device, error) }
             }
         }
+    }
+
+    private fun showPairingFailure(device: DeviceIdentity, error: Throwable) {
+        pairButton.isEnabled = true
+        connectionStatusText.text = "Pairing failed with ${device.deviceName}\n${error.localizedMessage ?: "Unknown error"}"
+        connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
     }
 
     private fun openFilePicker() {
