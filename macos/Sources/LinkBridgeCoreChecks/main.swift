@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 @testable import LinkBridgeCore
 
 // Checks for LinkBridgeCore. Run with `swift run LinkBridgeCoreChecks`.
@@ -196,6 +197,25 @@ DispatchQueue.global().async {
         }.resume()
         done.wait()
         check(status == 200, "health 200, got \(status)")
+    }
+
+    section("Repeated header does not crash the server") {
+        // Raw request: URLSession merges duplicate headers, so write the bytes directly.
+        let raw = "GET /health HTTP/1.1\r\nHost: x\r\nX-Dup: 1\r\nX-Dup: 2\r\n\r\n"
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        let done = DispatchSemaphore(value: 0)
+        var reply = ""
+        connection.start(queue: .global())
+        connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+            reply = String(decoding: data ?? Data(), as: UTF8.self)
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 5)
+        connection.cancel()
+        check(reply.hasPrefix("HTTP/1.1 200"), "server answered the request with a repeated header")
+        let (status, _) = post(port, "/pair/confirm", ["deviceId": UUID().uuidString, "nonce": PairingCode.randomNonce().base64EncodedString()])
+        check(status == 409, "server still running afterwards")
     }
 
     section("Pairing: approve path") {

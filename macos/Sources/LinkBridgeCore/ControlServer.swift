@@ -577,15 +577,18 @@ private struct HTTPRequestHead {
         let headerText = String(decoding: headerData, as: UTF8.self)
         let lines = headerText.components(separatedBy: "\r\n")
         self.startLine = lines.first ?? ""
+        // Keep the first value of a repeated header. uniqueKeysWithValues would trap, letting
+        // any device on the network crash the app with one request.
         self.headers = Dictionary(
-            uniqueKeysWithValues: lines.dropFirst().compactMap { line in
+            lines.dropFirst().compactMap { line in
                 let parts = line.split(separator: ":", maxSplits: 1)
                 guard parts.count == 2 else { return nil }
                 return (
                     parts[0].lowercased(),
                     parts[1].trimmingCharacters(in: .whitespaces)
                 )
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         self.initialBody = initialBody
     }

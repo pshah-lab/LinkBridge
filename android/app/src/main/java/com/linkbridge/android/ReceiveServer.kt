@@ -180,16 +180,17 @@ class ReceiveServer(
                 error("Plaintext length mismatch")
             }
 
-            val values = ContentValues()
-            values.put(MediaStore.Downloads.IS_PENDING, 0)
-            savedUri?.let { resolver.update(it, values, null, null) }
-
+            // Verify before publishing: IS_PENDING keeps the file hidden from other apps until then.
             val sha256 = digest.digest().toHexString()
             if (!sha256.equals(finalMetadata.sha256, ignoreCase = true)) {
                 savedUri?.let { resolver.delete(it, null, null) }
                 socket.writeJsonResponse(400, """{"error":"checksum_mismatch"}""")
                 return
             }
+
+            val values = ContentValues()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            savedUri?.let { resolver.update(it, values, null, null) }
             onStatus("Received ${finalMetadata.fileName}\nSaved to Downloads/LinkBridge.")
             socket.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
