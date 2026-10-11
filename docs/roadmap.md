@@ -25,7 +25,7 @@ Both platforms:
 - TLS transport with certificates exchanged and pinned during pairing (replaces plain
   HTTP + app-layer crypto; required before screen mirroring).
 
-Android (done, pending on-device verification of background and share flows):
+Android (done, verified on device):
 - Target API 36 with AGP 9.4.1 and a Gradle wrapper; minSdk 31 (Android 12+).
 - `LinkBridgeService` foreground service (`connectedDevice`) for discovery, receiving
   and sending; Accept/Decline notifications for files arriving in the background.
