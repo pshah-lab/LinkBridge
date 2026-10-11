@@ -7,7 +7,7 @@ import Foundation
 /// This replaced the macOS Keychain: the app is ad-hoc signed, so every rebuild
 /// looked like a new app and macOS asked for the login-keychain password again.
 /// Old Keychain entries under "com.linkbridge.credentials" are no longer read.
-final class KeychainStore {
+final class CredentialStore {
     private static let lock = NSLock()
     private let fileURL: URL
 

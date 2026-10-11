@@ -1,8 +1,8 @@
 import CryptoKit
 import Foundation
 
-enum FileSender {
-    static func send(filePath: String, endpoint: String, secret: String) throws {
+public enum FileSender {
+    public static func send(filePath: String, endpoint: String, secret: String) throws {
         let fileURL = URL(fileURLWithPath: filePath)
         let fileName = fileURL.lastPathComponent
         let fileSize = try fileSize(at: fileURL)

@@ -1,21 +1,21 @@
 import Foundation
 import Network
 
-struct ResolvedPeer {
-    let deviceName: String
-    let deviceId: UUID?
-    let platform: String?
-    let host: String
-    let port: UInt16
+public struct ResolvedPeer {
+    public let deviceName: String
+    public let deviceId: UUID?
+    public let platform: String?
+    public let host: String
+    public let port: UInt16
 
-    var endpoint: String {
+    public var endpoint: String {
         "\(host):\(port)"
     }
 }
 
-final class PeerResolver: NSObject {
+public final class PeerResolver: NSObject {
     private let browser = NWBrowser(
-        for: .bonjour(type: DiscoveryService.serviceType, domain: nil),
+        for: .bonjour(type: ControlServer.serviceType, domain: nil),
         using: .tcp
     )
     private var netServices: [NetService] = []
@@ -24,13 +24,13 @@ final class PeerResolver: NSObject {
     private let localDeviceId: UUID?
     private let localPort: UInt16?
 
-    init(localDeviceId: UUID? = nil, localPort: UInt16? = nil) {
+    public init(localDeviceId: UUID? = nil, localPort: UInt16? = nil) {
         self.localDeviceId = localDeviceId
         self.localPort = localPort
         super.init()
     }
 
-    func resolveAndroidPeer(timeout: TimeInterval = 5) -> ResolvedPeer? {
+    public func resolveAndroidPeer(timeout: TimeInterval = 5) -> ResolvedPeer? {
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self else { return }
 
@@ -61,7 +61,7 @@ final class PeerResolver: NSObject {
 }
 
 extension PeerResolver: NetServiceDelegate {
-    func netServiceDidResolveAddress(_ sender: NetService) {
+    public func netServiceDidResolveAddress(_ sender: NetService) {
         guard let host = sender.hostName, sender.port > 0 else {
             return
         }
@@ -96,7 +96,7 @@ extension PeerResolver: NetServiceDelegate {
         }
     }
 
-    func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
+    public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
         print("Could not resolve \(sender.name): \(errorDict)")
     }
 }

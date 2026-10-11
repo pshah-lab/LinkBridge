@@ -15,39 +15,48 @@ The first milestone is local pairing and file transfer over the same Wi-Fi netwo
 1. Discover nearby LinkBridge devices on the same LAN.
 2. Pair devices with a short code or QR payload.
 3. Transfer files directly over the local network.
-4. Add Android screen mirroring to Mac after transfer is reliable.
-5. Add Mac screen mirroring to Android after the receive path is stable.
+4. Ship file transfer on the Mac App Store and Google Play.
+5. Add screen mirroring between Mac and Android (both directions) on the same pairing.
 
 ## Local Development
 
 ### macOS
 
-```sh
-cd macos
-swift build
-swift run LinkBridgeMac
-```
+The Swift package in `macos/` has four targets:
 
-Run the native Mac window:
+- `LinkBridgeCore`: protocol, encryption, pairing, discovery and transfer (no UI)
+- `LinkBridge`: the Mac app (sandboxed, ships in the App Store bundle)
+- `linkbridge-cli`: developer tool for a headless server and command-line sends
+- `LinkBridgeCoreChecks`: checks for the core library
 
-```sh
-cd macos
-swift run LinkBridgeMac ui
-```
-
-Send a file from Mac to the first discovered Android peer:
-
-```sh
-cd macos
-swift run LinkBridgeMac send-peer /path/to/file
-```
-
-Package the Mac window as a clickable app:
+Build and open the app:
 
 ```sh
 ./scripts/package-mac-app.sh
 open dist/LinkBridge.app
 ```
+
+Run the checks (they use a throwaway home folder, never your real keys or Downloads):
+
+```sh
+cd macos
+swift run LinkBridgeCoreChecks
+```
+
+Developer tool:
+
+```sh
+cd macos
+swift run linkbridge-cli                     # headless server, declines new pairings
+swift run linkbridge-cli send-peer /path/to/file
+```
+
+On Swift 6.4 the default build system can fail with "Unknown error parsing property
+list"; add `--build-system native` to `swift build` / `swift run`. The packaging
+script does this automatically.
+
+Version, bundle ID and build number live in `macos/version.env`. Sandbox permissions
+are in `macos/LinkBridge.entitlements`.
 
 ### Android
 

@@ -1,8 +1,8 @@
 import Foundation
+import LinkBridgeCore
 
-final class LinkBridgeMacApp {
+final class HeadlessServer {
     private let identityStore = IdentityStore()
-    private let discoveryService: DiscoveryService
     private let controlServer: ControlServer
 
     init() {
@@ -12,24 +12,21 @@ final class LinkBridgeMacApp {
         self.controlServer = ControlServer(
             identity: identity,
             pairApproval: { request in
-                print("Declined pairing request from \(request.deviceName). Run `LinkBridgeMac ui` to pair new devices.")
+                print("Declined pairing request from \(request.deviceName). Use the LinkBridge app to pair new devices.")
                 return false
             }
         )
-        self.discoveryService = DiscoveryService(identity: identity, port: controlServer.port)
     }
 
     func run() {
-        controlServer.start()
-        discoveryService.start()
-
-        print("LinkBridge Mac")
+        print("LinkBridge headless server")
         print("Device: \(controlServer.identity.deviceName)")
         print("Device ID: \(controlServer.identity.deviceId.uuidString)")
-        print("Control server: http://localhost:\(controlServer.port)")
-        print("Advertising: \(DiscoveryService.serviceType)")
         print("Headless mode: accepting files from paired devices only; new pairing is disabled.")
-        print("Press Ctrl+C to stop.")
+        controlServer.start { port in
+            guard let port else { exit(1) }
+            print("Listening on port \(port), advertising \(ControlServer.serviceType). Press Ctrl+C to stop.")
+        }
 
         dispatchMain()
     }

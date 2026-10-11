@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for the Mac App Store. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!-- Accept pairing and transfers from the phone (control server). -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <!-- Connect to the phone to send files. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- Received files are saved to ~/Downloads/LinkBridge. -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+    <!-- Files the user picks or drags in to send. -->
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+</dict>
+</plist>

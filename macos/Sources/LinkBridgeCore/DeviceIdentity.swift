@@ -1,13 +1,13 @@
 import Foundation
 
-struct DeviceIdentity: Codable {
-    let deviceId: UUID
-    let deviceName: String
-    let platform: String
-    let protocolVersion: Int
-    let features: [String]
-    let authToken: String
-    let publicKey: String
+public struct DeviceIdentity: Codable {
+    public let deviceId: UUID
+    public let deviceName: String
+    public let platform: String
+    public let protocolVersion: Int
+    public let features: [String]
+    public let authToken: String
+    public let publicKey: String
 }
 
 struct PublicDeviceIdentity: Codable {
@@ -19,27 +19,27 @@ struct PublicDeviceIdentity: Codable {
     let publicKey: String?
 }
 
-final class IdentityStore {
+public final class IdentityStore {
     private let fileURL: URL
-    private let keychain = KeychainStore()
+    private let credentials = CredentialStore()
     private let pairingKeys = PairingKeyStore()
 
-    init() {
+    public init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.fileURL = appSupport
             .appendingPathComponent("LinkBridge", isDirectory: true)
             .appendingPathComponent("identity.json")
     }
 
-    func loadOrCreate() -> DeviceIdentity {
+    public func loadOrCreate() -> DeviceIdentity {
         if let data = try? Data(contentsOf: fileURL) {
             if let stored = try? JSONDecoder().decode(PersistedIdentity.self, from: data),
-               let token = keychain.read(account: "identity.authToken") {
-                // Always derive from the Keychain key; older builds persisted a 64-byte encoding.
+               let token = credentials.read(account: "identity.authToken") {
+                // Always derive from the stored private key; older builds persisted a 64-byte encoding.
                 return stored.identity(authToken: token, publicKey: pairingKeys.publicKeyBase64)
             }
             if let legacy = try? JSONDecoder().decode(DeviceIdentity.self, from: data) {
-                keychain.write(legacy.authToken, account: "identity.authToken")
+                credentials.write(legacy.authToken, account: "identity.authToken")
                 persist(legacy)
                 return legacy
             }
@@ -78,7 +78,7 @@ final class IdentityStore {
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            keychain.write(identity.authToken, account: "identity.authToken")
+            credentials.write(identity.authToken, account: "identity.authToken")
             let data = try JSONEncoder().encode(PersistedIdentity(identity: identity))
             try data.write(to: fileURL, options: [.atomic])
         } catch {

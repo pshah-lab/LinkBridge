@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 final class PairingKeyStore {
-    private let keychain = KeychainStore()
+    private let credentials = CredentialStore()
     private let account = "identity.pairingPrivateKey"
 
     /// Uncompressed X9.63 point (0x04 || X || Y), matching what Android sends.
@@ -26,11 +26,11 @@ final class PairingKeyStore {
     }
 
     private var privateKey: P256.KeyAgreement.PrivateKey {
-        if let stored = keychain.read(account: account),
+        if let stored = credentials.read(account: account),
            let data = Data(base64Encoded: stored),
            let key = try? P256.KeyAgreement.PrivateKey(rawRepresentation: data) { return key }
         let key = P256.KeyAgreement.PrivateKey()
-        keychain.write(key.rawRepresentation.base64EncodedString(), account: account)
+        credentials.write(key.rawRepresentation.base64EncodedString(), account: account)
         return key
     }
 }

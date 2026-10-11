@@ -24,7 +24,8 @@ protocol=1
 features=file-transfer,display-send,display-receive
 ```
 
-The advertised port is the local HTTPS control server port.
+The advertised port is the control server port. The Mac prefers 49152 and picks any
+free port if that one is taken; peers must use the port from discovery.
 
 ## Pairing
 
@@ -48,8 +49,8 @@ its only option is a one-in-a-million guess.
 4. `POST /pair/finalize` with `{deviceId}` blocks until the Mac user decides:
    `200 {status: "paired"}` or `403 {error: "pair_declined"}`.
 
-Pending pairings expire after three minutes. Headless mode (`LinkBridgeMac` with no
-arguments) declines all pairing; use `LinkBridgeMac ui`.
+Pending pairings expire after three minutes. Headless mode (`linkbridge-cli`) declines
+all pairing; pair from the LinkBridge app.
 
 After confirmation, each side stores the peer device ID, display name and shared secret
 (the secret goes in secure storage).

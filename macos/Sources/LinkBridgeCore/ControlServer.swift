@@ -2,46 +2,101 @@ import Foundation
 import Network
 import CryptoKit
 
-final class ControlServer {
-    let identity: DeviceIdentity
-    let port: UInt16
+public final class ControlServer {
+    public static let serviceType = "_linkbridge._tcp"
 
-    private let listener: NWListener
+    public let identity: DeviceIdentity
+    /// The port actually bound. Equals the preferred port unless it was taken.
+    public private(set) var port: UInt16
+
+    private let preferredPort: UInt16
+    private var listener: NWListener?
     private let trustedPeerStore = TrustedPeerStore()
     private let pairApproval: (IncomingPairRequest) -> Bool
     private let transferApproval: (IncomingTransferRequest) -> Bool
     private static let replayCache = ReplayCache()
     private static let pendingPairings = PendingPairings()
 
-    init(
+    public init(
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
         pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in false },
         transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true }
     ) {
         self.identity = identity
+        self.preferredPort = preferredPort
         self.port = preferredPort
         self.pairApproval = pairApproval
         self.transferApproval = transferApproval
-
-        do {
-            self.listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: preferredPort)!)
-        } catch {
-            fatalError("Could not start control server on port \(preferredPort): \(error)")
-        }
     }
 
-    func start() {
+    /// Listens on the preferred port, or any free port if it is taken, and
+    /// advertises `_linkbridge._tcp` over Bonjour on whichever port it got.
+    /// `onReady` runs on the main queue with the bound port, or nil on failure.
+    public func start(onReady: @escaping (UInt16?) -> Void = { _ in }) {
+        start(on: NWEndpoint.Port(rawValue: preferredPort) ?? .any, onReady: onReady)
+    }
+
+    public func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+
+    private func start(on requestedPort: NWEndpoint.Port, onReady: @escaping (UInt16?) -> Void) {
+        let listener: NWListener
+        do {
+            listener = try NWListener(using: .tcp, on: requestedPort)
+        } catch {
+            print("Control server: could not create listener: \(error)")
+            onReady(nil)
+            return
+        }
+        self.listener = listener
+
+        listener.service = NWListener.Service(
+            name: identity.deviceName,
+            type: Self.serviceType,
+            domain: nil,
+            txtRecord: Self.txtRecord(for: identity)
+        )
+
         listener.newConnectionHandler = { [identity, trustedPeerStore, pairApproval, transferApproval] connection in
             connection.start(queue: .main)
             Self.handle(connection: connection, identity: identity, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval, transferApproval: transferApproval)
         }
 
-        listener.stateUpdateHandler = { state in
-            print("Control server: \(state)")
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.port = listener?.port?.rawValue ?? self.port
+                print("Control server: listening on port \(self.port)")
+                onReady(self.port)
+            case let .failed(error):
+                listener?.cancel()
+                if case .posix(.EADDRINUSE) = error, requestedPort != .any {
+                    print("Control server: port \(requestedPort) is in use, picking another")
+                    self.start(on: .any, onReady: onReady)
+                } else {
+                    print("Control server failed: \(error)")
+                    onReady(nil)
+                }
+            default:
+                break
+            }
         }
 
         listener.start(queue: .main)
+    }
+
+    private static func txtRecord(for identity: DeviceIdentity) -> NWTXTRecord {
+        var txt = NWTXTRecord()
+        txt["deviceId"] = identity.deviceId.uuidString
+        txt["deviceName"] = identity.deviceName
+        txt["platform"] = identity.platform
+        txt["protocol"] = String(identity.protocolVersion)
+        txt["features"] = identity.features.joined(separator: ",")
+        return txt
     }
 
     private static func handle(
@@ -661,16 +716,17 @@ private enum UploadError: Error {
     case transferDeclined
 }
 
-struct IncomingPairRequest {
-    let deviceName: String
-    let deviceId: UUID
-    let platform: String
-    let code: String
+public struct IncomingPairRequest {
+    public let deviceName: String
+    public let deviceId: UUID
+    public let platform: String
+    /// Six-digit pairing code; show it with `PairingCode.display(_:)`.
+    public let code: String
 }
 
-struct IncomingTransferRequest {
-    let senderName: String
-    let senderId: UUID
-    let fileName: String
-    let bytes: Int
+public struct IncomingTransferRequest {
+    public let senderName: String
+    public let senderId: UUID
+    public let fileName: String
+    public let bytes: Int
 }

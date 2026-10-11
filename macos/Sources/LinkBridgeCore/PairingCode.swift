@@ -9,7 +9,7 @@ import Foundation
 /// 2. Android -> /pair/confirm: its nonce. Mac replies with macNonce; Android
 ///    checks the commitment. Both sides now show the same code.
 /// 3. Android -> /pair/finalize: waits for the Mac user's decision.
-enum PairingCode {
+public enum PairingCode {
     static func commitment(publicKey: Data, nonce: Data) -> Data {
         var hasher = SHA256()
         hasher.update(data: Data("linkbridge-commit-v1".utf8))
@@ -34,7 +34,7 @@ enum PairingCode {
     }
 
     /// "123456" -> "123 456"
-    static func display(_ code: String) -> String {
+    public static func display(_ code: String) -> String {
         guard code.count == 6 else { return code }
         return "\(code.prefix(3)) \(code.suffix(3))"
     }

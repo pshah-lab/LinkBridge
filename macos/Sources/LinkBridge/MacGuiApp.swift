@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LinkBridgeCore
 import UniformTypeIdentifiers
 
 private enum LinkTheme {
@@ -295,7 +296,6 @@ final class ModernButton: NSButton {
 final class MacGuiApp: NSObject, NSApplicationDelegate {
     private let identityStore = IdentityStore()
     private var controlServer: ControlServer?
-    private var discoveryService: DiscoveryService?
     private var window: NSWindow?
 
     private let macNameLabel = NSTextField(labelWithString: "Mac Receiver")
@@ -348,13 +348,14 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
                 self?.approveIncomingTransfer(request) ?? false
             }
         )
-        let discovery = DiscoveryService(identity: identity, port: server.port)
-
-        server.start()
-        discovery.start()
-
         self.controlServer = server
-        self.discoveryService = discovery
+        server.start { [weak self] port in
+            if port == nil {
+                self?.statusMessageLabel.stringValue = "Could not start the receiver. Check that LinkBridge is allowed under System Settings > Privacy & Security > Local Network."
+                self?.statusMessageLabel.textColor = NSColor.systemRed
+            }
+            self?.updateMacIdentityInfo()
+        }
     }
 
     private func approveIncomingPair(_ request: IncomingPairRequest) -> Bool {

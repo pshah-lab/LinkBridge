@@ -27,7 +27,7 @@ This document lists all required software, dependencies, environment configurati
 
 | Component | Required Version | Description | Installation Command |
 | :--- | :--- | :--- | :--- |
-| **Xcode Command Line Tools** | System Default (Swift 5.9+) | Swift toolchain to build `LinkBridgeMac` executable | `xcode-select --install` |
+| **Xcode Command Line Tools** | System Default (Swift 5.9+) | Swift toolchain to build the `LinkBridge` app | `xcode-select --install` |
 | **Java Development Kit** | OpenJDK 17 | Required for Android build system | `brew install openjdk@17` |
 | **Gradle** | 8.x+ | Build automation tool for Android | `brew install gradle` |
 | **Android Command Line Tools** | Latest | Package manager (`sdkmanager`, `adb`) | `brew install --cask android-commandlinetools` |
@@ -62,13 +62,7 @@ Run the included verification script:
 ```
 
 ### Step B: Build & Run macOS App
-Build and run the native macOS desktop window:
-```sh
-cd macos
-swift run LinkBridgeMac ui
-```
-
-Package into a standalone application (`dist/LinkBridge.app`):
+Package into a sandboxed application (`dist/LinkBridge.app`):
 ```sh
 ./scripts/package-mac-app.sh
 open dist/LinkBridge.app
