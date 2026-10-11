@@ -2,7 +2,6 @@ package com.linkbridge.android
 
 import android.content.ContentValues
 import android.content.Context
-import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
@@ -155,10 +154,8 @@ class ReceiveServer(
                         val values = ContentValues().apply {
                             put(MediaStore.Downloads.DISPLAY_NAME, parsed.fileName)
                             put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LinkBridge")
-                                put(MediaStore.Downloads.IS_PENDING, 1)
-                            }
+                            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LinkBridge")
+                            put(MediaStore.Downloads.IS_PENDING, 1)
                         }
 
                         savedUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -183,11 +180,9 @@ class ReceiveServer(
                 error("Plaintext length mismatch")
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = ContentValues()
-                values.put(MediaStore.Downloads.IS_PENDING, 0)
-                savedUri?.let { resolver.update(it, values, null, null) }
-            }
+            val values = ContentValues()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            savedUri?.let { resolver.update(it, values, null, null) }
 
             val sha256 = digest.digest().toHexString()
             if (!sha256.equals(finalMetadata.sha256, ignoreCase = true)) {

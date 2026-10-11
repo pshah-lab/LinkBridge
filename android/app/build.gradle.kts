@@ -8,7 +8,9 @@ android {
 
     defaultConfig {
         applicationId = "com.linkbridge.android"
-        minSdk = 26
+        // Android 12+: the pairing key uses KeyProperties.PURPOSE_AGREE_KEY (API 31) and
+        // received files go through MediaStore.Downloads (API 29).
+        minSdk = 31
         // Google Play requires API 36 for new apps and updates since 2026-08-31.
         targetSdk = 36
         versionCode = 2

@@ -5,19 +5,20 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import android.Manifest
 import android.app.AlertDialog
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.ContextCompat
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.database.Cursor
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -26,17 +27,13 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.text.DecimalFormat
 import java.util.concurrent.Executors
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.TimeUnit
 import com.linkbridge.android.Ui.body
 import com.linkbridge.android.Ui.pad
 import com.linkbridge.android.Ui.section
 import com.linkbridge.android.Ui.title
 
 class MainActivity : ComponentActivity() {
-    private lateinit var discoveryService: DiscoveryService
     private lateinit var peersContainer: LinearLayout
     private lateinit var emptyPeersText: TextView
     private lateinit var connectionStatusText: TextView
@@ -47,10 +44,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var receiveStatusText: TextView
     private lateinit var activityLogContainer: LinearLayout
     private lateinit var progressBar: ProgressBar
+    private lateinit var notificationHint: TextView
 
     private lateinit var identity: DeviceIdentity
     private lateinit var trustedPeerStore: TrustedPeerStore
-    private lateinit var receiveServer: ReceiveServer
     private val controlClient = ControlClient()
     private val networkExecutor = Executors.newSingleThreadExecutor()
     private var selectedPeer: DiscoveredPeer? = null
@@ -65,24 +62,6 @@ class MainActivity : ComponentActivity() {
 
         identity = IdentityStore(this).loadOrCreate()
         trustedPeerStore = TrustedPeerStore(this)
-
-        discoveryService = DiscoveryService(this, identity, CONTROL_PORT) { peers ->
-            runOnUiThread { renderPeers(peers) }
-        }
-        discoveryService.start()
-
-        receiveServer = ReceiveServer(
-            context = this,
-            port = CONTROL_PORT,
-            onStatus = { status ->
-                runOnUiThread {
-                    receiveStatusText.text = status
-                    receiveStatusText.background = Ui.rounded(Ui.SURFACE, radiusDp = 14f, strokeColor = Ui.LINE)
-                    addActivityLog(status, isOutgoing = false)
-                }
-            },
-            onApprovalRequested = { request -> approveIncomingTransfer(request) }
-        )
 
         val rootScroll = ScrollView(this).apply {
             setBackgroundColor(Ui.BACKGROUND)
@@ -212,6 +191,16 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(receiveStatusText)
 
+        notificationHint = TextView(this).apply {
+            body("")
+            textSize = 13f
+            setTextColor(Ui.WARNING)
+            setPadding(4, 10, 4, 0)
+            visibility = View.GONE
+            setOnClickListener { onNotificationHintTapped() }
+        }
+        root.addView(notificationHint)
+
         // 6. Activity History Section
         root.addView(TextView(this).apply {
             section("RECENT ACTIVITY")
@@ -224,14 +213,89 @@ class MainActivity : ComponentActivity() {
         root.addView(activityLogContainer)
 
         val initialHistoryEmpty = TextView(this).apply {
-            body("Your recent transfers will appear here.")
+            body(EMPTY_HISTORY_TEXT)
             setTextColor(Ui.MUTED)
             textSize = 13f
         }
         activityLogContainer.addView(initialHistoryEmpty)
 
         setContentView(rootScroll)
-        receiveServer.start()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // The service owns discovery, receiving and sending so they survive leaving the app.
+        LinkBridgeService.start(this)
+        LinkBridgeHub.addListener(hubListener)
+        updateNotificationPermission(requestIfNeeded = true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        LinkBridgeHub.foregroundApprover = LinkBridgeHub.Approver(::approveIncomingTransfer)
+    }
+
+    override fun onPause() {
+        LinkBridgeHub.foregroundApprover = null
+        super.onPause()
+    }
+
+    override fun onStop() {
+        LinkBridgeHub.removeListener(hubListener)
+        super.onStop()
+    }
+
+    private val hubListener = object : LinkBridgeHub.Listener {
+        override fun onPeersChanged(peers: List<DiscoveredPeer>) = renderPeers(peers)
+
+        override fun onReceiveStatus(status: String) {
+            receiveStatusText.text = status
+        }
+
+        override fun onActivityLogged(message: String, isOutgoing: Boolean) = addActivityLog(message, isOutgoing)
+
+        override fun onSendStateChanged(state: LinkBridgeHub.SendState) = renderSendState(state)
+    }
+
+    /**
+     * Notifications carry the Accept/Decline prompt when a file arrives in the background.
+     * Ask once; after a refusal, show a hint instead of asking again.
+     */
+    private fun updateNotificationPermission(requestIfNeeded: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val permission = Manifest.permission.POST_NOTIFICATIONS
+        val prefs = getSharedPreferences("linkbridge_ui", MODE_PRIVATE)
+        when {
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED -> {
+                notificationHint.visibility = View.GONE
+            }
+            shouldShowRequestPermissionRationale(permission) -> {
+                notificationHint.text = "Notifications are off, so files sent while LinkBridge is in the background are declined. Tap to turn them on."
+                notificationHint.visibility = View.VISIBLE
+            }
+            requestIfNeeded && !prefs.getBoolean(KEY_ASKED_NOTIFICATIONS, false) -> {
+                prefs.edit().putBoolean(KEY_ASKED_NOTIFICATIONS, true).apply()
+                notificationPermission.launch(permission)
+            }
+            prefs.getBoolean(KEY_ASKED_NOTIFICATIONS, false) -> {
+                notificationHint.text = "Notifications are off, so files sent while LinkBridge is in the background are declined. Tap to open settings."
+                notificationHint.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        updateNotificationPermission(requestIfNeeded = false)
+    }
+
+    private fun onNotificationHintTapped() {
+        val permission = Manifest.permission.POST_NOTIFICATIONS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && shouldShowRequestPermissionRationale(permission)) {
+            notificationPermission.launch(permission)
+        } else {
+            // Permanently denied: only Settings can turn it back on.
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        }
     }
 
     private fun buildHeaderView(): View {
@@ -334,20 +398,14 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, "Copied Android Device UUID!", Toast.LENGTH_SHORT).show()
     }
 
-    private fun approveIncomingTransfer(request: IncomingTransferRequest): Boolean {
-        val result = SynchronousQueue<Boolean>()
-
-        runOnUiThread {
-            AlertDialog.Builder(this)
-                .setTitle("Accept incoming file?")
-                .setMessage("${request.senderName} wants to send ${request.fileName} (${formatBytes(request.bytes)}).")
-                .setPositiveButton("Accept") { _, _ -> result.offer(true) }
-                .setNegativeButton("Decline") { _, _ -> result.offer(false) }
-                .setOnCancelListener { result.offer(false) }
-                .show()
-        }
-
-        return result.poll(60, TimeUnit.SECONDS) ?: false
+    private fun approveIncomingTransfer(request: IncomingTransferRequest, answer: (Boolean) -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("Accept incoming file?")
+            .setMessage("${request.senderName} wants to send ${request.fileName} (${formatBytes(request.bytes)}).")
+            .setPositiveButton("Accept") { _, _ -> answer(true) }
+            .setNegativeButton("Decline") { _, _ -> answer(false) }
+            .setOnCancelListener { answer(false) }
+            .show()
     }
 
     private fun renderPeers(peers: List<DiscoveredPeer>) {
@@ -450,22 +508,9 @@ class MainActivity : ComponentActivity() {
         connectionStatusText.text = "Refreshing nearby Mac scan..."
         connectionStatusText.background = Ui.rounded(Ui.WARNING_BG, radiusDp = 14f, strokeColor = Ui.WARNING)
 
-        runCatching { discoveryService.stop() }
-
-        Handler(Looper.getMainLooper()).postDelayed({
-            runCatching {
-                discoveryService = DiscoveryService(this, identity, CONTROL_PORT) { peers ->
-                    runOnUiThread { renderPeers(peers) }
-                }
-                discoveryService.start()
-                Toast.makeText(this, "Refreshing mDNS device scan...", Toast.LENGTH_SHORT).show()
-            }.onFailure { error ->
-                connectionStatusText.text = "Refresh failed\n${error.localizedMessage ?: "Unknown error"}"
-                connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
-            }
-
-            refreshScanButton.isEnabled = true
-        }, 500)
+        LinkBridgeService.start(this)
+        LinkBridgeHub.rescan()
+        refreshScanButton.postDelayed({ refreshScanButton.isEnabled = true }, 500)
     }
 
     private fun pairSelectedPeer() {
@@ -542,52 +587,49 @@ class MainActivity : ComponentActivity() {
 
     private fun sendSelectedFile(uri: Uri) {
         val peer = selectedPeer ?: return
-        val fileInfo = fileInfo(uri)
+        val trustedPeer = selectedDevice?.let { trustedPeerStore.find(it.deviceId) }
+        if (trustedPeer == null) {
+            connectionStatusText.text = "Pair with ${peer.deviceName} before sending."
+            connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
+            return
+        }
 
+        // The send runs in LinkBridgeService, so it keeps going if you leave the app.
+        if (!LinkBridgeHub.send(peer, trustedPeer, uri)) {
+            connectionStatusText.text = "LinkBridge is not running. Reopen the app and try again."
+            connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
+            return
+        }
         sendFileButton.isEnabled = false
         progressBar.visibility = View.VISIBLE
-        connectionStatusText.text = "Sending ${fileInfo.name}..."
-        connectionStatusText.background = Ui.rounded(Ui.WARNING_BG, radiusDp = 14f, strokeColor = Ui.WARNING)
+    }
 
-        networkExecutor.execute {
-            val trustedPeer = selectedDevice?.let { trustedPeerStore.find(it.deviceId) }
-            val result = controlClient.uploadFile(
-                peer = peer,
-                fileName = fileInfo.name,
-                size = fileInfo.size,
-                localIdentity = identity,
-                trustedPeer = trustedPeer,
-                openInputStream = { contentResolver.openInputStream(uri) }
-            ) { sent, total ->
-                    runOnUiThread {
-                        connectionStatusText.text = "Sending ${fileInfo.name}\n${formatBytes(sent)} / ${formatBytes(total)}"
-                    }
-                }
-
-            runOnUiThread {
+    private fun renderSendState(state: LinkBridgeHub.SendState) {
+        when (state) {
+            is LinkBridgeHub.SendState.Progress -> {
+                sendFileButton.isEnabled = false
+                progressBar.visibility = View.VISIBLE
+                connectionStatusText.text = "Sending ${state.fileName}\n${formatBytes(state.sent)} / ${formatBytes(state.total)}"
+                connectionStatusText.background = Ui.rounded(Ui.WARNING_BG, radiusDp = 14f, strokeColor = Ui.WARNING)
+            }
+            is LinkBridgeHub.SendState.Done -> {
                 sendFileButton.isEnabled = true
                 progressBar.visibility = View.GONE
-                result
-                    .onSuccess {
-                        val formattedSize = formatBytes(fileInfo.size)
-                        connectionStatusText.text = "Successfully sent ${fileInfo.name} ($formattedSize)\nSaved on Mac in Downloads/LinkBridge."
-                        connectionStatusText.background = Ui.rounded(Ui.SUCCESS_BG, radiusDp = 14f, strokeColor = Ui.SUCCESS)
-                        addActivityLog("Sent ${fileInfo.name} ($formattedSize) to ${peer.deviceName}", isOutgoing = true)
-                    }
-                    .onFailure { error ->
-                        connectionStatusText.text = "File send failed\n${error.localizedMessage ?: "Unknown error"}"
-                        connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
-                    }
+                connectionStatusText.text = "Sent ${state.fileName} (${formatBytes(state.bytes)})\nSaved on ${state.peerName} in Downloads/LinkBridge."
+                connectionStatusText.background = Ui.rounded(Ui.SUCCESS_BG, radiusDp = 14f, strokeColor = Ui.SUCCESS)
+            }
+            is LinkBridgeHub.SendState.Failed -> {
+                sendFileButton.isEnabled = true
+                progressBar.visibility = View.GONE
+                connectionStatusText.text = "Could not send ${state.fileName}\n${state.message}"
+                connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
             }
         }
     }
 
     private fun addActivityLog(message: String, isOutgoing: Boolean) {
-        if (activityLogContainer.childCount > 0) {
-            val first = activityLogContainer.getChildAt(0) as? TextView
-            if (first?.text?.contains("No transfers recorded") == true) {
-                activityLogContainer.removeView(first)
-            }
+        (activityLogContainer.getChildAt(0) as? TextView)?.let { first ->
+            if (first.text == EMPTY_HISTORY_TEXT) activityLogContainer.removeView(first)
         }
 
         val logItem = TextView(this).apply {
@@ -607,59 +649,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun fileInfo(uri: Uri): SelectedFileInfo {
-        var name = "selected-file"
-        var size = -1L
-
-        val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
-        cursor?.use {
-            if (it.moveToFirst()) {
-                val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                val sizeIndex = it.getColumnIndex(OpenableColumns.SIZE)
-                if (nameIndex >= 0) name = it.getString(nameIndex)
-                if (sizeIndex >= 0 && !it.isNull(sizeIndex)) size = it.getLong(sizeIndex)
-            }
-        }
-
-        if (size < 0) {
-            contentResolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
-                if (descriptor.length >= 0) {
-                    size = descriptor.length
-                }
-            }
-        }
-
-        return SelectedFileInfo(name = name, size = size)
-    }
-
-    private fun formatBytes(bytes: Long): String {
-        if (bytes < 0) return "unknown"
-        if (bytes < 1024) return "$bytes B"
-
-        val units = arrayOf("KB", "MB", "GB")
-        var value = bytes.toDouble() / 1024.0
-        var unitIndex = 0
-        while (value >= 1024.0 && unitIndex < units.lastIndex) {
-            value /= 1024.0
-            unitIndex += 1
-        }
-
-        return "${DecimalFormat("#,##0.#").format(value)} ${units[unitIndex]}"
-    }
-
     override fun onDestroy() {
-        discoveryService.stop()
-        receiveServer.stop()
         networkExecutor.shutdownNow()
         super.onDestroy()
     }
 
     companion object {
-        private const val CONTROL_PORT = 49153
+        private const val EMPTY_HISTORY_TEXT = "Your recent transfers will appear here."
+        private const val KEY_ASKED_NOTIFICATIONS = "asked_notifications"
     }
 }
-
-private data class SelectedFileInfo(
-    val name: String,
-    val size: Long
-)
