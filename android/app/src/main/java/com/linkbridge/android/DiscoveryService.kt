@@ -19,6 +19,7 @@ class DiscoveryService(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val peers = linkedMapOf<String, DiscoveredPeer>()
     private val resolvingServices = mutableSetOf<String>()
+    private val infoCallbacks = mutableMapOf<String, NsdManager.ServiceInfoCallback>()
     private var isStarted = false
 
     private val registrationListener = object : NsdManager.RegistrationListener {
@@ -103,6 +104,10 @@ class DiscoveryService(
         isStarted = false
         peers.clear()
         resolvingServices.clear()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            infoCallbacks.values.forEach { runCatching { nsdManager.unregisterServiceInfoCallback(it) } }
+        }
+        infoCallbacks.clear()
         publishPeers()
 
         runCatching { nsdManager.unregisterService(registrationListener) }
@@ -110,8 +115,13 @@ class DiscoveryService(
     }
 
     private fun resolve(serviceInfo: NsdServiceInfo) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            watch(serviceInfo)
+            return
+        }
         if (!resolvingServices.add(serviceInfo.serviceName)) return
 
+        @Suppress("DEPRECATION")
         nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                 resolvingServices.remove(serviceInfo.serviceName)
@@ -130,9 +140,41 @@ class DiscoveryService(
         })
     }
 
+    /**
+     * API 34+: follow the service instead of resolving once, so a Mac that restarts on a
+     * different port (it falls back when 49152 is taken) is picked up without rescanning.
+     */
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private fun watch(serviceInfo: NsdServiceInfo) {
+        val name = serviceInfo.serviceName
+        if (infoCallbacks.containsKey(name)) return
+        val callback = object : NsdManager.ServiceInfoCallback {
+            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+                infoCallbacks.remove(name)
+                Log.e(TAG, "Watch failed for $name: $errorCode")
+            }
+
+            override fun onServiceUpdated(updated: NsdServiceInfo) {
+                val peer = updated.toPeer() ?: return
+                if (peer.deviceId == identity.deviceId) return
+                peers[name] = peer
+                publishPeers()
+            }
+
+            override fun onServiceLost() {
+                peers.remove(name)
+                publishPeers()
+            }
+
+            override fun onServiceInfoCallbackUnregistered() {}
+        }
+        infoCallbacks[name] = callback
+        runCatching { nsdManager.registerServiceInfoCallback(serviceInfo, mainHandler::post, callback) }
+            .onFailure { infoCallbacks.remove(name); Log.e(TAG, "Could not watch $name", it) }
+    }
+
     private fun NsdServiceInfo.toPeer(): DiscoveredPeer? {
         val hostAddress = hostAddress() ?: return null
-        val attributes = attributesCompat()
         val deviceId = attributes["deviceId"]?.decodeToString()
         val deviceName = attributes["deviceName"]?.decodeToString()?.ifBlank { serviceName } ?: serviceName
         val platform = attributes["platform"]?.decodeToString()
@@ -153,14 +195,6 @@ class DiscoveryService(
         } else {
             @Suppress("DEPRECATION")
             host
-        }
-    }
-
-    private fun NsdServiceInfo.attributesCompat(): Map<String, ByteArray> {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            attributes
-        } else {
-            emptyMap()
         }
     }
 

@@ -1,6 +1,10 @@
 package com.linkbridge.android
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -31,7 +35,7 @@ import com.linkbridge.android.Ui.pad
 import com.linkbridge.android.Ui.section
 import com.linkbridge.android.Ui.title
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private lateinit var discoveryService: DiscoveryService
     private lateinit var peersContainer: LinearLayout
     private lateinit var emptyPeersText: TextView
@@ -51,9 +55,13 @@ class MainActivity : Activity() {
     private val networkExecutor = Executors.newSingleThreadExecutor()
     private var selectedPeer: DiscoveredPeer? = null
     private var selectedDevice: DeviceIdentity? = null
+    private val pickFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(::sendSelectedFile)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
 
         identity = IdentityStore(this).loadOrCreate()
         trustedPeerStore = TrustedPeerStore(this)
@@ -86,6 +94,13 @@ class MainActivity : Activity() {
             setPadding(24, 34, 24, 28)
         }
         rootScroll.addView(root)
+
+        // Since API 35 the app always draws behind the system bars; keep content clear of them.
+        ViewCompat.setOnApplyWindowInsetsListener(rootScroll) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            root.setPadding(24 + bars.left, 34 + bars.top, 24 + bars.right, 28 + bars.bottom)
+            insets
+        }
 
         // 1. Header View
         root.addView(buildHeaderView())
@@ -522,20 +537,7 @@ class MainActivity : Activity() {
     }
 
     private fun openFilePicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-        }
-        startActivityForResult(intent, REQUEST_PICK_FILE)
-    }
-
-    @Deprecated("Deprecated by Android framework; sufficient for this Activity.")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode != REQUEST_PICK_FILE || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
-        sendSelectedFile(uri)
+        pickFile.launch(arrayOf("*/*"))
     }
 
     private fun sendSelectedFile(uri: Uri) {
@@ -654,7 +656,6 @@ class MainActivity : Activity() {
 
     companion object {
         private const val CONTROL_PORT = 49153
-        private const val REQUEST_PICK_FILE = 1001
     }
 }
 
