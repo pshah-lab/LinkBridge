@@ -25,13 +25,14 @@ Both platforms:
 - TLS transport with certificates exchanged and pinned during pairing (replaces plain
   HTTP + app-layer crypto; required before screen mirroring).
 
-Android:
-- Target API 36 (required by Google Play since 2026-08-31).
-- Run transfers in a foreground service / user-initiated data transfer job so they
-  survive the app going to the background.
-- Android share sheet ("Share → LinkBridge").
-- Replace deprecated APIs (`startActivityForResult`), drop unused permissions.
-- Unit tests, including the pairing code vector shared with the Mac checks.
+Android (done, pending on-device verification of background and share flows):
+- Target API 36 with AGP 9.4.1 and a Gradle wrapper; minSdk 31 (Android 12+).
+- `LinkBridgeService` foreground service (`connectedDevice`) for discovery, receiving
+  and sending; Accept/Decline notifications for files arriving in the background.
+- Share sheet ("Share → Send to Mac"), content:// streams from other apps only.
+- Modern APIs (ComponentActivity, result contracts, edge-to-edge, ServiceInfoCallback),
+  unused permissions removed, data extraction rules.
+- Unit tests sharing vectors with the Mac checks.
 
 ## Milestone 2: Transfer polish
 
@@ -47,6 +48,9 @@ Android:
 - App Store privacy label and Play Data safety form.
 - Screenshots, descriptions, review notes and a demo video showing both devices
   (App Review cannot pair a phone themselves).
+- Play Console foreground service declaration for `connectedDevice`, with a video of
+  receiving a file while the app is in the background.
+- App icons (the Android app and Mac app have none yet).
 - Google Play closed test: 12 testers for 14 consecutive days (new personal accounts).
 - Mac App Store submission and Play production release.
 
