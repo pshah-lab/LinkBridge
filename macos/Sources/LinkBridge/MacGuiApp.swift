@@ -362,6 +362,9 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         presentApprovalAlert(
             title: "Pair with \(request.deviceName)?",
             message: "Pairing code: \(PairingCode.display(request.code))\n\nOnly accept if your phone shows exactly the same code. A different code means someone else on this network may be intercepting the connection."
+                + (request.replacesExisting
+                    ? "\n\n\(request.deviceName) is already paired. Accepting replaces its existing pairing. If you didn't just start pairing on that phone, decline."
+                    : "")
         )
     }
 
@@ -852,6 +855,11 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
             statusMessageLabel.textColor = NSColor.systemRed
             return
         }
+        guard let secureEndpoint = peer.secureEndpoint else {
+            statusMessageLabel.stringValue = "Cannot send: update LinkBridge on \(peer.deviceName) to the secure transfer version."
+            statusMessageLabel.textColor = NSColor.systemRed
+            return
+        }
         statusMessageLabel.stringValue = "Sending \(fileName) to \(peer.deviceName)..."
         statusMessageLabel.textColor = NSColor.labelColor
 
@@ -862,7 +870,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).async {
             let startTime = Date()
             do {
-                try FileSender.send(filePath: fileURL.path, endpoint: peer.endpoint, secret: secret)
+                try FileSender.send(filePath: fileURL.path, endpoint: secureEndpoint, secret: secret)
                 let elapsed = String(format: "%.1fs", Date().timeIntervalSince(startTime))
                 let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
                 let formattedSize = ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)

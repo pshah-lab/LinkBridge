@@ -128,10 +128,11 @@ section("Decryption rejects tampering, truncation and the wrong key") {
 
 // MARK: - Live server checks (run off the main thread; the server uses the main queue)
 
-func startServer(preferredPort: UInt16, approve: @escaping () -> Bool, lastCode: @escaping (String) -> Void = { _ in }) -> (ControlServer, UInt16) {
+func startServer(preferredPort: UInt16, approve: @escaping () -> Bool, lastRequest: @escaping (IncomingPairRequest) -> Void = { _ in }) -> (ControlServer, UInt16) {
     let identity = IdentityStore().loadOrCreate()
-    let server = ControlServer(identity: identity, preferredPort: preferredPort, pairApproval: { request in
-        lastCode(request.code)
+    // Port 0 for TLS too, so the checks never collide with a running LinkBridge app.
+    let server = ControlServer(identity: identity, preferredPort: preferredPort, preferredSecurePort: 0, pairApproval: { request in
+        lastRequest(request)
         return approve()
     })
     let ready = DispatchSemaphore(value: 0)
@@ -159,11 +160,53 @@ func post(_ port: UInt16, _ path: String, _ json: [String: Any]) -> (Int, [Strin
     return result
 }
 
+/// Opens a TLS-PSK connection and sends GET /health. Returns the HTTP status, or nil if
+/// the handshake was rejected.
+func tlsHealth(port: UInt16, identity: String, psk: Data) -> Int? {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!,
+                                  using: SecureTransport.clientParameters(identity: identity, psk: psk))
+    let done = DispatchSemaphore(value: 0)
+    var status: Int?
+    connection.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+            connection.send(content: Data("GET /health HTTP/1.1\r\nHost: x\r\n\r\n".utf8), completion: .contentProcessed { _ in })
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+                let line = String(decoding: data ?? Data(), as: UTF8.self).split(separator: " ")
+                status = line.count > 1 ? Int(line[1]) : nil
+                done.signal()
+            }
+        case .failed, .waiting:
+            done.signal()
+        default:
+            break
+        }
+    }
+    connection.start(queue: .global())
+    _ = done.wait(timeout: .now() + 5)
+    connection.cancel()
+    return status
+}
+
+func rawRequest(port: UInt16, _ text: String) -> String {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+    let done = DispatchSemaphore(value: 0)
+    var reply = ""
+    connection.start(queue: .global())
+    connection.send(content: Data(text.utf8), completion: .contentProcessed { _ in })
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+        reply = String(decoding: data ?? Data(), as: UTF8.self)
+        done.signal()
+    }
+    _ = done.wait(timeout: .now() + 5)
+    connection.cancel()
+    return reply
+}
+
 /// Plays the phone's side of the three-step pairing protocol.
-func pairAsPhone(port: UInt16) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
+func pairAsPhone(port: UInt16, id: UUID = UUID()) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
     let phone = P256.KeyAgreement.PrivateKey()
     let phoneKey = phone.publicKey.x963Representation
-    let id = UUID()
     let (_, r1) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Check Phone", "platform": "android",
                                                "protocolVersion": 1, "features": [], "publicKey": phoneKey.base64EncodedString()])
     let macKey = Data(base64Encoded: r1["publicKey"] as? String ?? "") ?? Data()
@@ -182,8 +225,9 @@ func pairAsPhone(port: UInt16) -> (finalizeStatus: Int, phoneCode: String, phone
 
 DispatchQueue.global().async {
     var approve = true
-    var macCode = ""
-    let (server, port) = startServer(preferredPort: 0, approve: { approve }, lastCode: { macCode = $0 })
+    var lastRequest: IncomingPairRequest?
+    var macCode: String { lastRequest?.code ?? "" }
+    let (server, port) = startServer(preferredPort: 0, approve: { approve }, lastRequest: { lastRequest = $0 })
 
     section("Server binds and answers /health") {
         check(port != 0, "bound a port")
@@ -201,18 +245,7 @@ DispatchQueue.global().async {
 
     section("Repeated header does not crash the server") {
         // Raw request: URLSession merges duplicate headers, so write the bytes directly.
-        let raw = "GET /health HTTP/1.1\r\nHost: x\r\nX-Dup: 1\r\nX-Dup: 2\r\n\r\n"
-        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
-        let done = DispatchSemaphore(value: 0)
-        var reply = ""
-        connection.start(queue: .global())
-        connection.send(content: Data(raw.utf8), completion: .contentProcessed { _ in })
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
-            reply = String(decoding: data ?? Data(), as: UTF8.self)
-            done.signal()
-        }
-        _ = done.wait(timeout: .now() + 5)
-        connection.cancel()
+        let reply = rawRequest(port: port, "GET /health HTTP/1.1\r\nHost: x\r\nX-Dup: 1\r\nX-Dup: 2\r\n\r\n")
         check(reply.hasPrefix("HTTP/1.1 200"), "server answered the request with a repeated header")
         let (status, _) = post(port, "/pair/confirm", ["deviceId": UUID().uuidString, "nonce": PairingCode.randomNonce().base64EncodedString()])
         check(status == 409, "server still running afterwards")
@@ -224,6 +257,24 @@ DispatchQueue.global().async {
         check(result.finalizeStatus == 200, "finalize 200, got \(result.finalizeStatus)")
         check(result.phoneCode == macCode, "phone and Mac show the same code")
         check(TrustedPeerStore().find(deviceId: result.deviceId)?.authToken == result.phoneSecret, "Mac stored the same secret")
+        check(lastRequest?.replacesExisting == false, "first pairing is not flagged as replacing a device")
+
+        // The TLS listener restarts after pairing; the new phone's key must work right away.
+        let identity = SecureTransport.identity(for: result.deviceId.uuidString)
+        let psk = SecureTransport.psk(fromSecret: result.phoneSecret)!
+        var status: Int?
+        for _ in 0..<20 where status == nil {
+            status = tlsHealth(port: server.securePort, identity: identity, psk: psk)
+            if status == nil { Thread.sleep(forTimeInterval: 0.15) }
+        }
+        check(status == 200, "newly paired phone connects over TLS, got \(String(describing: status))")
+        check(tlsHealth(port: server.securePort, identity: identity, psk: Data(repeating: 9, count: 32)) == nil, "wrong key rejected over TLS")
+        check(tlsHealth(port: server.securePort, identity: "stranger", psk: psk) == nil, "unknown identity rejected over TLS")
+        check(tlsHealth(port: server.securePort, identity: identity.uppercased(), psk: psk) == nil, "identity is matched exactly (lowercase)")
+
+        let again = pairAsPhone(port: port, id: result.deviceId)
+        check(again.finalizeStatus == 200, "re-pairing the same device succeeds when approved")
+        check(lastRequest?.replacesExisting == true, "re-pairing is flagged as replacing the existing device")
     }
 
     section("Pairing: decline path") {
@@ -241,17 +292,45 @@ DispatchQueue.global().async {
         DispatchQueue.main.sync { second.stop() }
     }
 
-    section("Encrypted upload is received, verified and saved") {
+    section("TLS key derivation matches the independently computed vector") {
+        // HKDF-SHA256 of the 0x01..0x20 test secret; computed with Python hmac/hashlib.
+        let psk = SecureTransport.psk(fromSecret: Data((1...32).map { UInt8($0) }).base64EncodedString())
+        check(psk?.map { String(format: "%02x", $0) }.joined() == "f2a4ca2992eb3c84f5f991f285f26f6d40bd530fdaf194a4a7e3b44051da76a1", "psk vector")
+        check(SecureTransport.identity(for: "C9BBD429-A655-4891-9965-5C24D4C0EC98") == "c9bbd429-a655-4891-9965-5c24d4c0ec98", "identity is lowercased")
+    }
+
+    section("Plain port refuses uploads") {
+        let reply = rawRequest(port: port, "POST /transfer/upload HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+        check(reply.hasPrefix("HTTP/1.1 426"), "plain upload gets 426 Upgrade Required")
+        check(reply.contains("tls_required"), "response says TLS is required")
+    }
+
+    section("Encrypted upload is received over TLS, verified and saved") {
         // Trust this device as its own peer so FileSender can sign the upload.
         let identity = IdentityStore().loadOrCreate()
         let secret = Security.generateToken()
         TrustedPeerStore().save(TrustedPeer(deviceId: identity.deviceId, deviceName: "Self", platform: "macos",
                                             protocolVersion: 1, features: [], pairedAt: Date(), authToken: secret))
+        let reloaded = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { server.reloadTrustedPeers { reloaded.signal() } }
+        reloaded.wait()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("check-\(UUID().uuidString).bin")
         let payload = Data((0..<(Security.chunkSize + 999)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
         try payload.write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(port)", secret: secret)
+        do {
+            try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(port)", secret: secret)
+            check(false, "upload to the plain port must fail")
+        } catch {
+            check("\(error)".contains("Secure connection failed") || "\(error)".contains("did not respond"), "upload to the plain port fails the TLS handshake")
+        }
+        do {
+            try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(server.securePort)", secret: Security.generateToken())
+            check(false, "upload with an unpaired key must fail")
+        } catch {
+            check("\(error)".contains("Secure connection failed"), "upload with the wrong key fails the TLS handshake")
+        }
+        try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(server.securePort)", secret: secret)
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)
         check((try? Data(contentsOf: downloads)) == payload, "saved file matches")

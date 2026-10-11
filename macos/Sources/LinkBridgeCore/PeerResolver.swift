@@ -7,9 +7,16 @@ public struct ResolvedPeer {
     public let platform: String?
     public let host: String
     public let port: UInt16
+    /// TLS-PSK port for transfers (protocol 2). Nil means the peer runs an older app.
+    public let tlsPort: UInt16?
 
     public var endpoint: String {
         "\(host):\(port)"
+    }
+
+    /// `host:tlsPort` for transfers, or nil if the peer's app predates TLS.
+    public var secureEndpoint: String? {
+        tlsPort.map { "\(host):\($0)" }
     }
 }
 
@@ -68,6 +75,7 @@ extension PeerResolver: NetServiceDelegate {
 
         let txt = sender.txtRecordData().map(NetService.dictionary(fromTXTRecord:)) ?? [:]
         let platform = txt["platform"].map { String(decoding: $0, as: UTF8.self) }
+        let tlsPort = txt["tlsPort"].flatMap { UInt16(String(decoding: $0, as: UTF8.self)) }
         let deviceName = txt["deviceName"].map { String(decoding: $0, as: UTF8.self) } ?? sender.name
         let deviceId = txt["deviceId"]
             .map { String(decoding: $0, as: UTF8.self) }
@@ -87,7 +95,8 @@ extension PeerResolver: NetServiceDelegate {
                 deviceId: deviceId,
                 platform: platform,
                 host: host,
-                port: UInt16(sender.port)
+                port: UInt16(sender.port),
+                tlsPort: tlsPort
             )
         )
 

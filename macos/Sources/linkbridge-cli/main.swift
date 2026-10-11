@@ -5,7 +5,7 @@ import LinkBridgeCore
 //
 //   linkbridge-cli                      headless server (declines new pairings)
 //   linkbridge-cli send-peer <file>     send to the first paired Android phone found
-//   linkbridge-cli send <host:port> <file>
+//   linkbridge-cli send <host:tlsPort> <file>
 
 func fail(_ message: String) -> Never {
     print(message)
@@ -30,9 +30,12 @@ case "send-peer" where arguments.count == 2:
     guard let peer = PeerResolver(localDeviceId: identity.deviceId).resolveAndroidPeer() else {
         fail("Send failed: no Android LinkBridge peer found on local Wi-Fi")
     }
-    print("Resolved \(peer.deviceName) at \(peer.endpoint)")
+    guard let secureEndpoint = peer.secureEndpoint else {
+        fail("Send failed: update LinkBridge on \(peer.deviceName) to the secure transfer version")
+    }
+    print("Resolved \(peer.deviceName) at \(secureEndpoint) (TLS)")
     do {
-        try FileSender.send(filePath: arguments[1], endpoint: peer.endpoint, secret: secret(for: peer))
+        try FileSender.send(filePath: arguments[1], endpoint: secureEndpoint, secret: secret(for: peer))
     } catch {
         fail("Send failed: \(error)")
     }
@@ -48,6 +51,6 @@ default:
     Usage:
       linkbridge-cli                       run a headless server
       linkbridge-cli send-peer <file>      send to the first paired Android phone
-      linkbridge-cli send <host:port> <file>
+      linkbridge-cli send <host:tlsPort> <file>
     """)
 }

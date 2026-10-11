@@ -4,45 +4,73 @@ import CryptoKit
 
 public final class ControlServer {
     public static let serviceType = "_linkbridge._tcp"
+    /// 2: transfers go over the TLS-PSK port advertised as `tlsPort`; the plain port only
+    /// serves device info and pairing.
+    public static let protocolVersion = 2
 
     public let identity: DeviceIdentity
-    /// The port actually bound. Equals the preferred port unless it was taken.
+    /// Plain port (device info and pairing). Equals the preferred port unless it was taken.
     public private(set) var port: UInt16
+    /// TLS-PSK port for transfers between paired devices.
+    public private(set) var securePort: UInt16
 
     private let preferredPort: UInt16
+    private let preferredSecurePort: UInt16
     private var listener: NWListener?
+    private var secureListener: NWListener?
     private let trustedPeerStore = TrustedPeerStore()
     private let pairApproval: (IncomingPairRequest) -> Bool
     private let transferApproval: (IncomingTransferRequest) -> Bool
     private static let replayCache = ReplayCache()
     private static let pendingPairings = PendingPairings()
+    /// Main queue only, like all request handling.
+    private static var approvalInProgress = false
 
     public init(
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
+        preferredSecurePort: UInt16 = 49162,
         pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in false },
         transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true }
     ) {
         self.identity = identity
         self.preferredPort = preferredPort
+        self.preferredSecurePort = preferredSecurePort
         self.port = preferredPort
+        self.securePort = preferredSecurePort
         self.pairApproval = pairApproval
         self.transferApproval = transferApproval
     }
 
-    /// Listens on the preferred port, or any free port if it is taken, and
-    /// advertises `_linkbridge._tcp` over Bonjour on whichever port it got.
-    /// `onReady` runs on the main queue with the bound port, or nil on failure.
+    /// Starts the TLS listener, then the plain listener, each on its preferred port or any
+    /// free port if taken, and advertises `_linkbridge._tcp` with both ports.
+    /// `onReady` runs on the main queue with the plain port, or nil on failure.
     public func start(onReady: @escaping (UInt16?) -> Void = { _ in }) {
-        start(on: NWEndpoint.Port(rawValue: preferredPort) ?? .any, onReady: onReady)
+        startSecure(on: NWEndpoint.Port(rawValue: preferredSecurePort) ?? .any) { [weak self] securePort in
+            guard let self, securePort != nil else { onReady(nil); return }
+            self.startPlain(on: NWEndpoint.Port(rawValue: self.preferredPort) ?? .any, onReady: onReady)
+        }
     }
 
     public func stop() {
         listener?.cancel()
         listener = nil
+        secureListener?.cancel()
+        secureListener = nil
     }
 
-    private func start(on requestedPort: NWEndpoint.Port, onReady: @escaping (UInt16?) -> Void) {
+    /// TLS-PSK options are fixed when a listener starts, so restart the secure listener to
+    /// pick up a newly paired device. Open transfers keep running on their connections.
+    public func reloadTrustedPeers(completion: @escaping () -> Void = {}) {
+        secureListener?.cancel()
+        secureListener = nil
+        startSecure(on: NWEndpoint.Port(rawValue: securePort) ?? .any) { [weak self] _ in
+            self?.updateAdvertisement()
+            completion()
+        }
+    }
+
+    private func startPlain(on requestedPort: NWEndpoint.Port, onReady: @escaping (UInt16?) -> Void) {
         let listener: NWListener
         do {
             listener = try NWListener(using: .tcp, on: requestedPort)
@@ -52,17 +80,14 @@ public final class ControlServer {
             return
         }
         self.listener = listener
+        listener.service = advertisedService()
 
-        listener.service = NWListener.Service(
-            name: identity.deviceName,
-            type: Self.serviceType,
-            domain: nil,
-            txtRecord: Self.txtRecord(for: identity)
-        )
-
-        listener.newConnectionHandler = { [identity, trustedPeerStore, pairApproval, transferApproval] connection in
+        listener.newConnectionHandler = { [weak self, identity, trustedPeerStore, pairApproval] connection in
             connection.start(queue: .main)
-            Self.handle(connection: connection, identity: identity, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval, transferApproval: transferApproval)
+            Self.handlePlain(
+                connection: connection, identity: identity, trustedPeerStore: trustedPeerStore,
+                pairApproval: pairApproval, onPaired: { self?.reloadTrustedPeers() }
+            )
         }
 
         listener.stateUpdateHandler = { [weak self, weak listener] state in
@@ -70,13 +95,13 @@ public final class ControlServer {
             switch state {
             case .ready:
                 self.port = listener?.port?.rawValue ?? self.port
-                print("Control server: listening on port \(self.port)")
+                print("Control server: listening on port \(self.port), TLS on \(self.securePort)")
                 onReady(self.port)
             case let .failed(error):
                 listener?.cancel()
                 if case .posix(.EADDRINUSE) = error, requestedPort != .any {
                     print("Control server: port \(requestedPort) is in use, picking another")
-                    self.start(on: .any, onReady: onReady)
+                    self.startPlain(on: .any, onReady: onReady)
                 } else {
                     print("Control server failed: \(error)")
                     onReady(nil)
@@ -89,22 +114,91 @@ public final class ControlServer {
         listener.start(queue: .main)
     }
 
-    private static func txtRecord(for identity: DeviceIdentity) -> NWTXTRecord {
+    private func startSecure(on requestedPort: NWEndpoint.Port, onReady: @escaping (UInt16?) -> Void) {
+        let keys = trustedPeerStore.load().compactMap { peer -> (identity: String, psk: Data)? in
+            guard let secret = peer.authToken, let psk = SecureTransport.psk(fromSecret: secret) else { return nil }
+            return (SecureTransport.identity(for: peer.deviceId.uuidString), psk)
+        }
+        let listener: NWListener
+        do {
+            listener = try NWListener(using: SecureTransport.serverParameters(keys: keys), on: requestedPort)
+        } catch {
+            print("Secure server: could not create listener: \(error)")
+            onReady(nil)
+            return
+        }
+        self.secureListener = listener
+
+        listener.newConnectionHandler = { [transferApproval] connection in
+            connection.start(queue: .main)
+            Self.handleSecure(connection: connection, transferApproval: transferApproval)
+        }
+
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.securePort = listener?.port?.rawValue ?? self.securePort
+                onReady(self.securePort)
+            case let .failed(error):
+                listener?.cancel()
+                if case .posix(.EADDRINUSE) = error, requestedPort != .any {
+                    print("Secure server: port \(requestedPort) is in use, picking another")
+                    self.startSecure(on: .any, onReady: onReady)
+                } else {
+                    print("Secure server failed: \(error)")
+                    onReady(nil)
+                }
+            default:
+                break
+            }
+        }
+
+        listener.start(queue: .main)
+    }
+
+    private func updateAdvertisement() {
+        listener?.service = advertisedService()
+    }
+
+    private func advertisedService() -> NWListener.Service {
         var txt = NWTXTRecord()
         txt["deviceId"] = identity.deviceId.uuidString
         txt["deviceName"] = identity.deviceName
         txt["platform"] = identity.platform
-        txt["protocol"] = String(identity.protocolVersion)
+        txt["protocol"] = String(Self.protocolVersion)
+        txt["tlsPort"] = String(securePort)
         txt["features"] = identity.features.joined(separator: ",")
-        return txt
+        return NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil, txtRecord: txt)
     }
 
-    private static func handle(
+    /// TLS-PSK connections from paired devices: transfers only.
+    private static func handleSecure(
+        connection: NWConnection,
+        transferApproval: @escaping (IncomingTransferRequest) -> Bool
+    ) {
+        receiveRequestHead(connection: connection) { head in
+            guard let head else {
+                connection.cancel()
+                return
+            }
+            if head.startLine.hasPrefix("POST /transfer/upload") {
+                handleUpload(connection: connection, head: head, transferApproval: transferApproval)
+            } else if head.startLine.hasPrefix("GET /health") {
+                sendJSON(connection: connection, status: "200 OK", body: Data(#"{"status":"ok","tls":true}"#.utf8))
+            } else {
+                sendJSON(connection: connection, status: "404 Not Found", body: Data(#"{"error":"not_found"}"#.utf8))
+            }
+        }
+    }
+
+    /// Plain connections: device info and pairing (protected by the six-digit code).
+    private static func handlePlain(
         connection: NWConnection,
         identity: DeviceIdentity,
         trustedPeerStore: TrustedPeerStore,
         pairApproval: @escaping (IncomingPairRequest) -> Bool,
-        transferApproval: @escaping (IncomingTransferRequest) -> Bool
+        onPaired: @escaping () -> Void
     ) {
         receiveRequestHead(connection: connection) { head in
             guard let head else {
@@ -113,7 +207,8 @@ public final class ControlServer {
             }
 
             if head.startLine.hasPrefix("POST /transfer/upload") {
-                handleUpload(connection: connection, head: head, transferApproval: transferApproval)
+                // Older apps upload in plaintext; tell them to update instead of failing silently.
+                sendJSON(connection: connection, status: "426 Upgrade Required", body: Data(#"{"error":"tls_required"}"#.utf8))
                 return
             }
 
@@ -136,7 +231,7 @@ public final class ControlServer {
                         deviceId: identity.deviceId,
                         deviceName: identity.deviceName,
                         platform: identity.platform,
-                        protocolVersion: identity.protocolVersion,
+                        protocolVersion: ControlServer.protocolVersion,
                         features: identity.features,
                         publicKey: identity.publicKey
                     )
@@ -147,7 +242,7 @@ public final class ControlServer {
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else if request.startLine.hasPrefix("POST /pair/confirm") {
-                    let pairResponse = handlePairConfirm(body: request.body, identity: identity, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval)
+                    let pairResponse = handlePairConfirm(body: request.body, identity: identity, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval, onPaired: onPaired)
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else {
@@ -271,11 +366,17 @@ public final class ControlServer {
         body: Data,
         identity: DeviceIdentity,
         trustedPeerStore: TrustedPeerStore,
-        pairApproval: @escaping (IncomingPairRequest) -> Bool
+        pairApproval: @escaping (IncomingPairRequest) -> Bool,
+        onPaired: @escaping () -> Void
     ) -> HTTPResponse {
         guard let confirm = try? JSONDecoder().decode(PairConfirmBody.self, from: body),
               let peerNonce = Data(base64Encoded: confirm.nonce), peerNonce.count == 32 else {
             return jsonError("400 Bad Request", "invalid_pair_confirm")
+        }
+        // One pairing dialog at a time, so a second request can't stack a look-alike dialog
+        // on top of the one the user is reading. Checked before the nonce is consumed.
+        guard !approvalInProgress else {
+            return jsonError("409 Conflict", "pairing_busy")
         }
         guard let pending = pendingPairings.confirm(deviceId: confirm.deviceId, peerNonce: peerNonce) else {
             return jsonError("409 Conflict", "no_pending_pairing")
@@ -291,12 +392,15 @@ public final class ControlServer {
             deviceName: pending.peer.deviceName,
             deviceId: pending.peer.deviceId,
             platform: pending.peer.platform,
-            code: code
+            code: code,
+            replacesExisting: trustedPeerStore.find(deviceId: pending.peer.deviceId) != nil
         )
 
         // Reply first so the phone can show its code while the Mac user decides.
+        approvalInProgress = true
         DispatchQueue.main.async {
             let approved = pairApproval(request)
+            approvalInProgress = false
             if approved {
                 trustedPeerStore.save(
                     TrustedPeer(
@@ -309,6 +413,7 @@ public final class ControlServer {
                         authToken: pending.sharedSecret
                     )
                 )
+                onPaired()
             }
             pendingPairings.decide(deviceId: pending.peer.deviceId, approved: approved)
         }
@@ -725,6 +830,8 @@ public struct IncomingPairRequest {
     public let platform: String
     /// Six-digit pairing code; show it with `PairingCode.display(_:)`.
     public let code: String
+    /// A device with this ID is already paired; approving replaces its key.
+    public let replacesExisting: Bool
 }
 
 public struct IncomingTransferRequest {
