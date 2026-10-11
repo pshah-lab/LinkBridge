@@ -37,7 +37,7 @@ class ReceiveServer(
             runCatching {
                 ServerSocket(port).use { socket ->
                     serverSocket = socket
-                    onStatus("Ready to receive files on port $port.")
+                    onStatus("Ready to receive files (encrypted) on port $port.")
                     while (running.get()) {
                         val client = socket.accept()
                         clientExecutor.execute {
@@ -62,24 +62,42 @@ class ReceiveServer(
         clientExecutor.shutdownNow()
     }
 
+    /** Every connection must complete a TLS-PSK handshake with a paired device's key. */
     private fun handleClient(socket: Socket) {
-        val input = BufferedInputStream(socket.getInputStream())
+        val connection = try {
+            SecureTransport.accept(socket) { identity -> pskFor(identity) }
+        } catch (error: Exception) {
+            Log.w(TAG, "Rejected connection: TLS handshake failed (${error.javaClass.simpleName})")
+            return
+        }
+        connection.use { handleRequest(it) }
+    }
+
+    private fun pskFor(identity: String): ByteArray? =
+        TrustedPeerStore(context).load()
+            .firstOrNull { SecureTransport.identity(it.deviceId) == identity }
+            ?.authToken
+            ?.let(SecureTransport::psk)
+
+    private fun handleRequest(connection: SecureTransport.Connection) {
+        val reply = connection.output
+        val input = BufferedInputStream(connection.input)
         val headerBytes = readHeaderBytes(input)
         val headerText = headerBytes.decodeToString()
         val request = HttpRequestHeader.parse(headerText)
 
         if (!request.startLine.startsWith("POST /transfer/upload")) {
-            socket.writeJsonResponse(404, """{"error":"not_found"}""")
+            reply.writeJsonResponse(404, """{"error":"not_found"}""")
             return
         }
 
         val contentLength = request.headers["content-length"]?.toLongOrNull()
         if (contentLength == null || contentLength < 0) {
-            socket.writeJsonResponse(400, """{"error":"missing_content_length"}""")
+            reply.writeJsonResponse(400, """{"error":"missing_content_length"}""")
             return
         }
         if (contentLength > MAX_TRANSFER_BYTES) {
-            socket.writeJsonResponse(413, """{"error":"transfer_too_large"}""")
+            reply.writeJsonResponse(413, """{"error":"transfer_too_large"}""")
             return
         }
         val senderId = request.headers["x-linkbridge-device-id"]
@@ -91,17 +109,22 @@ class ReceiveServer(
         val authToken = trustedPeer?.authToken
 
         if (senderId == null || timestamp == null || transferId == null || suppliedSignature == null || authToken == null) {
-            socket.writeJsonResponse(401, """{"error":"unpaired_or_unsigned"}""")
+            reply.writeJsonResponse(401, """{"error":"unpaired_or_unsigned"}""")
+            return
+        }
+        // The device that completed the TLS handshake must be the one the upload claims to be from.
+        if (SecureTransport.identity(senderId) != connection.peerIdentity) {
+            reply.writeJsonResponse(401, """{"error":"identity_mismatch"}""")
             return
         }
         val timestampMillis = timestamp.toLongOrNull()
         val transferUUID = runCatching { UUID.fromString(transferId) }.getOrNull()
         if (timestampMillis == null || transferUUID == null || kotlin.math.abs(System.currentTimeMillis() - timestampMillis) > TIMESTAMP_WINDOW_MS) {
-            socket.writeJsonResponse(401, """{"error":"stale_transfer"}""")
+            reply.writeJsonResponse(401, """{"error":"stale_transfer"}""")
             return
         }
         if (encryption != Security.ENCRYPTION_SCHEME) {
-            socket.writeJsonResponse(400, """{"error":"encryption_required"}""")
+            reply.writeJsonResponse(400, """{"error":"encryption_required"}""")
             return
         }
 
@@ -116,14 +139,14 @@ class ReceiveServer(
         ).joinToString("\n")
         val expectedSignature = Security.hmacSha256Base64(authToken, signaturePayload)
         if (!Security.timingSafeEquals(expectedSignature, suppliedSignature)) {
-            socket.writeJsonResponse(401, """{"error":"invalid_signature"}""")
+            reply.writeJsonResponse(401, """{"error":"invalid_signature"}""")
             return
         }
         val replayKey = "$senderId:$transferId"
         val now = System.currentTimeMillis()
         replayCache.entries.removeIf { it.value < now }
         if (replayCache.putIfAbsent(replayKey, now + REPLAY_WINDOW_MS) != null) {
-            socket.writeJsonResponse(409, """{"error":"replayed_transfer"}""")
+            reply.writeJsonResponse(409, """{"error":"replayed_transfer"}""")
             return
         }
 
@@ -184,7 +207,7 @@ class ReceiveServer(
             val sha256 = digest.digest().toHexString()
             if (!sha256.equals(finalMetadata.sha256, ignoreCase = true)) {
                 savedUri?.let { resolver.delete(it, null, null) }
-                socket.writeJsonResponse(400, """{"error":"checksum_mismatch"}""")
+                reply.writeJsonResponse(400, """{"error":"checksum_mismatch"}""")
                 return
             }
 
@@ -192,16 +215,16 @@ class ReceiveServer(
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             savedUri?.let { resolver.update(it, values, null, null) }
             onStatus("Received ${finalMetadata.fileName}\nSaved to Downloads/LinkBridge.")
-            socket.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
+            reply.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
             savedUri?.let { context.contentResolver.delete(it, null, null) }
             if (error is TransferDeclinedException) {
-                socket.writeJsonResponse(403, """{"error":"transfer_declined"}""")
+                reply.writeJsonResponse(403, """{"error":"transfer_declined"}""")
                 return
             }
             Log.e(TAG, "Receive failed", error)
             onStatus("Receive failed\n${error.localizedMessage}")
-            socket.writeJsonResponse(500, """{"error":"save_failed"}""")
+            reply.writeJsonResponse(500, """{"error":"save_failed"}""")
         }
     }
 
@@ -221,14 +244,13 @@ class ReceiveServer(
         }
     }
 
-    private fun Socket.writeJsonResponse(status: Int, body: String) {
+    private fun java.io.OutputStream.writeJsonResponse(status: Int, body: String) {
         val reason = if (status == 200) "OK" else "Error"
         val payload = body.toByteArray()
         val header = "HTTP/1.1 $status $reason\r\nContent-Type: application/json\r\nContent-Length: ${payload.size}\r\nConnection: close\r\n\r\n"
-        getOutputStream().use { output ->
-            output.write(header.toByteArray())
-            output.write(payload)
-        }
+        write(header.toByteArray())
+        write(payload)
+        flush()
     }
 
     private fun sanitizeFileName(fileName: String): String {

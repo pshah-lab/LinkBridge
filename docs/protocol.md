@@ -20,7 +20,8 @@ TXT records:
 deviceId=<stable-install-id>
 deviceName=<human-readable-name>
 platform=macos|android
-protocol=1
+protocol=2
+tlsPort=<TLS-PSK port for transfers>
 features=file-transfer,display-send,display-receive
 ```
 
@@ -57,8 +58,26 @@ After confirmation, each side stores the peer device ID, display name and shared
 
 ## Control Channel
 
-The control channel is plain HTTP on the LAN. Confidentiality and integrity come from
-the application layer: uploads are AES-GCM encrypted and HMAC-signed with the pairing secret.
+There are two channels:
+
+- **Plain HTTP** on the advertised service port (Mac only): `/health`, `/device` and the
+  `/pair/*` endpoints. Pairing needs no prior secret and is protected by the six-digit
+  code. An upload sent here gets `426 {"error":"tls_required"}`.
+- **TLS-PSK** on `tlsPort` (both platforms): transfers between paired devices.
+
+### TLS-PSK
+
+- TLS 1.2 only, cipher suite `TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256` (forward
+  secrecy). Apple's Network.framework does not complete TLS 1.3 external-PSK handshakes.
+- PSK = HKDF-SHA256(pairing secret, salt `linkbridge-tls-v1`, info `psk`, 32 bytes).
+- PSK identity = the connecting device's ID, lowercased (the Mac writes UUIDs uppercase).
+- The server selects the key by identity; an unknown identity or wrong key fails the
+  handshake. Android also requires the upload's `X-LinkBridge-Device-Id` to match the
+  TLS identity.
+- BouncyCastle servers must not echo the `status_request` extension; Apple clients reject
+  a ServerHello that acknowledges OCSP stapling without a certificate.
+
+Uploads keep the application-layer encryption and HMAC described below inside TLS.
 
 Initial endpoints:
 
@@ -68,12 +87,12 @@ GET  /device
 POST /pair/request
 POST /pair/confirm
 POST /pair/finalize
-POST /transfer/upload
+POST /transfer/upload   (TLS-PSK port only)
 ```
 
 ## File Transfer
 
-A transfer is a single streaming `POST /transfer/upload` to the receiver's control port.
+A transfer is a single streaming `POST /transfer/upload` to the receiver's TLS-PSK port.
 
 Headers:
 

@@ -152,50 +152,60 @@ class ControlClient {
             ).joinToString("\n")
             val signature = Security.hmacSha256Base64(localToken, signaturePayload)
 
-            val url = URL("http://${peer.endpoint}/transfer/upload")
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 5000
-                readTimeout = 30000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/octet-stream")
-                setRequestProperty("X-LinkBridge-Device-Id", localIdentity.deviceId)
-                setRequestProperty("X-LinkBridge-Timestamp", timestamp)
-                setRequestProperty("X-LinkBridge-Transfer-Id", transferId)
-                setRequestProperty("X-LinkBridge-Encryption", Security.ENCRYPTION_SCHEME)
-                setRequestProperty("X-LinkBridge-Signature", signature)
-                setRequestProperty("Content-Length", contentLength.toString())
-                setFixedLengthStreamingMode(contentLength)
-            }
+            val tlsPort = peer.tlsPort
+                ?: run { encryptedFile.delete(); error("Update LinkBridge on ${peer.deviceName} to the secure transfer version.") }
+            val head = listOf(
+                "POST /transfer/upload HTTP/1.1",
+                "Host: ${peer.host}",
+                "Content-Type: application/octet-stream",
+                "Content-Length: $contentLength",
+                "X-LinkBridge-Device-Id: ${localIdentity.deviceId}",
+                "X-LinkBridge-Timestamp: $timestamp",
+                "X-LinkBridge-Transfer-Id: $transferId",
+                "X-LinkBridge-Encryption: ${Security.ENCRYPTION_SCHEME}",
+                "X-LinkBridge-Signature: $signature",
+                "Connection: close",
+                "",
+                ""
+            ).joinToString("\r\n")
 
-            try {
-                connection.outputStream.use { output ->
-                    encryptedFile.inputStream().use { input ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            output.write(buffer, 0, read)
-                        }
-                    }
+            val (status, body) = try {
+                SecureTransport.connect(
+                    host = peer.host,
+                    port = tlsPort,
+                    identity = SecureTransport.identity(localIdentity.deviceId),
+                    psk = SecureTransport.psk(localToken)
+                ).use { connection ->
+                    connection.output.write(head.toByteArray())
+                    encryptedFile.inputStream().use { it.copyTo(connection.output, 64 * 1024) }
+                    connection.output.flush()
+                    readResponse(connection.input)
                 }
+            } catch (error: java.io.IOException) {
+                throw java.io.IOException("Secure connection to ${peer.deviceName} failed. If this keeps happening, pair again.", error)
             } finally {
                 encryptedFile.delete()
             }
 
-            if (connection.responseCode !in 200..299) {
-                val message = connection.errorStream?.bufferedReader()?.readText()
-                error("Upload failed: HTTP ${connection.responseCode}${message?.let { " $it" } ?: ""}")
+            if (status !in 200..299) {
+                error("Upload failed: HTTP $status $body")
             }
-
-            connection.inputStream.use { stream ->
-                val response = JSONObject(stream.bufferedReader().readText())
-                val remoteSha256 = response.optString("sha256")
-                if (remoteSha256.isNotBlank() && !remoteSha256.equals(sha256, ignoreCase = true)) {
-                    error("Checksum mismatch after upload")
-                }
+            val remoteSha256 = JSONObject(body).optString("sha256")
+            if (remoteSha256.isNotBlank() && !remoteSha256.equals(sha256, ignoreCase = true)) {
+                error("Checksum mismatch after upload")
             }
         }
+    }
+
+    /** Reads a `Connection: close` HTTP response: status code and body text. */
+    private fun readResponse(input: InputStream): Pair<Int, String> {
+        val bytes = input.readBytes()
+        val text = bytes.toString(Charsets.UTF_8)
+        val separator = text.indexOf("\r\n\r\n")
+        if (separator < 0) error("Unreadable response from the Mac")
+        val status = text.substringBefore("\r\n").split(" ").getOrNull(1)?.toIntOrNull()
+            ?: error("Unreadable response from the Mac")
+        return status to text.substring(separator + 4)
     }
 
     private fun JSONObject.toDeviceIdentity(): DeviceIdentity {

@@ -82,7 +82,9 @@ class DiscoveryService(
             setAttribute("deviceId", identity.deviceId)
             setAttribute("deviceName", identity.deviceName)
             setAttribute("platform", identity.platform)
-            setAttribute("protocol", identity.protocolVersion.toString())
+            // Protocol 2: transfers use TLS-PSK on tlsPort (the receive server is TLS-only).
+            setAttribute("protocol", PROTOCOL_VERSION.toString())
+            setAttribute("tlsPort", this@DiscoveryService.port.toString())
             setAttribute("features", identity.features.joinToString(","))
         }
 
@@ -178,6 +180,7 @@ class DiscoveryService(
         val deviceId = attributes["deviceId"]?.decodeToString()
         val deviceName = attributes["deviceName"]?.decodeToString()?.ifBlank { serviceName } ?: serviceName
         val platform = attributes["platform"]?.decodeToString()
+        val tlsPort = attributes["tlsPort"]?.decodeToString()?.toIntOrNull()
 
         return DiscoveredPeer(
             serviceName = serviceName,
@@ -185,7 +188,8 @@ class DiscoveryService(
             deviceName = deviceName,
             platform = platform,
             host = hostAddress.hostAddress ?: return null,
-            port = port
+            port = port,
+            tlsPort = tlsPort
         )
     }
 
@@ -206,5 +210,6 @@ class DiscoveryService(
     companion object {
         private const val TAG = "LinkBridgeDiscovery"
         private const val SERVICE_TYPE = "_linkbridge._tcp."
+        const val PROTOCOL_VERSION = 2
     }
 }

@@ -16,14 +16,18 @@ and identity (v1.1+).
 
 Mac:
 - Real signing with an Apple Development / Distribution certificate; move secrets back
-  to the Keychain once signing is stable.
+  to the Keychain once signing is stable (TLS-PSK does not need the Keychain).
 - App icon and Assets.
 - Replace `PeerResolver`'s deprecated `NetService` with `NWBrowser` + `NWConnection`.
 - Move the checks into XCTest / Swift Testing once Xcode is installed.
 
-Both platforms:
-- TLS transport with certificates exchanged and pinned during pairing (replaces plain
-  HTTP + app-layer crypto; required before screen mirroring).
+Both platforms (done, verified on device):
+- TLS-PSK transport for transfers, keyed from the pairing secret (see protocol.md).
+- Pairing hardening: one approval dialog at a time, warning when re-pairing a known device.
+
+Remaining:
+- Enable R8 shrinking for Android release builds (BouncyCastle makes the debug APK ~19 MB).
+- Move pairing off HttpURLConnection so the Android cleartext exception can be removed.
 
 Android (done, verified on device):
 - Target API 36 with AGP 9.4.1 and a Gradle wrapper; minSdk 31 (Android 12+).
