@@ -2,16 +2,17 @@
 
 You do not need Android Studio to build LinkBridge for Android. You do need:
 
-- Java 17
+- Java 17 or newer
 - Android command-line tools
-- Android SDK platform/build tools
-- Gradle
+- Android SDK platform 36 and build tools 36
+
+Gradle comes from the wrapper in `android/gradlew` (Gradle 9.8.1, Android Gradle
+Plugin 9.4.1), so no system Gradle install is needed.
 
 ## Install Tools With Homebrew
 
 ```sh
 brew install --cask android-commandlinetools
-brew install gradle
 ```
 
 Add the Android SDK paths to your shell profile:
@@ -32,7 +33,7 @@ source ~/.zshrc
 
 ```sh
 sdkmanager --licenses
-sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 ```
 
 ## Build From Terminal
@@ -46,6 +47,16 @@ The debug APK will be created under:
 ```text
 android/app/build/outputs/apk/debug/
 ```
+
+## Run Unit Tests
+
+```sh
+cd android
+./gradlew :app:testDebugUnitTest
+```
+
+The pairing-code and encryption tests use the same vectors as the Mac checks, so a
+change that breaks compatibility between the apps fails on both sides.
 
 ## Install On A Phone
 

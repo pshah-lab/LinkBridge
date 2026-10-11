@@ -15,7 +15,7 @@ check_command() {
 }
 
 check_command java
-check_command gradle
+# Gradle comes from the wrapper (android/gradlew); a system install is optional.
 check_command sdkmanager
 
 if ! command -v adb >/dev/null 2>&1 && [[ -x "$DEFAULT_BREW_ANDROID_HOME/platform-tools/adb" ]]; then

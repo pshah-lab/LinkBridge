@@ -1,6 +1,6 @@
 package com.linkbridge.android
 
-import android.util.Base64
+import java.util.Base64
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
@@ -15,10 +15,10 @@ object Security {
     const val CHUNK_SIZE = 1024 * 1024
 
     fun hmacSha256Base64(secret: String, message: String): String {
-        val key = Base64.decode(secret, Base64.NO_WRAP)
+        val key = Base64.getDecoder().decode(secret)
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key, "HmacSHA256"))
-        return Base64.encodeToString(mac.doFinal(message.toByteArray()), Base64.NO_WRAP)
+        return Base64.getEncoder().encodeToString(mac.doFinal(message.toByteArray()))
     }
 
     fun timingSafeEquals(left: String, right: String): Boolean {
@@ -39,7 +39,7 @@ object Security {
         metadata: ByteArray? = null,
         onProgress: (bytesRead: Long) -> Unit = {}
     ): Long {
-        val key = SecretKeySpec(Base64.decode(secret, Base64.NO_WRAP), "AES")
+        val key = SecretKeySpec(Base64.getDecoder().decode(secret), "AES")
         val random = SecureRandom()
         val buffer = ByteArray(CHUNK_SIZE)
         var encryptedBytes = 0L
@@ -67,7 +67,7 @@ object Security {
         encryptedLength: Long,
         onChunk: (plainBytes: ByteArray) -> Unit
     ): Long {
-        val key = SecretKeySpec(Base64.decode(secret, Base64.NO_WRAP), "AES")
+        val key = SecretKeySpec(Base64.getDecoder().decode(secret), "AES")
         var remaining = encryptedLength
         var plainBytes = 0L
 
@@ -86,39 +86,6 @@ object Security {
             val plain = cipher.doFinal(sealed)
 
             onChunk(plain)
-            plainBytes += plain.size
-        }
-
-        return plainBytes
-    }
-
-    fun decryptChunked(
-        secret: String,
-        input: InputStream,
-        encryptedLength: Long,
-        output: OutputStream,
-        onChunk: (plainBytes: ByteArray, count: Int) -> Unit = { _, _ -> }
-    ): Long {
-        val key = SecretKeySpec(Base64.decode(secret, Base64.NO_WRAP), "AES")
-        var remaining = encryptedLength
-        var plainBytes = 0L
-
-        while (remaining > 0) {
-            val nonce = input.readExact(12)
-            remaining -= 12
-            val sealedLength = ByteBuffer.wrap(input.readExact(4)).int
-            remaining -= 4
-            require(sealedLength > 0 && sealedLength <= CHUNK_SIZE + 16) { "Invalid encrypted chunk length" }
-            require(remaining >= sealedLength) { "Encrypted body ended before chunk completed" }
-
-            val sealed = input.readExact(sealedLength)
-            remaining -= sealedLength
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, nonce))
-            val plain = cipher.doFinal(sealed)
-
-            output.write(plain)
-            onChunk(plain, plain.size)
             plainBytes += plain.size
         }
 

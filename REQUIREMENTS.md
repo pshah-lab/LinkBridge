@@ -14,11 +14,11 @@ This document lists all required software, dependencies, environment configurati
 ### Android Mobile App (`android/`)
 - **Java Development Kit (JDK)**: OpenJDK 17
 - **Android SDK Specifications**:
-  - `compileSdk`: 35 (Android 15)
+  - `compileSdk`: 36 (Android 16)
   - `minSdk`: 26 (Android 8.0 Oreo or higher)
-  - `targetSdk`: 35
-  - `buildToolsVersion`: 35.0.0
-- **Gradle**: 8.x+ (Android Gradle Plugin `8.5.2`, Kotlin `2.0.20`)
+  - `targetSdk`: 36 (required by Google Play)
+  - `buildToolsVersion`: 36.0.0
+- **Gradle**: provided by the wrapper (`android/gradlew`, Gradle 9.8.1, Android Gradle Plugin 9.4.1 with built-in Kotlin)
 - **Target Physical/Virtual Device**: Android 8.0+ device with **Developer Options & USB Debugging** enabled.
 
 ---
@@ -29,9 +29,8 @@ This document lists all required software, dependencies, environment configurati
 | :--- | :--- | :--- | :--- |
 | **Xcode Command Line Tools** | System Default (Swift 5.9+) | Swift toolchain to build the `LinkBridge` app | `xcode-select --install` |
 | **Java Development Kit** | OpenJDK 17 | Required for Android build system | `brew install openjdk@17` |
-| **Gradle** | 8.x+ | Build automation tool for Android | `brew install gradle` |
 | **Android Command Line Tools** | Latest | Package manager (`sdkmanager`, `adb`) | `brew install --cask android-commandlinetools` |
-| **Android SDK Packages** | API 35 (`android-35`) | Android SDK platforms and ADB | `sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"` |
+| **Android SDK Packages** | API 36 (`android-36`) | Android SDK platforms and ADB | `sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"` |
 | **Android Studio** *(Optional)* | Ladybug / Jellyfish+ | IDE for Kotlin/Android (terminal scripts can build without it) | `brew install --cask android-studio` |
 
 ---

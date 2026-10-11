@@ -1,18 +1,18 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
     namespace = "com.linkbridge.android"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.linkbridge.android"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Google Play requires API 36 for new apps and updates since 2026-08-31.
+        targetSdk = 36
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     compileOptions {
@@ -23,4 +23,11 @@ android {
 
 kotlin {
     jvmToolchain(17)
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.18.0")
+    implementation("androidx.activity:activity-ktx:1.13.0")
+
+    testImplementation("junit:junit:4.13.2")
 }

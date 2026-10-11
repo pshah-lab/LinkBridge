@@ -6,4 +6,4 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/scripts/check-android-env.sh"
 
 cd "$ROOT_DIR/android"
-gradle :app:assembleDebug
+./gradlew :app:assembleDebug
