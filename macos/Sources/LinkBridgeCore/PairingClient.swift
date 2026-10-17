@@ -20,7 +20,7 @@ public final class PairingClient {
     public init(endpoint: String) {
         self.endpoint = endpoint
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForRequest = 150 // per-request timeouts below are shorter
         config.timeoutIntervalForResource = 180
         session = URLSession(configuration: config)
     }
