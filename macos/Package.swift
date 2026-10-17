@@ -5,9 +5,11 @@ import PackageDescription
 let package = Package(
     name: "LinkBridge",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v13),
+        .iOS(.v16)
     ],
     products: [
+        .library(name: "LinkBridgeCore", targets: ["LinkBridgeCore"]),
         .executable(name: "LinkBridge", targets: ["LinkBridge"]),
         .executable(name: "linkbridge-cli", targets: ["linkbridge-cli"])
     ],

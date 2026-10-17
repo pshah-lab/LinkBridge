@@ -60,10 +60,10 @@ public final class IdentityStore {
 
         let identity = DeviceIdentity(
             deviceId: UUID(),
-            deviceName: Host.current().localizedName ?? "Mac",
-            platform: "macos",
+            deviceName: Self.defaultDeviceName,
+            platform: Self.platformName,
             protocolVersion: 1,
-            features: ["file-transfer", "display-send", "display-receive"],
+            features: Self.defaultFeatures,
             authToken: Security.generateToken(),
             publicKey: pairingKeys.publicKeyBase64
         )
@@ -71,6 +71,17 @@ public final class IdentityStore {
         persist(identity)
         return identity
     }
+
+    #if os(iOS)
+    // iOS 16+ only reveals the user-assigned device name with a special entitlement.
+    private static let defaultDeviceName = "iPhone"
+    private static let platformName = "ios"
+    private static let defaultFeatures = ["file-transfer"]
+    #else
+    private static var defaultDeviceName: String { Host.current().localizedName ?? "Mac" }
+    private static let platformName = "macos"
+    private static let defaultFeatures = ["file-transfer", "display-send", "display-receive"]
+    #endif
 
     private func persist(_ identity: DeviceIdentity) {
         do {
