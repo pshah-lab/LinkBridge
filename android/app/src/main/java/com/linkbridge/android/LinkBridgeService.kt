@@ -58,6 +58,12 @@ class LinkBridgeService : Service() {
                 LinkBridgeHub.publishReceiveStatus(status)
                 if (status.startsWith("Received")) LinkBridgeHub.publishActivity(status.substringBefore('\n'), isOutgoing = false)
             },
+            onTransferCompleted = { transfer ->
+                TransferHistoryStore(this).add(
+                    TransferHistoryEntry(transfer.fileName, transfer.bytes, transfer.senderName, isOutgoing = false)
+                )
+                LinkBridgeHub.publishActivity("Received ${transfer.fileName} (${formatBytes(transfer.bytes)}) from ${transfer.senderName}", isOutgoing = false)
+            },
             onApprovalRequested = ::requestApproval
         ).also { it.start() }
         LinkBridgeHub.service = this
@@ -122,6 +128,9 @@ class LinkBridgeService : Service() {
                     LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Progress(info.name, sent, total))
                     if (total > 0) updateNotification("Sending ${info.name} to ${peer.deviceName}", progress = (sent * 100 / total).toInt())
                 }.onSuccess {
+                    TransferHistoryStore(this).add(
+                        TransferHistoryEntry(info.name, info.size, peer.deviceName, isOutgoing = true)
+                    )
                     LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
                     LinkBridgeHub.publishActivity("Sent ${info.name} (${formatBytes(info.size)}) to ${peer.deviceName}", isOutgoing = true)
                 }.onFailure { error ->

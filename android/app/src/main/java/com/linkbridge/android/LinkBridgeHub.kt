@@ -55,6 +55,9 @@ object LinkBridgeHub {
         service?.rescan()
     }
 
+    fun history(context: android.content.Context): List<TransferHistoryEntry> =
+        TransferHistoryStore(context.applicationContext).load()
+
     /** Queues a send in the service. Returns false if the service is not running. */
     fun send(peer: DiscoveredPeer, trustedPeer: TrustedPeer, uri: Uri): Boolean {
         val running = service ?: return false

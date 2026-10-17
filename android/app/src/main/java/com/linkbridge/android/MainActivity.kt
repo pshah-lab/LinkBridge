@@ -28,6 +28,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.util.concurrent.Executors
+import java.text.DateFormat
+import java.util.Date
 import com.linkbridge.android.Ui.body
 import com.linkbridge.android.Ui.pad
 import com.linkbridge.android.Ui.section
@@ -172,7 +174,8 @@ class MainActivity : ComponentActivity() {
 
         // Progress Bar
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            isIndeterminate = true
+            max = 100
+            isIndeterminate = false
             visibility = View.GONE
             setPadding(0, 0, 0, 16)
         }
@@ -218,6 +221,7 @@ class MainActivity : ComponentActivity() {
             textSize = 13f
         }
         activityLogContainer.addView(initialHistoryEmpty)
+        renderHistory()
 
         setContentView(rootScroll)
     }
@@ -227,6 +231,7 @@ class MainActivity : ComponentActivity() {
         // The service owns discovery, receiving and sending so they survive leaving the app.
         LinkBridgeService.start(this)
         LinkBridgeHub.addListener(hubListener)
+        renderHistory()
         updateNotificationPermission(requestIfNeeded = true)
     }
 
@@ -609,18 +614,26 @@ class MainActivity : ComponentActivity() {
             is LinkBridgeHub.SendState.Progress -> {
                 sendFileButton.isEnabled = false
                 progressBar.visibility = View.VISIBLE
+                if (state.total > 0) {
+                    progressBar.isIndeterminate = false
+                    progressBar.progress = ((state.sent * 100L) / state.total).coerceIn(0, 100).toInt()
+                } else {
+                    progressBar.isIndeterminate = true
+                }
                 connectionStatusText.text = "Sending ${state.fileName}\n${formatBytes(state.sent)} / ${formatBytes(state.total)}"
                 connectionStatusText.background = Ui.rounded(Ui.WARNING_BG, radiusDp = 14f, strokeColor = Ui.WARNING)
             }
             is LinkBridgeHub.SendState.Done -> {
                 sendFileButton.isEnabled = true
                 progressBar.visibility = View.GONE
+                progressBar.isIndeterminate = false
                 connectionStatusText.text = "Sent ${state.fileName} (${formatBytes(state.bytes)})\nSaved on ${state.peerName} in Downloads/LinkBridge."
                 connectionStatusText.background = Ui.rounded(Ui.SUCCESS_BG, radiusDp = 14f, strokeColor = Ui.SUCCESS)
             }
             is LinkBridgeHub.SendState.Failed -> {
                 sendFileButton.isEnabled = true
                 progressBar.visibility = View.GONE
+                progressBar.isIndeterminate = false
                 connectionStatusText.text = "Could not send ${state.fileName}\n${state.message}"
                 connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
             }
@@ -628,24 +641,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addActivityLog(message: String, isOutgoing: Boolean) {
-        (activityLogContainer.getChildAt(0) as? TextView)?.let { first ->
-            if (first.text == EMPTY_HISTORY_TEXT) activityLogContainer.removeView(first)
+        renderHistory()
+    }
+
+    private fun renderHistory() {
+        val history = LinkBridgeHub.history(this)
+        activityLogContainer.removeAllViews()
+        if (history.isEmpty()) {
+            activityLogContainer.addView(TextView(this).apply {
+                body(EMPTY_HISTORY_TEXT)
+                setTextColor(Ui.MUTED)
+                textSize = 13f
+            })
+            return
         }
 
-        val logItem = TextView(this).apply {
-            text = (if (isOutgoing) "▲ " else "▼ ") + message
-            textSize = 12f
-            setTextColor(if (isOutgoing) Ui.ACCENT else Ui.SUCCESS)
-            typeface = Typeface.DEFAULT_BOLD
-            pad(16, 10)
-            background = Ui.rounded(Ui.SURFACE, radiusDp = 10f, strokeColor = Ui.LINE)
-        }
-
-        activityLogContainer.addView(logItem, 0)
-
-        // Keep maximum 4 items
-        if (activityLogContainer.childCount > 4) {
-            activityLogContainer.removeViewAt(activityLogContainer.childCount - 1)
+        history.take(8).forEach { entry ->
+            val direction = if (entry.isOutgoing) "▲ Sent to" else "▼ Received from"
+            val item = TextView(this).apply {
+                text = "$direction ${entry.peerName}\n${entry.fileName} · ${formatBytes(entry.bytes)} · ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(entry.completedAt))}"
+                textSize = 12f
+                setTextColor(if (entry.isOutgoing) Ui.ACCENT else Ui.SUCCESS)
+                typeface = Typeface.DEFAULT_BOLD
+                pad(16, 10)
+                background = Ui.rounded(Ui.SURFACE, radiusDp = 10f, strokeColor = Ui.LINE)
+            }
+            activityLogContainer.addView(item)
         }
     }
 

@@ -22,6 +22,7 @@ class ReceiveServer(
     private val context: Context,
     private val port: Int,
     private val onStatus: (String) -> Unit,
+    private val onTransferCompleted: (ReceivedTransfer) -> Unit = {},
     private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true }
 ) {
     private val running = AtomicBoolean(false)
@@ -215,6 +216,7 @@ class ReceiveServer(
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             savedUri?.let { resolver.update(it, values, null, null) }
             onStatus("Received ${finalMetadata.fileName}\nSaved to Downloads/LinkBridge.")
+            onTransferCompleted(ReceivedTransfer(finalMetadata.fileName, received, trustedPeer.deviceName))
             reply.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
             savedUri?.let { context.contentResolver.delete(it, null, null) }
@@ -282,6 +284,8 @@ class ReceiveServer(
         private const val SOCKET_TIMEOUT_MS = 15_000
     }
 }
+
+data class ReceivedTransfer(val fileName: String, val bytes: Long, val senderName: String)
 
 data class IncomingTransferRequest(
     val senderName: String,
