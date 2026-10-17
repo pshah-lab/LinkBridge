@@ -337,6 +337,28 @@ DispatchQueue.global().async {
         check(downloads.path.hasPrefix(ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? "/nonexistent"), "wrote inside the throwaway home")
     }
 
+    section("PairingClient pairs as the initiator") {
+        var macCode: String?
+        let (pairServer, pairPort) = startServer(preferredPort: 0, approve: { true }, lastRequest: { macCode = $0.code })
+        defer { DispatchQueue.main.sync { pairServer.stop() } }
+        let done = DispatchSemaphore(value: 0)
+        var result: Result<(PairingClient.Started, TrustedPeer), Error>?
+        Task.detached {
+            do {
+                let client = PairingClient(endpoint: "127.0.0.1:\(pairPort)")
+                let started = try await client.begin()
+                result = .success((started, try await client.finish()))
+            } catch {
+                result = .failure(error)
+            }
+            done.signal()
+        }
+        check(done.wait(timeout: .now() + 20) == .success, "pairing finished in time")
+        let (started, peer) = try result!.get()
+        check(started.code.count == 6 && started.code == macCode, "both sides show the same code")
+        check(TrustedPeerStore().find(deviceId: peer.deviceId)?.authToken == peer.authToken, "peer saved with its secret")
+    }
+
     DispatchQueue.main.sync { server.stop() }
     print(failures == 0 ? "\nAll \(passed) checks passed." : "\n\(failures) failed, \(passed) passed.")
     exit(failures == 0 ? 0 : 1)

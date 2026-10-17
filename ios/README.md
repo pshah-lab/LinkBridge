@@ -26,6 +26,19 @@ Build for the Simulator from the command line:
 xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
+## What works
+
+- Discovers nearby LinkBridge devices over Bonjour while the app is open.
+- Pairs with the Mac app using the six-digit code (iPhone initiates, the Mac
+  approves). The Android app only initiates pairing, so it can't pair with the
+  iPhone yet.
+- Sends a chosen file to a paired device over TLS-PSK with progress, and keeps a
+  history of sends.
+- Secrets (identity token, pairing key, peer secrets) live in the iOS Keychain.
+
+Not yet: receiving files on iOS (iOS can't keep a background server running) and
+pairing with Android (needs a pairing responder in the Android app).
+
 The app is intentionally file-transfer-only in this first iOS phase. Wireless
 display will be added after Android and iOS transfer interoperability is verified.
 
