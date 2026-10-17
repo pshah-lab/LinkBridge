@@ -6,17 +6,23 @@ pairing, TLS-PSK transport, AES-GCM chunk encryption, and SHA-256 verification.
 ## Requirements
 
 - macOS with Xcode installed
-- iOS 16 or later
+- iOS 26 or later
 - An Apple ID signing team for installing on a physical iPhone
 - Both devices on the same Wi-Fi network
 
 ## Project layout
 
 - `LinkBridgeIOS.xcodeproj` — app target `LinkBridgeIOS`, bundle id
-  `com.pshahlab.linkbridge.ios`, iOS 16+. Depends on the local package `../macos`
+  `com.pshahlab.linkbridge.ios`, iOS 26+. Depends on the local package `../macos`
   (product `LinkBridgeCore`).
 - `LinkBridgeIOS/` — app sources. Xcode picks up every file in this folder
   automatically.
+- `LinkBridgeIOSTests/` — Swift Testing unit tests (target `LinkBridgeIOSTests`,
+  in the shared `LinkBridgeIOS` scheme). Run them with:
+
+  ```bash
+  xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destination 'platform=iOS Simulator,name=iPhone Duo' CODE_SIGNING_ALLOWED=NO test
+  ```
 - `Info.plist` — extra keys (local network prompt, `_linkbridge._tcp` Bonjour)
   merged into the generated Info.plist.
 
