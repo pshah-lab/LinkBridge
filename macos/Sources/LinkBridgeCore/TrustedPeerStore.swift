@@ -8,6 +8,17 @@ public struct TrustedPeer: Codable {
     public let features: [String]
     public let pairedAt: Date
     public let authToken: String?
+
+    public init(deviceId: UUID, deviceName: String, platform: String, protocolVersion: Int,
+                features: [String], pairedAt: Date, authToken: String?) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.platform = platform
+        self.protocolVersion = protocolVersion
+        self.features = features
+        self.pairedAt = pairedAt
+        self.authToken = authToken
+    }
 }
 
 public final class TrustedPeerStore {
