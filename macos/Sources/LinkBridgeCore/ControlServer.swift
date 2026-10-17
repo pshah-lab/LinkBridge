@@ -21,6 +21,8 @@ public final class ControlServer {
     private let trustedPeerStore = TrustedPeerStore()
     private let pairApproval: (IncomingPairRequest) -> Bool
     private let transferApproval: (IncomingTransferRequest) -> Bool
+    private let transferProgress: (Int64, Int64) -> Void
+    private let transferCompleted: (IncomingTransferRequest) -> Void
     private static let replayCache = ReplayCache()
     private static let pendingPairings = PendingPairings()
     /// Main queue only, like all request handling.
@@ -31,7 +33,9 @@ public final class ControlServer {
         preferredPort: UInt16 = 49152,
         preferredSecurePort: UInt16 = 49162,
         pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in false },
-        transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true }
+        transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true },
+        transferProgress: @escaping (Int64, Int64) -> Void = { _, _ in },
+        transferCompleted: @escaping (IncomingTransferRequest) -> Void = { _ in }
     ) {
         self.identity = identity
         self.preferredPort = preferredPort
@@ -40,6 +44,8 @@ public final class ControlServer {
         self.securePort = preferredSecurePort
         self.pairApproval = pairApproval
         self.transferApproval = transferApproval
+        self.transferProgress = transferProgress
+        self.transferCompleted = transferCompleted
     }
 
     /// Starts the TLS listener, then the plain listener, each on its preferred port or any
@@ -129,9 +135,14 @@ public final class ControlServer {
         }
         self.secureListener = listener
 
-        listener.newConnectionHandler = { [transferApproval] connection in
+        listener.newConnectionHandler = { [transferApproval, transferProgress, transferCompleted] connection in
             connection.start(queue: .main)
-            Self.handleSecure(connection: connection, transferApproval: transferApproval)
+            Self.handleSecure(
+                connection: connection,
+                transferApproval: transferApproval,
+                transferProgress: transferProgress,
+                transferCompleted: transferCompleted
+            )
         }
 
         listener.stateUpdateHandler = { [weak self, weak listener] state in
@@ -175,7 +186,9 @@ public final class ControlServer {
     /// TLS-PSK connections from paired devices: transfers only.
     private static func handleSecure(
         connection: NWConnection,
-        transferApproval: @escaping (IncomingTransferRequest) -> Bool
+        transferApproval: @escaping (IncomingTransferRequest) -> Bool,
+        transferProgress: @escaping (Int64, Int64) -> Void,
+        transferCompleted: @escaping (IncomingTransferRequest) -> Void
     ) {
         receiveRequestHead(connection: connection) { head in
             guard let head else {
@@ -183,7 +196,13 @@ public final class ControlServer {
                 return
             }
             if head.startLine.hasPrefix("POST /transfer/upload") {
-                handleUpload(connection: connection, head: head, transferApproval: transferApproval)
+                handleUpload(
+                    connection: connection,
+                    head: head,
+                    transferApproval: transferApproval,
+                    transferProgress: transferProgress,
+                    transferCompleted: transferCompleted
+                )
             } else if head.startLine.hasPrefix("GET /health") {
                 sendJSON(connection: connection, status: "200 OK", body: Data(#"{"status":"ok","tls":true}"#.utf8))
             } else {
@@ -444,7 +463,9 @@ public final class ControlServer {
     private static func handleUpload(
         connection: NWConnection,
         head: HTTPRequestHead,
-        transferApproval: @escaping (IncomingTransferRequest) -> Bool
+        transferApproval: @escaping (IncomingTransferRequest) -> Bool,
+        transferProgress: @escaping (Int64, Int64) -> Void,
+        transferCompleted: @escaping (IncomingTransferRequest) -> Void
     ) {
         guard let contentLength = head.contentLength, contentLength >= 0 else {
             sendJSON(connection: connection, status: "411 Length Required", body: #"{"error":"missing_content_length"}"#.data(using: .utf8)!)
@@ -507,6 +528,7 @@ public final class ControlServer {
             var receivedEncrypted = 0
             var received = 0
             var metadata: IncomingFileMetadata?
+            var completedRequest: IncomingTransferRequest?
             var destination: URL?
             var fileHandle: FileHandle?
 
@@ -543,10 +565,14 @@ public final class ControlServer {
                         fileHandle = try FileHandle(forWritingTo: fileURL)
                         destination = fileURL
                         metadata = IncomingFileMetadata(transferId: parsed.transferId, fileName: fileName, bytes: parsed.bytes, sha256: parsed.sha256)
+                        completedRequest = request
                         return
                     }
 
                     try consumePlaintext(plaintext)
+                    if let metadata {
+                        transferProgress(Int64(received), Int64(metadata.bytes))
+                    }
                 }
             }
 
@@ -572,6 +598,10 @@ public final class ControlServer {
                         return
                     }
                     print("Received file: \(destination.path) (\(received) bytes, sha256: \(sha256))")
+
+                    if let completedRequest {
+                        transferCompleted(completedRequest)
+                    }
 
                     let json = #"{"status":"received","fileName":"\#(destination.lastPathComponent)","bytes":\#(received),"sha256":"\#(sha256)"}"#
                     sendJSON(connection: connection, status: "200 OK", body: Data(json.utf8))

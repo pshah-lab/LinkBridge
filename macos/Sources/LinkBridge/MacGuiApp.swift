@@ -295,6 +295,7 @@ final class ModernButton: NSButton {
 // MARK: - Main Application GUI Controller
 final class MacGuiApp: NSObject, NSApplicationDelegate {
     private let identityStore = IdentityStore()
+    private let transferHistory = MacTransferHistoryStore()
     private var controlServer: ControlServer?
     private var window: NSWindow?
 
@@ -346,6 +347,34 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
             },
             transferApproval: { [weak self] request in
                 self?.approveIncomingTransfer(request) ?? false
+            },
+            transferProgress: { [weak self] received, total in
+                DispatchQueue.main.async {
+                    self?.renderIncomingProgress(received: received, total: total)
+                }
+            },
+            transferCompleted: { [weak self] request in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.progressIndicator.stopAnimation(nil)
+                    self.progressIndicator.isHidden = true
+                    self.statusMessageLabel.stringValue = "Received (request.fileName) from (request.senderName)."
+                    self.statusMessageLabel.textColor = LinkTheme.signal
+                    self.transferHistory.add(
+                        MacTransferHistoryEntry(
+                            fileName: request.fileName,
+                            bytes: Int64(request.bytes),
+                            peerName: request.senderName,
+                            isOutgoing: false
+                        )
+                    )
+                    self.addActivityRecord(
+                        fileName: request.fileName,
+                        peerName: request.senderName,
+                        size: ByteCountFormatter.string(fromByteCount: Int64(request.bytes), countStyle: .file),
+                        isOutgoing: false
+                    )
+                }
             }
         )
         self.controlServer = server
@@ -687,7 +716,9 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         ])
 
         progressIndicator.style = .bar
-        progressIndicator.isIndeterminate = true
+        progressIndicator.isIndeterminate = false
+        progressIndicator.minValue = 0
+        progressIndicator.maxValue = 1
         progressIndicator.isHidden = true
 
         statusMessageLabel.font = .systemFont(ofSize: 12, weight: .medium)
@@ -717,6 +748,7 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         emptyLabel.font = .systemFont(ofSize: 12, weight: .regular)
         emptyLabel.textColor = NSColor.tertiaryLabelColor
         activityStackView.addArrangedSubview(emptyLabel)
+        renderActivityHistory()
 
         let containerStack = NSStackView(views: [titleLabel, activityStackView])
         containerStack.orientation = .vertical
@@ -864,13 +896,20 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
         statusMessageLabel.textColor = NSColor.labelColor
 
         progressIndicator.isHidden = false
+        progressIndicator.isIndeterminate = true
         progressIndicator.startAnimation(nil)
         sendButton.isEnabled = false
 
         DispatchQueue.global(qos: .userInitiated).async {
             let startTime = Date()
             do {
-                try FileSender.send(filePath: fileURL.path, endpoint: secureEndpoint, secret: secret)
+                try FileSender.send(filePath: fileURL.path, endpoint: secureEndpoint, secret: secret) { sent, total in
+                    DispatchQueue.main.async {
+                        self.progressIndicator.isIndeterminate = false
+                        self.progressIndicator.doubleValue = total > 0 ? Double(sent) / Double(total) : 0
+                        self.statusMessageLabel.stringValue = "Sending (fileName) to (peer.deviceName)… (Int(self.progressIndicator.doubleValue * 100))%"
+                    }
+                }
                 let elapsed = String(format: "%.1fs", Date().timeIntervalSince(startTime))
                 let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
                 let formattedSize = ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
@@ -882,6 +921,12 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
                     self.statusMessageLabel.stringValue = "Successfully sent \(fileName) (\(formattedSize)) to \(peer.deviceName) in \(elapsed)."
                     self.statusMessageLabel.textColor = LinkTheme.signal
 
+                    self.transferHistory.add(MacTransferHistoryEntry(
+                        fileName: fileName,
+                        bytes: fileSize,
+                        peerName: peer.deviceName,
+                        isOutgoing: true
+                    ))
                     self.addActivityRecord(fileName: fileName, peerName: peer.deviceName, size: formattedSize, isOutgoing: true)
                 }
             } catch {
@@ -897,12 +942,37 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
     }
 
     private func addActivityRecord(fileName: String, peerName: String, size: String, isOutgoing: Bool) {
-        if let first = activityStackView.arrangedSubviews.first as? NSTextField,
-           first.stringValue.contains("No transfers yet") {
-            activityStackView.removeArrangedSubview(first)
-            first.removeFromSuperview()
-        }
+        renderActivityHistory()
+    }
 
+    private func renderIncomingProgress(received: Int64, total: Int64) {
+        progressIndicator.isHidden = false
+        progressIndicator.stopAnimation(nil)
+        progressIndicator.isIndeterminate = false
+        progressIndicator.doubleValue = total > 0 ? Double(received) / Double(total) : 0
+        statusMessageLabel.stringValue = "Receiving file… (ByteCountFormatter.string(fromByteCount: received, countStyle: .file)) / (ByteCountFormatter.string(fromByteCount: total, countStyle: .file))"
+        statusMessageLabel.textColor = LinkTheme.ink
+    }
+
+    private func renderActivityHistory() {
+        activityStackView.arrangedSubviews.forEach {
+            activityStackView.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        let entries = transferHistory.load()
+        guard !entries.isEmpty else {
+            let emptyLabel = NSTextField(labelWithString: "Your recent transfers will appear here.")
+            emptyLabel.font = .systemFont(ofSize: 12, weight: .regular)
+            emptyLabel.textColor = NSColor.tertiaryLabelColor
+            activityStackView.addArrangedSubview(emptyLabel)
+            return
+        }
+        entries.prefix(8).forEach { entry in
+            addActivityRow(fileName: entry.fileName, peerName: entry.peerName, size: ByteCountFormatter.string(fromByteCount: entry.bytes, countStyle: .file), isOutgoing: entry.isOutgoing)
+        }
+    }
+
+    private func addActivityRow(fileName: String, peerName: String, size: String, isOutgoing: Bool) {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
@@ -933,12 +1003,39 @@ final class MacGuiApp: NSObject, NSApplicationDelegate {
 
         activityStackView.insertArrangedSubview(row, at: 0)
 
-        // Keep maximum 4 items
-        if activityStackView.arrangedSubviews.count > 4 {
-            if let last = activityStackView.arrangedSubviews.last {
-                activityStackView.removeArrangedSubview(last)
-                last.removeFromSuperview()
-            }
+    }
+}
+
+private struct MacTransferHistoryEntry: Codable {
+    let fileName: String
+    let bytes: Int64
+    let peerName: String
+    let isOutgoing: Bool
+    let completedAt: Date
+
+    init(fileName: String, bytes: Int64, peerName: String, isOutgoing: Bool, completedAt: Date = Date()) {
+        self.fileName = fileName
+        self.bytes = bytes
+        self.peerName = peerName
+        self.isOutgoing = isOutgoing
+        self.completedAt = completedAt
+    }
+}
+
+private final class MacTransferHistoryStore {
+    private let key = "linkbridge.transfer-history"
+    private let defaults = UserDefaults.standard
+
+    func load() -> [MacTransferHistoryEntry] {
+        guard let data = defaults.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([MacTransferHistoryEntry].self, from: data)) ?? []
+    }
+
+    func add(_ entry: MacTransferHistoryEntry) {
+        var entries = load()
+        entries.insert(entry, at: 0)
+        if let data = try? JSONEncoder().encode(Array(entries.prefix(50))) {
+            defaults.set(data, forKey: key)
         }
     }
 }

@@ -3,7 +3,12 @@ import Foundation
 import Network
 
 public enum FileSender {
-    public static func send(filePath: String, endpoint: String, secret: String) throws {
+    public static func send(
+        filePath: String,
+        endpoint: String,
+        secret: String,
+        onProgress: @escaping (Int64, Int64) -> Void = { _, _ in }
+    ) throws {
         let fileURL = URL(fileURLWithPath: filePath)
         let fileName = fileURL.lastPathComponent
         let fileSize = try fileSize(at: fileURL)
@@ -83,6 +88,7 @@ public enum FileSender {
             let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
             if chunk.isEmpty { break }
             try sendSync(connection, chunk)
+            onProgress(Int64(input.offsetInFile), Int64(encryptedSize))
         }
 
         let (status, responseData) = try receiveResponse(connection)
