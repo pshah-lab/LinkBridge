@@ -9,6 +9,8 @@ struct TransferRecord: Codable, Identifiable {
     let date: Date
     let succeeded: Bool
     let detail: String?
+    /// Lets a failed send be retried. Optional so history saved by older versions still loads.
+    var bookmark: Data? = nil
 }
 
 struct PairingPrompt: Identifiable {
@@ -21,17 +23,21 @@ struct PairingPrompt: Identifiable {
 final class LinkBridgeModel: ObservableObject {
     @Published private(set) var nearby: [ResolvedPeer] = []
     @Published private(set) var trusted: [TrustedPeer] = []
-    @Published var selectedPeerId: UUID?
+    @Published private(set) var selectedPeerId: UUID?
     @Published var pairingPrompt: PairingPrompt?
     @Published private(set) var pairingPeerId: UUID?
-    @Published private(set) var progress: Double?
-    @Published private(set) var status = "Ready for private transfers over local Wi-Fi"
+    @Published private(set) var sendPhase: SendPhase = .idle
+    /// Last pairing or send failure; cleared by the next user action.
+    @Published private(set) var lastError: String?
+    /// When each device was last discovered, this run of the app only.
+    @Published private(set) var lastSeen: [UUID: Date] = [:]
     @Published private(set) var history: [TransferRecord] = []
 
     let identity = IdentityStore().loadOrCreate()
     private let browser: PeerBrowser
     private let trustedStore = TrustedPeerStore()
     private var pairingClient: PairingClient?
+    private var selectedFile: (url: URL, bookmark: Data?, bytes: Int64)?
     private static let historyKey = "transferHistory"
 
     init() {
@@ -44,29 +50,40 @@ final class LinkBridgeModel: ObservableObject {
         browser.onChange = { [weak self] peers in
             guard let self else { return }
             self.nearby = peers
-            if self.selectedPeerId == nil {
-                self.selectedPeerId = peers.first { self.isTrusted($0) && $0.secureEndpoint != nil }?.deviceId
+            let now = Date()
+            for id in peers.compactMap(\.deviceId) { self.lastSeen[id] = now }
+            if self.selectedItem?.isSendable != true {
+                self.selectedPeerId = self.deviceItems.first { $0.isSendable }?.deviceId
             }
         }
     }
 
-    var isSending: Bool { progress != nil }
+    var deviceItems: [DeviceListItem] {
+        DeviceListItem.merge(nearby: nearby, trusted: trusted, lastSeen: lastSeen, now: Date())
+    }
 
-    var selectedPeer: ResolvedPeer? {
-        nearby.first { $0.deviceId != nil && $0.deviceId == selectedPeerId }
+    var selectedItem: DeviceListItem? {
+        guard let selectedPeerId else { return nil }
+        return deviceItems.first { $0.deviceId == selectedPeerId }
+    }
+
+    var connectionState: ConnectionState {
+        ConnectionState.derive(nearbyCount: nearby.count, selected: selectedItem,
+                               sendPhase: sendPhase, errorMessage: lastError)
+    }
+
+    var isSending: Bool {
+        if case .sending = sendPhase { return true }
+        return false
     }
 
     func startDiscovery() { browser.start() }
     func stopDiscovery() { browser.stop() }
 
-    func isTrusted(_ peer: ResolvedPeer) -> Bool {
-        guard let id = peer.deviceId else { return false }
-        return trusted.contains { $0.deviceId == id }
-    }
-
-    /// Only the Mac answers pairing requests today; the Android app pairs by initiating.
-    func canPair(_ peer: ResolvedPeer) -> Bool {
-        peer.platform == "macos" && peer.deviceId != nil
+    func select(_ item: DeviceListItem) {
+        guard item.isSendable else { return }
+        selectedPeerId = item.deviceId
+        lastError = nil
     }
 
     func pair(with peer: ResolvedPeer) {
@@ -74,14 +91,13 @@ final class LinkBridgeModel: ObservableObject {
         let client = PairingClient(endpoint: peer.endpoint)
         pairingClient = client
         pairingPeerId = peer.deviceId
-        status = "Contacting \(peer.deviceName)…"
+        lastError = nil
         Task {
             do {
                 let started = try await client.begin()
                 pairingPrompt = PairingPrompt(peerName: started.peerName, code: PairingCode.display(started.code))
-                status = "Check that \(started.peerName) shows the same code, then approve it there"
             } catch {
-                pairingFinished(message: error.localizedDescription)
+                pairingFinished(error: error.localizedDescription)
             }
         }
     }
@@ -90,62 +106,106 @@ final class LinkBridgeModel: ObservableObject {
     func confirmPairing() {
         guard let client = pairingClient else { return }
         pairingPrompt = nil
-        status = "Waiting for approval on the other device…"
         Task {
             do {
                 let peer = try await client.finish()
                 trusted = trustedStore.load()
                 selectedPeerId = peer.deviceId
-                pairingFinished(message: "Paired with \(peer.deviceName)")
+                pairingFinished(error: nil)
             } catch {
-                pairingFinished(message: error.localizedDescription)
+                pairingFinished(error: error.localizedDescription)
             }
         }
     }
 
     func cancelPairing() {
         pairingPrompt = nil
-        pairingFinished(message: "Pairing cancelled")
+        pairingFinished(error: nil)
     }
 
-    private func pairingFinished(message: String) {
+    private func pairingFinished(error: String?) {
         pairingClient = nil
         pairingPeerId = nil
-        status = message
+        lastError = error
     }
 
-    func send(fileAt url: URL) {
-        guard let peer = selectedPeer, let endpoint = peer.secureEndpoint,
-              let id = peer.deviceId, let secret = trustedStore.find(deviceId: id)?.authToken else {
-            status = "Pair with a nearby device first"
+    func choose(fileAt url: URL) {
+        guard !isSending else { return }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        selectedFile = (url, try? url.bookmarkData(), bytes)
+        lastError = nil
+        sendPhase = .ready(fileName: url.lastPathComponent)
+    }
+
+    func sendSelectedFile() {
+        guard let file = selectedFile, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
+              let peer = nearby.first(where: { $0.deviceId != nil && $0.deviceId == selectedPeerId }),
+              let endpoint = peer.secureEndpoint, let id = peer.deviceId,
+              let secret = trustedStore.find(deviceId: id)?.authToken else {
+            lastError = "Pair with a nearby device first"
             return
         }
+        let url = file.url
         let fileName = url.lastPathComponent
-        let accessing = url.startAccessingSecurityScopedResource()
-        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-        progress = 0
-        status = "Sending \(fileName) to \(peer.deviceName)…"
+        lastError = nil
+        sendPhase = .sending(fileName: fileName, progress: 0)
 
         Task.detached { [weak self] in
+            let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }
             var failure: String?
             do {
                 try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
                     let fraction = total > 0 ? Double(sent) / Double(total) : 0
-                    Task { @MainActor in self?.progress = fraction }
+                    Task { @MainActor in
+                        guard let self, case .sending = self.sendPhase else { return }
+                        self.sendPhase = .sending(fileName: fileName, progress: fraction)
+                    }
                 }
             } catch {
                 failure = String(describing: error)
             }
-            await self?.finishTransfer(fileName: fileName, peerName: peer.deviceName, bytes: bytes, failure: failure)
+            await self?.finishTransfer(fileName: fileName, peerName: peer.deviceName, bytes: file.bytes,
+                                       bookmark: file.bookmark, failure: failure)
         }
     }
 
-    private func finishTransfer(fileName: String, peerName: String, bytes: Int64, failure: String?) {
-        progress = nil
-        status = failure.map { "Could not send \(fileName): \($0)" } ?? "Sent \(fileName) to \(peerName)"
-        history.insert(TransferRecord(fileName: fileName, peerName: peerName, bytes: bytes,
-                                      date: Date(), succeeded: failure == nil, detail: failure), at: 0)
+    /// Re-sends the file behind a failed history row to the selected device.
+    func retry(_ record: TransferRecord) {
+        guard !isSending else { return }
+        var stale = false
+        guard let bookmark = record.bookmark,
+              let url = try? URL(resolvingBookmarkData: bookmark, bookmarkDataIsStale: &stale),
+              Self.fileExists(at: url) else {
+            lastError = "That file is no longer available"
+            return
+        }
+        choose(fileAt: url)
+        sendSelectedFile()
+    }
+
+    private static func fileExists(at url: URL) -> Bool {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private func finishTransfer(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failure: String?) {
+        if let failure {
+            sendPhase = .failed(fileName: fileName, message: failure)
+            lastError = "Couldn't send \(fileName)"
+        } else {
+            sendPhase = .sent(fileName: fileName)
+            selectedFile = nil
+            Task {
+                try? await Task.sleep(for: .seconds(2.5))
+                if sendPhase == .sent(fileName: fileName) { sendPhase = .idle }
+            }
+        }
+        history.insert(TransferRecord(fileName: fileName, peerName: peerName, bytes: bytes, date: Date(),
+                                      succeeded: failure == nil, detail: failure, bookmark: bookmark), at: 0)
         history = Array(history.prefix(50))
         if let data = try? JSONEncoder().encode(history) {
             UserDefaults.standard.set(data, forKey: Self.historyKey)
