@@ -67,6 +67,33 @@ adb devices
 ./scripts/install-android-debug.sh
 ```
 
+## Private Release APK
+
+Create a release keystore once outside the repository:
+
+```sh
+./scripts/create-android-keystore.sh
+```
+
+Build a signed, R8-optimized APK by supplying the keystore values through the
+environment. Do not commit these values or put them in `local.properties`:
+
+```sh
+export LINKBRIDGE_KEYSTORE="$HOME/.linkbridge/linkbridge-release.jks"
+export LINKBRIDGE_KEY_ALIAS="linkbridge-release"
+export LINKBRIDGE_KEYSTORE_PASSWORD='your-keystore-password'
+export LINKBRIDGE_KEY_PASSWORD='your-key-password'
+./scripts/build-android-release.sh
+```
+
+Install the signed APK on a connected device:
+
+```sh
+./scripts/install-android-private.sh
+```
+
+The APK is written to `android/app/build/outputs/apk/release/app-release.apk`.
+
 ## Notes
 
 - Android Studio is optional. It is only a GUI around the same SDK and Gradle tools.

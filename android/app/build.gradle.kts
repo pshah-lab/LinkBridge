@@ -17,6 +17,40 @@ android {
         versionName = "0.2.0"
     }
 
+    val signingStoreFile = providers.gradleProperty("linkbridgeStoreFile").orNull
+    val signingStorePassword = providers.gradleProperty("linkbridgeStorePassword").orNull
+    val signingKeyAlias = providers.gradleProperty("linkbridgeKeyAlias").orNull
+    val signingKeyPassword = providers.gradleProperty("linkbridgeKeyPassword").orNull
+    val hasPrivateSigning = listOf(
+        signingStoreFile,
+        signingStorePassword,
+        signingKeyAlias,
+        signingKeyPassword
+    ).all { !it.isNullOrBlank() }
+
+    if (hasPrivateSigning) {
+        signingConfigs {
+            create("privateRelease") {
+                storeFile = file(signingStoreFile!!)
+                storePassword = signingStorePassword
+                keyAlias = signingKeyAlias
+                keyPassword = signingKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if (hasPrivateSigning) signingConfig = signingConfigs.getByName("privateRelease")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
     packaging {
         resources {
             // The BouncyCastle jars each ship the same license file; keep one copy.

@@ -17,6 +17,11 @@ captures/
 *.apk
 *.aab
 
+# Private Android release signing material
+*.keystore
+*.jks
+android/signing.properties
+
 # Distribution / Build output
 dist/
 
