@@ -63,6 +63,23 @@ section("Pairing code matches the independently computed vector") {
     check(PairingCode.randomNonce().count == 32, "nonce length")
 }
 
+section("Pairing v3 code and secret match the independently computed vectors") {
+    // Python hashlib/hmac; the same vectors are in Android's PairingCodeTest.
+    let initiatorKey = Data([4] + Array(1...64))
+    let responderKey = Data([4] + Array(101...164))
+    let initiatorNonce = Data(repeating: 0xAA, count: 32)
+    let responderNonce = Data(repeating: 0x55, count: 32)
+    let initiatorId = UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!
+    let responderId = UUID(uuidString: "FFEEDDCC-BBAA-9988-7766-554433221100")!
+    check(initiatorId.bytes.map { String(format: "%02x", $0) }.joined() == "00112233445566778899aabbccddeeff", "UUID byte order")
+    let code = PairingCode.code(initiatorKey: initiatorKey, responderKey: responderKey, initiatorNonce: initiatorNonce,
+                                responderNonce: responderNonce, initiatorId: initiatorId, responderId: responderId)
+    check(code == "169226", "v3 code vector, got \(code)")
+    let secret = PairingCode.secret(sharedSecret: Data((1...32).map { UInt8($0) }), initiatorNonce: initiatorNonce,
+                                    responderNonce: responderNonce, initiatorId: initiatorId, responderId: responderId)
+    check(secret == "OZz4QmGDcBBB5/OUZlU/RFzGim/W7N18MKq9UM1A5Ow=", "v3 secret vector, got \(secret)")
+}
+
 section("Public key parsing accepts X9.63 and legacy raw, rejects others") {
     let key = P256.KeyAgreement.PrivateKey().publicKey
     check((try? PairingKeyStore.parsePublicKey(key.x963Representation.base64EncodedString())) != nil, "65-byte X9.63")
@@ -436,20 +453,32 @@ func startDecisionServer(
 }
 
 /// Plays the phone's side of the three-step pairing protocol.
-func pairAsPhone(port: UInt16, id: UUID = UUID()) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
+/// `pairingVersion` nil plays an older phone (v1); 3 plays a current one.
+func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = nil) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
     let phone = P256.KeyAgreement.PrivateKey()
     let phoneKey = phone.publicKey.x963Representation
-    let (_, r1) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Check Phone", "platform": "android",
-                                               "protocolVersion": 1, "features": [], "publicKey": phoneKey.base64EncodedString()])
+    var requestBody: [String: Any] = ["deviceId": id.uuidString, "deviceName": "Check Phone", "platform": "android",
+                                      "protocolVersion": 1, "features": [], "publicKey": phoneKey.base64EncodedString()]
+    if let pairingVersion { requestBody["pairingVersion"] = pairingVersion }
+    let (_, r1) = post(port, "/pair/request", requestBody)
+    let v3 = (r1["pairingVersion"] as? Int ?? 1) >= 3
+    check(v3 == ((pairingVersion ?? 1) >= 3), "Mac agrees on pairing version \(pairingVersion ?? 1)")
     let macKey = Data(base64Encoded: r1["publicKey"] as? String ?? "") ?? Data()
     let commitment = Data(base64Encoded: r1["commitment"] as? String ?? "") ?? Data()
     let shared = try! phone.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: macKey))
-    let phoneSecret = Data(SHA256.hash(data: shared.withUnsafeBytes { Data($0) })).base64EncodedString()
+    let rawShared = shared.withUnsafeBytes { Data($0) }
     let nonce = PairingCode.randomNonce()
     let (_, r2) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce.base64EncodedString()])
     let macNonce = Data(base64Encoded: r2["nonce"] as? String ?? "") ?? Data()
     check(PairingCode.commitment(publicKey: macKey, nonce: macNonce) == commitment, "Mac nonce matches its commitment")
-    let code = PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce)
+    let macId = IdentityStore().loadOrCreate().deviceId
+    let code = v3
+        ? PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce,
+                           initiatorId: id, responderId: macId)
+        : PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce)
+    let phoneSecret = v3
+        ? PairingCode.secret(sharedSecret: rawShared, initiatorNonce: nonce, responderNonce: macNonce, initiatorId: id, responderId: macId)
+        : Data(SHA256.hash(data: rawShared)).base64EncodedString()
     let (retry, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce.base64EncodedString()])
     let (status, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString])
     return (status, code, phoneSecret, id, retry)
@@ -507,6 +536,15 @@ DispatchQueue.global().async {
         let again = pairAsPhone(port: port, id: result.deviceId)
         check(again.finalizeStatus == 200, "re-pairing the same device succeeds when approved")
         check(lastRequest?.replacesExisting == true, "re-pairing is flagged as replacing the existing device")
+
+        // Pairing v3: same code on both sides, and re-pairing gives a new secret.
+        let v3 = pairAsPhone(port: port, pairingVersion: 3)
+        check(v3.finalizeStatus == 200 && v3.phoneCode == macCode, "v3 pairing: same code on both sides")
+        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3.phoneSecret, "v3 pairing: Mac stored the same secret")
+        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.protocolVersion == 3, "v3 peer recorded as protocol 3")
+        let v3again = pairAsPhone(port: port, id: v3.deviceId, pairingVersion: 3)
+        check(v3again.finalizeStatus == 200 && v3again.phoneSecret != v3.phoneSecret, "v3 re-pairing rotates the secret")
+        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3again.phoneSecret, "Mac keeps only the new secret")
     }
 
     section("Pairing: decline path") {

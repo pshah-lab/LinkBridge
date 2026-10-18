@@ -22,6 +22,8 @@ struct PublicDeviceIdentity: Codable {
     let protocolVersion: Int
     let features: [String]
     let publicKey: String?
+    /// Sent in /pair/request only; see `PairingCode.pairingVersion`.
+    var pairingVersion: Int? = nil
 }
 
 public final class IdentityStore {

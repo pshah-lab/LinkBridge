@@ -15,13 +15,13 @@ struct PairingSheet: View {
             Text(prompt.code)
                 .font(.system(size: 44, weight: .semibold, design: .monospaced).monospacedDigit())
                 .accessibilityLabel(prompt.code.map(String.init).joined(separator: " "))
-            Text("Check that \(prompt.peerName) shows the same code.")
+            Text("Type this code on \(prompt.peerName), then tap Continue.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             VStack(spacing: 10) {
                 Button(action: onConfirm) {
-                    Text("Codes match")
+                    Text("Continue")
                         .foregroundStyle(Accent.action.onColor)
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }

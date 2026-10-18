@@ -23,7 +23,14 @@ class PairingKeyStore {
         return Base64.encodeToString(raw, Base64.NO_WRAP)
     }
 
+    /** Pairing v1 secret: SHA-256 of the ECDH output. Kept for Macs that don't speak v3. */
     fun deriveSecret(peerPublicKeyBase64: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(sharedSecret(peerPublicKeyBase64))
+        return Base64.encodeToString(digest, Base64.NO_WRAP)
+    }
+
+    /** The raw ECDH output (the x-coordinate), the input to the v3 HKDF. */
+    fun sharedSecret(peerPublicKeyBase64: String): ByteArray {
         val peerBytes = normalizePublicKey(peerPublicKeyBase64)
         val parameters = AlgorithmParameters.getInstance("EC").apply {
             init(ECGenParameterSpec("secp256r1"))
@@ -36,8 +43,7 @@ class PairingKeyStore {
         val agreement = KeyAgreement.getInstance("ECDH")
         agreement.init(keyPair().private)
         agreement.doPhase(peerKey, true)
-        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(agreement.generateSecret())
-        return Base64.encodeToString(digest, Base64.NO_WRAP)
+        return agreement.generateSecret()
     }
 
     /** Returns the 65-byte uncompressed point; accepts the legacy 64-byte Mac encoding. */

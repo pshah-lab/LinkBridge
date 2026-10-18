@@ -29,7 +29,8 @@ class ControlClient {
     }
 
     /** Steps 1-2: exchange keys and nonces. Returns the code to show and the derived secret. */
-    fun beginPairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<PairingSession> {
+    /** [responderId] is the Mac's device ID from [fetchDevice]; v3 puts it in the code. */
+    fun beginPairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity, responderId: String): Result<PairingSession> {
         return runCatching {
             val localKeyBase64 = localIdentity.publicKey ?: pairingKeys.publicKeyBase64()
             val request = postJson(
@@ -41,12 +42,14 @@ class ControlClient {
                     .put("protocolVersion", localIdentity.protocolVersion)
                     .put("features", JSONArray(localIdentity.features))
                     .put("publicKey", localKeyBase64)
+                    .put("pairingVersion", PairingCode.PAIRING_VERSION)
             )
+            val v3 = request.optInt("pairingVersion", 1) >= 3
             val macKeyBase64 = request.optString("publicKey").ifBlank { error("Mac did not provide a public key") }
             val commitment = Base64.decode(request.optString("commitment").ifBlank { error("Mac is running an older LinkBridge; update it to pair") }, Base64.NO_WRAP)
             val macKey = pairingKeys.normalizePublicKey(macKeyBase64)
             val localKey = pairingKeys.normalizePublicKey(localKeyBase64)
-            val secret = pairingKeys.deriveSecret(macKeyBase64)
+            val shared = pairingKeys.sharedSecret(macKeyBase64)
 
             val localNonce = PairingCode.randomNonce()
             val confirm = postJson(
@@ -60,10 +63,19 @@ class ControlClient {
                 error("Pairing check failed: the Mac's reply doesn't match its commitment. Someone may be intercepting this connection.")
             }
 
-            PairingSession(
-                code = PairingCode.code(localKey, macKey, localNonce, macNonce),
-                authToken = secret
-            )
+            if (v3) {
+                PairingSession(
+                    code = PairingCode.code(localKey, macKey, localNonce, macNonce, localIdentity.deviceId, responderId),
+                    authToken = android.util.Base64.encodeToString(
+                        PairingCode.secret(shared, localNonce, macNonce, localIdentity.deviceId, responderId), Base64.NO_WRAP
+                    )
+                )
+            } else {
+                PairingSession(
+                    code = PairingCode.code(localKey, macKey, localNonce, macNonce),
+                    authToken = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(shared), Base64.NO_WRAP)
+                )
+            }
         }
     }
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Initiator side of pairing (what the Android app does against the Mac), for
@@ -31,7 +32,8 @@ public final class PairingClient {
 
         let body = try JSONEncoder().encode(PublicDeviceIdentity(
             deviceId: identity.deviceId, deviceName: identity.deviceName, platform: identity.platform,
-            protocolVersion: ControlServer.protocolVersion, features: identity.features, publicKey: identity.publicKey
+            protocolVersion: ControlServer.protocolVersion, features: identity.features, publicKey: identity.publicKey,
+            pairingVersion: PairingCode.pairingVersion
         ))
         let reply = try JSONDecoder().decode(PairRequestReply.self, from: try await request("POST", "/pair/request", body: body))
         guard let commitmentText = reply.commitment, let commitment = Data(base64Encoded: commitmentText) else {
@@ -39,7 +41,9 @@ public final class PairingClient {
         }
         let peerKey = try PairingKeyStore.parsePublicKey(reply.publicKey).x963Representation
         let localKey = try PairingKeyStore.parsePublicKey(identity.publicKey).x963Representation
-        let secret = try PairingKeyStore().deriveSecret(peerPublicKeyBase64: reply.publicKey)
+        let keys = PairingKeyStore()
+        let v3 = (reply.pairingVersion ?? 1) >= 3
+        let shared = try keys.sharedSecret(peerPublicKeyBase64: reply.publicKey)
 
         let nonce = PairingCode.randomNonce()
         let confirmBody = try JSONSerialization.data(withJSONObject: [
@@ -51,8 +55,18 @@ public final class PairingClient {
             throw PairingClientError.commitmentMismatch
         }
 
+        let code: String
+        let secret: String
+        if v3 {
+            code = PairingCode.code(initiatorKey: localKey, responderKey: peerKey, initiatorNonce: nonce, responderNonce: peerNonce,
+                                    initiatorId: identity.deviceId, responderId: peer.deviceId)
+            secret = PairingCode.secret(sharedSecret: shared, initiatorNonce: nonce, responderNonce: peerNonce,
+                                        initiatorId: identity.deviceId, responderId: peer.deviceId)
+        } else {
+            code = PairingCode.code(initiatorKey: localKey, responderKey: peerKey, initiatorNonce: nonce, responderNonce: peerNonce)
+            secret = Data(SHA256.hash(data: shared)).base64EncodedString()
+        }
         pending = (peer, secret)
-        let code = PairingCode.code(initiatorKey: localKey, responderKey: peerKey, initiatorNonce: nonce, responderNonce: peerNonce)
         return Started(code: code, peerName: DeviceNames.sanitize(peer.deviceName))
     }
 
@@ -96,6 +110,7 @@ public final class PairingClient {
 private struct PairRequestReply: Decodable {
     let publicKey: String
     let commitment: String?
+    let pairingVersion: Int?
 }
 
 private struct PairConfirmReply: Decodable {

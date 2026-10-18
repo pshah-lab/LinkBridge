@@ -13,11 +13,16 @@ final class PairingKeyStore {
     /// key store can't be read right now, so pairing fails instead of using a new key.
     var publicKeyBase64: String { (try? privateKey())?.publicKey.x963Representation.base64EncodedString() ?? "" }
 
+    /// Pairing v1 secret: SHA-256 of the ECDH output. Kept for peers that don't speak v3.
     func deriveSecret(peerPublicKeyBase64: String) throws -> String {
+        Data(SHA256.hash(data: try sharedSecret(peerPublicKeyBase64: peerPublicKeyBase64))).base64EncodedString()
+    }
+
+    /// The raw ECDH output (the x-coordinate), the input to the v3 HKDF.
+    func sharedSecret(peerPublicKeyBase64: String) throws -> Data {
         let peer = try PairingKeyStore.parsePublicKey(peerPublicKeyBase64)
         let shared = try privateKey().sharedSecretFromKeyAgreement(with: peer)
-        let digest = SHA256.hash(data: shared.withUnsafeBytes { Data($0) })
-        return Data(digest).base64EncodedString()
+        return shared.withUnsafeBytes { Data($0) }
     }
 
     /// Accepts both the 65-byte X9.63 form and the legacy 64-byte raw form.

@@ -473,27 +473,29 @@ public final class ControlServer {
         peerIdentity.deviceName = DeviceNames.sanitize(peerIdentity.deviceName)
         guard let peerPublicKey = peerIdentity.publicKey,
               let peerKey = try? PairingKeyStore.parsePublicKey(peerPublicKey),
-              let sharedSecret = try? PairingKeyStore().deriveSecret(peerPublicKeyBase64: peerPublicKey),
+              let sharedSecret = try? PairingKeyStore().sharedSecret(peerPublicKeyBase64: peerPublicKey),
               let macKey = try? PairingKeyStore.parsePublicKey(identity.publicKey) else {
             return jsonError("400 Bad Request", "missing_public_key")
         }
 
         let nonce = PairingCode.randomNonce()
         let macKeyData = macKey.x963Representation
+        let version = min(peerIdentity.pairingVersion ?? 1, PairingCode.pairingVersion)
         let started = pendingPairings.begin(PendingPairing(
             peer: peerIdentity,
             source: source,
             peerKey: peerKey.x963Representation,
             macKey: macKeyData,
             sharedSecret: sharedSecret,
-            nonce: nonce
+            nonce: nonce,
+            version: version
         ), limit: maxPendingPairings)
         guard started else {
             return jsonError("429 Too Many Requests", "pairing_unavailable")
         }
 
         let commitment = PairingCode.commitment(publicKey: macKeyData, nonce: nonce).base64EncodedString()
-        let json = #"{"status":"pending","publicKey":"\#(macKeyData.base64EncodedString())","commitment":"\#(commitment)"}"#
+        let json = #"{"status":"pending","publicKey":"\#(macKeyData.base64EncodedString())","commitment":"\#(commitment)","pairingVersion":\#(version)}"#
         return HTTPResponse(status: "200 OK", body: Data(json.utf8))
     }
 
@@ -518,12 +520,18 @@ public final class ControlServer {
             return jsonError("409 Conflict", "no_pending_pairing")
         }
 
-        let code = PairingCode.code(
-            initiatorKey: pending.peerKey,
-            responderKey: pending.macKey,
-            initiatorNonce: peerNonce,
-            responderNonce: pending.nonce
-        )
+        let code: String
+        let secret: String
+        if pending.version >= 3 {
+            code = PairingCode.code(initiatorKey: pending.peerKey, responderKey: pending.macKey, initiatorNonce: peerNonce,
+                                    responderNonce: pending.nonce, initiatorId: pending.peer.deviceId, responderId: identity.deviceId)
+            secret = PairingCode.secret(sharedSecret: pending.sharedSecret, initiatorNonce: peerNonce, responderNonce: pending.nonce,
+                                        initiatorId: pending.peer.deviceId, responderId: identity.deviceId)
+        } else {
+            code = PairingCode.code(initiatorKey: pending.peerKey, responderKey: pending.macKey,
+                                    initiatorNonce: peerNonce, responderNonce: pending.nonce)
+            secret = Data(SHA256.hash(data: pending.sharedSecret)).base64EncodedString()
+        }
         let request = IncomingPairRequest(
             id: UUID(),
             deviceName: pending.peer.deviceName,
@@ -549,10 +557,10 @@ public final class ControlServer {
                         deviceId: pending.peer.deviceId,
                         deviceName: pending.peer.deviceName,
                         platform: pending.peer.platform,
-                        protocolVersion: pending.peer.protocolVersion,
+                        protocolVersion: max(pending.peer.protocolVersion, pending.version),
                         features: pending.peer.features,
                         pairedAt: Date(),
-                        authToken: pending.sharedSecret
+                        authToken: secret
                     )
                 )
                 onPaired()
@@ -1130,6 +1138,7 @@ private struct PairRequestIdentity: Codable {
     let protocolVersion: Int
     let features: [String]
     let publicKey: String?
+    let pairingVersion: Int?
 }
 
 private struct PairConfirmBody: Codable {
@@ -1147,20 +1156,24 @@ private struct PendingPairing {
     let source: String
     let peerKey: Data
     let macKey: Data
-    let sharedSecret: String
+    /// Raw ECDH output; the stored secret is derived from it once both nonces are known.
+    let sharedSecret: Data
     let nonce: Data
+    /// Pairing protocol both sides speak (1 or 3).
+    let version: Int
     var peerNonce: Data?
     var decision: Bool?
     var waiters: [(Bool) -> Void] = []
     var expiresAt = Date().addingTimeInterval(ControlServer.pairingLifetime)
 
-    init(peer: PairRequestIdentity, source: String, peerKey: Data, macKey: Data, sharedSecret: String, nonce: Data) {
+    init(peer: PairRequestIdentity, source: String, peerKey: Data, macKey: Data, sharedSecret: Data, nonce: Data, version: Int) {
         self.peer = peer
         self.source = source
         self.peerKey = peerKey
         self.macKey = macKey
         self.sharedSecret = sharedSecret
         self.nonce = nonce
+        self.version = version
     }
 }
 
