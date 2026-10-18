@@ -821,8 +821,9 @@ public final class ControlServer {
                 sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
                 return
             }
-            let escaped = error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\"")
-            sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"save_failed","message":"\#(escaped)"}"#.data(using: .utf8)!)
+            // The detail can name local paths (and the user's name), so it stays in the log.
+            print("Receive failed: \(error)")
+            sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"save_failed"}"#.data(using: .utf8)!)
         }
     }
 
