@@ -13,8 +13,11 @@ class DiscoveryService(
     context: Context,
     private val identity: DeviceIdentity,
     private val port: Int,
+    private val trustedPeers: () -> List<TrustedPeer> = { TrustedPeerStore(context).load() },
     private val onPeersChanged: (List<DiscoveredPeer>) -> Unit = {}
 ) {
+    /** Random per registration; see [DiscoveryTags]. */
+    private val rid = DiscoveryTags.randomRid()
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val peers = linkedMapOf<String, DiscoveredPeer>()
@@ -79,7 +82,10 @@ class DiscoveryService(
             serviceName = identity.deviceName
             serviceType = SERVICE_TYPE
             port = this@DiscoveryService.port
-            setAttribute("deviceId", identity.deviceId)
+            // No deviceId: a stable ID would let anyone on any network recognize this phone.
+            // Paired devices recognize it by their tag instead; rescan() re-registers after pairing.
+            setAttribute("rid", rid)
+            setAttribute("tags", DiscoveryTags.tags(trustedPeers().reversed().mapNotNull { it.authToken }, rid))
             setAttribute("deviceName", identity.deviceName)
             setAttribute("platform", identity.platform)
             // Protocol 2: transfers use TLS-PSK on tlsPort (the receive server is TLS-only).
@@ -134,7 +140,7 @@ class DiscoveryService(
                 resolvingServices.remove(resolvedService.serviceName)
 
                 val peer = resolvedService.toPeer() ?: return
-                if (peer.deviceId == identity.deviceId) return
+                if (peer.isSelf()) return
 
                 peers[peer.serviceName] = peer
                 publishPeers()
@@ -158,7 +164,7 @@ class DiscoveryService(
 
             override fun onServiceUpdated(updated: NsdServiceInfo) {
                 val peer = updated.toPeer() ?: return
-                if (peer.deviceId == identity.deviceId) return
+                if (peer.isSelf()) return
                 peers[name] = peer
                 publishPeers()
             }
@@ -175,9 +181,15 @@ class DiscoveryService(
             .onFailure { infoCallbacks.remove(name); Log.e(TAG, "Could not watch $name", it) }
     }
 
+    private fun DiscoveredPeer.isSelf() = deviceId == identity.deviceId
+
     private fun NsdServiceInfo.toPeer(): DiscoveredPeer? {
         val hostAddress = hostAddress() ?: return null
-        val deviceId = attributes["deviceId"]?.decodeToString()
+        val advertisedRid = attributes["rid"]?.decodeToString()
+        val tags = attributes["tags"]?.decodeToString()
+        // Current advertisers carry tags only paired devices can match; older ones a deviceId.
+        val matched = if (advertisedRid != null && tags != null) DiscoveryTags.match(advertisedRid, tags, trustedPeers()) else null
+        val deviceId = if (advertisedRid == rid) identity.deviceId else matched ?: attributes["deviceId"]?.decodeToString()
         val deviceName = attributes["deviceName"]?.decodeToString()?.ifBlank { serviceName } ?: serviceName
         val platform = attributes["platform"]?.decodeToString()
         val tlsPort = attributes["tlsPort"]?.decodeToString()?.toIntOrNull()

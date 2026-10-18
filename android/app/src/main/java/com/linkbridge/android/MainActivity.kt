@@ -569,6 +569,8 @@ class MainActivity : ComponentActivity() {
                                 authToken = session.authToken
                             )
                         )
+                        // Re-advertise so the new peer's discovery tag is published.
+                        LinkBridgeHub.rescan()
                         pairButton.visibility = View.GONE
                         pairButton.isEnabled = true
                         sendFileButton.visibility = View.VISIBLE

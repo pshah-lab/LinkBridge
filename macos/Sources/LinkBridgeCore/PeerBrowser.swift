@@ -11,9 +11,14 @@ public final class PeerBrowser: NSObject {
     private var services: [String: NetService] = [:]
     private var peers: [String: ResolvedPeer] = [:]
     private let localDeviceId: UUID?
+    private let localRid: String?
+    private let trustedPeers: () -> [TrustedPeer]
 
-    public init(localDeviceId: UUID? = nil) {
+    /// `localRid` is this device's own advertised `rid`, so it can skip itself.
+    public init(localDeviceId: UUID? = nil, localRid: String? = ControlServer.discoveryRid, trustedPeers: @escaping () -> [TrustedPeer] = { TrustedPeerStore().load() }) {
         self.localDeviceId = localDeviceId
+        self.localRid = localRid
+        self.trustedPeers = trustedPeers
         super.init()
     }
 
@@ -65,7 +70,11 @@ extension PeerBrowser: NetServiceDelegate {
         guard services[sender.name] === sender, let host = sender.hostName, sender.port > 0 else { return }
         let txt = sender.txtRecordData().map(NetService.dictionary(fromTXTRecord:)) ?? [:]
         func value(_ key: String) -> String? { txt[key].map { String(decoding: $0, as: UTF8.self) } }
-        let deviceId = value("deviceId").flatMap(UUID.init(uuidString:))
+        let rid = value("rid")
+        if let rid, rid == localRid { return }
+        // Current advertisers carry tags only paired devices can match; older ones a deviceId.
+        let matched = rid.flatMap { rid in value("tags").flatMap { DiscoveryTags.match(rid: rid, tags: $0, peers: trustedPeers()) } }
+        let deviceId = matched?.deviceId ?? value("deviceId").flatMap(UUID.init(uuidString:))
         if let deviceId, deviceId == localDeviceId { return }
 
         peers[sender.name] = ResolvedPeer(

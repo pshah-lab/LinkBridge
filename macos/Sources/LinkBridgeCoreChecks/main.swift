@@ -80,6 +80,24 @@ section("Pairing v3 code and secret match the independently computed vectors") {
     check(secret == "OZz4QmGDcBBB5/OUZlU/RFzGim/W7N18MKq9UM1A5Ow=", "v3 secret vector, got \(secret)")
 }
 
+section("Discovery tags: only a paired device can recognize the advertiser") {
+    let secret = Data((1...32).map { UInt8($0) }).base64EncodedString()
+    // Python hashlib/hmac; the same vector is in Android's DiscoveryTagsTest.
+    check(DiscoveryTags.tag(secret: secret, rid: "000102030405060708090a0b0c0d0e0f") == "e715ba5b9a4483e8", "tag vector")
+    let rid = DiscoveryTags.randomRid()
+    check(rid.count == 32 && rid != DiscoveryTags.randomRid(), "rid is random 16 bytes")
+    let mine = TrustedPeer(deviceId: UUID(), deviceName: "Mine", platform: "android", protocolVersion: 3, features: [],
+                           pairedAt: Date(), authToken: secret)
+    let stranger = TrustedPeer(deviceId: UUID(), deviceName: "Other", platform: "android", protocolVersion: 3, features: [],
+                               pairedAt: Date(), authToken: Security.generateToken())
+    let tags = DiscoveryTags.tags(secrets: [Security.generateToken(), secret], rid: rid)
+    check(DiscoveryTags.match(rid: rid, tags: tags, peers: [stranger, mine])?.deviceId == mine.deviceId, "paired device matched")
+    check(DiscoveryTags.match(rid: rid, tags: tags, peers: [stranger]) == nil, "unpaired device not matched")
+    check(DiscoveryTags.match(rid: DiscoveryTags.randomRid(), tags: tags, peers: [mine]) == nil, "tags don't carry over to another rid")
+    let many = DiscoveryTags.tags(secrets: (0..<30).map { _ in Security.generateToken() }, rid: rid)
+    check(many.split(separator: ",").count == 14 && ("tags=" + many).utf8.count <= 255, "fits one TXT value")
+}
+
 section("Public key parsing accepts X9.63 and legacy raw, rejects others") {
     let key = P256.KeyAgreement.PrivateKey().publicKey
     check((try? PairingKeyStore.parsePublicKey(key.x963Representation.base64EncodedString())) != nil, "65-byte X9.63")

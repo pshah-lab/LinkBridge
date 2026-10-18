@@ -239,9 +239,16 @@ public final class ControlServer {
         listener?.service = advertisedService()
     }
 
+    /// Random per launch, shared by every server in the process; see `DiscoveryTags`.
+    public static let discoveryRid = DiscoveryTags.randomRid()
+
     private func advertisedService() -> NWListener.Service {
         var txt = NWTXTRecord()
-        txt["deviceId"] = identity.deviceId.uuidString
+        // No deviceId: a stable ID would let anyone on any network recognize this Mac.
+        // Paired devices recognize it by their tag instead.
+        txt["rid"] = Self.discoveryRid
+        let secrets = trustedPeerStore.load().sorted { $0.pairedAt > $1.pairedAt }.compactMap(\.authToken)
+        txt["tags"] = DiscoveryTags.tags(secrets: secrets, rid: Self.discoveryRid)
         txt["deviceName"] = identity.deviceName
         txt["platform"] = identity.platform
         txt["protocol"] = String(Self.protocolVersion)
