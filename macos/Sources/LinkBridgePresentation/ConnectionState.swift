@@ -1,7 +1,7 @@
 import Foundation
 
 /// What the connection rail shows.
-enum ConnectionState: Equatable {
+public enum ConnectionState: Equatable {
     case searching
     case noPairedDevice
     case ready(deviceName: String)
@@ -9,7 +9,7 @@ enum ConnectionState: Equatable {
     case error(message: String)
 
     /// Priority: error, then an active send, then a sendable selection, then searching.
-    static func derive(nearbyCount: Int, selected: DeviceListItem?, sendPhase: SendPhase,
+    public static func derive(nearbyCount: Int, selected: DeviceListItem?, sendPhase: SendPhase,
                        errorMessage: String?) -> ConnectionState {
         if let errorMessage { return .error(message: errorMessage) }
         // A transfer in flight stays visible even if its target briefly drops off discovery.
@@ -20,7 +20,7 @@ enum ConnectionState: Equatable {
         return nearbyCount == 0 ? .searching : .noPairedDevice
     }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .searching: "Looking for devices…"
         case .noPairedDevice: "No paired device nearby"
@@ -29,7 +29,7 @@ enum ConnectionState: Equatable {
         }
     }
 
-    var dotLabel: String {
+    public var dotLabel: String {
         switch self {
         case .ready, .sending: "Connected"
         case .searching, .noPairedDevice: "Searching"
@@ -38,7 +38,7 @@ enum ConnectionState: Equatable {
     }
 
     /// Nil means the neutral grey dot.
-    var dotAccent: Accent? {
+    public var dotAccent: Accent? {
         switch self {
         case .ready, .sending: .signal
         case .error: .attention

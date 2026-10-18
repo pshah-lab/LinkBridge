@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A1000000000000000000000B /* LinkBridgeCore in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000000A /* LinkBridgeCore */; };
+		A1000000000000000000000E /* LinkBridgePresentation in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000000D /* LinkBridgePresentation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000B /* LinkBridgeCore in Frameworks */,
+				A1000000000000000000000E /* LinkBridgePresentation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -82,6 +84,7 @@
 			name = LinkBridgeIOS;
 			packageProductDependencies = (
 				A1000000000000000000000A /* LinkBridgeCore */,
+				A1000000000000000000000D /* LinkBridgePresentation */,
 			);
 			productName = LinkBridgeIOS;
 			productReference = A10000000000000000000002 /* LinkBridgeIOS.app */;
@@ -359,6 +362,11 @@
 		A1000000000000000000000A /* LinkBridgeCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = LinkBridgeCore;
+		};
+		A1000000000000000000000D /* LinkBridgePresentation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1000000000000000000000C /* XCLocalSwiftPackageReference "../macos" */;
+			productName = LinkBridgePresentation;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

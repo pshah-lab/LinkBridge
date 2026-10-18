@@ -1,10 +1,10 @@
 import Foundation
 import LinkBridgeCore
 
-enum DevicePlatform: Equatable {
+public enum DevicePlatform: Equatable {
     case mac, android, iphone, unknown
 
-    init(_ raw: String?) {
+    public init(_ raw: String?) {
         switch raw {
         case "macos": self = .mac
         case "android": self = .android
@@ -13,7 +13,7 @@ enum DevicePlatform: Equatable {
         }
     }
 
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .mac: "laptopcomputer"
         case .android: "smartphone"
@@ -24,20 +24,33 @@ enum DevicePlatform: Equatable {
 }
 
 /// One row in the Devices list: a nearby peer, a paired device, or both.
-struct DeviceListItem: Identifiable, Equatable {
-    let id: String
-    let deviceId: UUID?
-    let name: String
-    let platform: DevicePlatform
-    let isPaired: Bool
-    let isNearby: Bool
-    let isSendable: Bool
-    let canPair: Bool
-    let subtitle: String
+public struct DeviceListItem: Identifiable, Equatable {
+    public let id: String
+    public let deviceId: UUID?
+    public let name: String
+    public let platform: DevicePlatform
+    public let isPaired: Bool
+    public let isNearby: Bool
+    public let isSendable: Bool
+    public let canPair: Bool
+    public let subtitle: String
+
+    public init(id: String, deviceId: UUID?, name: String, platform: DevicePlatform, isPaired: Bool, isNearby: Bool,
+                isSendable: Bool, canPair: Bool, subtitle: String) {
+        self.id = id
+        self.deviceId = deviceId
+        self.name = name
+        self.platform = platform
+        self.isPaired = isPaired
+        self.isNearby = isNearby
+        self.isSendable = isSendable
+        self.canPair = canPair
+        self.subtitle = subtitle
+    }
 
     /// Nearby paired devices first, then nearby unpaired, then paired devices that are away;
     /// names sorted A→Z within each group.
-    static func merge(nearby: [ResolvedPeer], trusted: [TrustedPeer],
+    public static func merge(nearby: [ResolvedPeer], trusted: [TrustedPeer],
                       lastSeen: [UUID: Date], now: Date) -> [DeviceListItem] {
         let trustedIds = Set(trusted.map(\.deviceId))
         let nearbyIds = Set(nearby.compactMap(\.deviceId))
@@ -88,8 +101,8 @@ struct DeviceListItem: Identifiable, Equatable {
 /// Which device Send targets. The user's pick wins whenever it is sendable; otherwise the first
 /// sendable device stands in until the pick comes back. Nothing changes mid-send or when discovery
 /// reports no devices at all (for example while the app is in the background).
-enum DeviceSelection {
-    static func resolve(current: UUID?, preferred: UUID?, items: [DeviceListItem], isSending: Bool) -> UUID? {
+public enum DeviceSelection {
+    public static func resolve(current: UUID?, preferred: UUID?, items: [DeviceListItem], isSending: Bool) -> UUID? {
         if isSending || items.isEmpty { return current }
         let sendable = items.filter(\.isSendable)
         if let preferred, sendable.contains(where: { $0.deviceId == preferred }) { return preferred }

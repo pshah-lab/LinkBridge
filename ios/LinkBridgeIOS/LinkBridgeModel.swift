@@ -1,17 +1,6 @@
+import LinkBridgePresentation
 import Foundation
 import LinkBridgeCore
-
-struct TransferRecord: Codable, Identifiable {
-    var id = UUID()
-    let fileName: String
-    let peerName: String
-    let bytes: Int64
-    let date: Date
-    let succeeded: Bool
-    let detail: String?
-    /// Lets a failed send be retried. Optional so history saved by older versions still loads.
-    var bookmark: Data? = nil
-}
 
 struct PairingPrompt: Identifiable {
     let id = UUID()

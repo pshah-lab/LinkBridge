@@ -10,6 +10,7 @@ let package = Package(
     ],
     products: [
         .library(name: "LinkBridgeCore", targets: ["LinkBridgeCore"]),
+        .library(name: "LinkBridgePresentation", targets: ["LinkBridgePresentation"]),
         .executable(name: "LinkBridge", targets: ["LinkBridge"]),
         .executable(name: "linkbridge-cli", targets: ["linkbridge-cli"])
     ],
@@ -20,10 +21,16 @@ let package = Package(
             name: "LinkBridgeCore",
             path: "Sources/LinkBridgeCore"
         ),
+        // Display logic shared by the Mac and iOS apps. Foundation only: no SwiftUI, AppKit or UIKit.
+        .target(
+            name: "LinkBridgePresentation",
+            dependencies: ["LinkBridgeCore"],
+            path: "Sources/LinkBridgePresentation"
+        ),
         // The Mac app that ships in the App Store bundle.
         .executableTarget(
             name: "LinkBridge",
-            dependencies: ["LinkBridgeCore"],
+            dependencies: ["LinkBridgeCore", "LinkBridgePresentation"],
             path: "Sources/LinkBridge"
         ),
         // Developer tool: headless server and command-line sends. Not shipped.
@@ -36,7 +43,7 @@ let package = Package(
         // Command Line Tools: `swift run LinkBridgeCoreChecks`.
         .executableTarget(
             name: "LinkBridgeCoreChecks",
-            dependencies: ["LinkBridgeCore"],
+            dependencies: ["LinkBridgeCore", "LinkBridgePresentation"],
             path: "Sources/LinkBridgeCoreChecks"
         )
     ],

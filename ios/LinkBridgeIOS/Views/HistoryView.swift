@@ -1,3 +1,4 @@
+import LinkBridgePresentation
 import SwiftUI
 
 /// History tab: every recorded send, newest first. Solid rows; failed rows can be retried.

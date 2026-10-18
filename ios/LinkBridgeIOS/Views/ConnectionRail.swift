@@ -1,3 +1,4 @@
+import LinkBridgePresentation
 import SwiftUI
 
 /// Glass capsule at the top of every tab: the active device and its connection state.

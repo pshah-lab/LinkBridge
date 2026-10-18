@@ -126,6 +126,10 @@ section("Decryption rejects tampering, truncation and the wrong key") {
     check((try? ChunkedDecryptor(secret: Security.generateToken()).consume(good) { _ in }) == nil, "wrong key rejected")
 }
 
+// MARK: - Presentation (PresentationChecks.swift)
+
+runPresentationChecks()
+
 // MARK: - Live server checks (run off the main thread; the server uses the main queue)
 
 func startServer(preferredPort: UInt16, approve: @escaping () -> Bool, lastRequest: @escaping (IncomingPairRequest) -> Void = { _ in }) -> (ControlServer, UInt16) {

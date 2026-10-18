@@ -1,3 +1,4 @@
+import LinkBridgePresentation
 import SwiftUI
 
 /// Glass sheet asking the user to compare the pairing code with the other device.
