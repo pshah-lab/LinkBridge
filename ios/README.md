@@ -21,12 +21,15 @@ pairing, TLS-PSK transport, AES-GCM chunk encryption, and SHA-256 verification.
   in the shared `LinkBridgeIOS` scheme). Run them with:
 
   ```bash
-  xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destination 'platform=iOS Simulator,name=iPhone Duo' CODE_SIGNING_ALLOWED=NO test
+  xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destination 'platform=iOS Simulator,name=iPhone Duo' CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= test
   ```
 - `Info.plist` — extra keys (local network prompt, `_linkbridge._tcp` Bonjour)
   merged into the generated Info.plist.
 
-Build for the Simulator from the command line:
+Build for the Simulator from the command line. To run the app (not just
+compile it), sign ad hoc instead (`CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
+DEVELOPMENT_TEAM=`): an unsigned build can't use the Keychain, so pairing
+secrets can't be saved or read.
 
 ```bash
 xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
@@ -34,12 +37,15 @@ xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destinati
 
 ## What works
 
+- Liquid Glass interface (iOS 26): Devices, Send and History tabs with a glass tab
+  bar, a glass connection capsule showing the active device, and a Send button
+  that turns into a progress bar. Settings lists this iPhone and paired devices.
 - Discovers nearby LinkBridge devices over Bonjour while the app is open.
-- Pairs with the Mac app using the six-digit code (iPhone initiates, the Mac
-  approves). The Android app only initiates pairing, so it can't pair with the
-  iPhone yet.
-- Sends a chosen file to a paired device over TLS-PSK with progress, and keeps a
-  history of sends.
+- Pairs with the Mac app using the six-digit code in a glass sheet (iPhone
+  initiates, the Mac approves). The Android app only initiates pairing, so it
+  can't pair with the iPhone yet.
+- Sends a chosen or dropped file to a paired device over TLS-PSK with progress,
+  keeps a history of sends, and can retry a failed send from History.
 - Secrets (identity token, pairing key, peer secrets) live in the iOS Keychain.
 
 Not yet: receiving files on iOS (iOS can't keep a background server running) and

@@ -20,7 +20,9 @@ struct PairingSheet: View {
                 .multilineTextAlignment(.center)
             VStack(spacing: 10) {
                 Button(action: onConfirm) {
-                    Text("Codes match").frame(maxWidth: .infinity, minHeight: 44)
+                    Text("Codes match")
+                        .foregroundStyle(Accent.action.onColor)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.glassProminent)
                 .tint(Accent.action.color)

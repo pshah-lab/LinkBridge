@@ -21,10 +21,32 @@ enum Accent: CaseIterable {
         }
     }
 
-    var color: Color {
-        let light = UIColor(hex: lightHex), dark = UIColor(hex: darkHex)
+    /// Label colour on a fill of this accent: white only where it reaches 4.5:1, otherwise ink.
+    var onLightHex: UInt32 { self == .action ? 0xFFFFFF : Self.ink }
+    var onDarkHex: UInt32 { Self.ink }
+
+    var color: Color { Self.dynamic(light: lightHex, dark: darkHex) }
+    var onColor: Color { Self.dynamic(light: onLightHex, dark: onDarkHex) }
+
+    private static let ink: UInt32 = 0x10151F
+
+    private static func dynamic(light: UInt32, dark: UInt32) -> Color {
+        let light = UIColor(hex: light), dark = UIColor(hex: dark)
         return Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? dark : light })
     }
+}
+
+/// WCAG 2 contrast ratio between two sRGB colours given as 0xRRGGBB.
+func contrastRatio(_ a: UInt32, _ b: UInt32) -> Double {
+    func luminance(_ hex: UInt32) -> Double {
+        func channel(_ value: UInt32) -> Double {
+            let c = Double(value & 0xFF) / 255
+            return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * channel(hex >> 16) + 0.7152 * channel(hex >> 8) + 0.0722 * channel(hex)
+    }
+    let (la, lb) = (luminance(a), luminance(b))
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 }
 
 private extension UIColor {

@@ -39,7 +39,7 @@ struct SendControl: View {
         case .sent:
             Label(phase.actionTitle, systemImage: phase.actionSymbol)
                 .font(.headline)
-                .foregroundStyle(.white)
+                .foregroundStyle(Accent.signal.onColor)
                 .padding(.horizontal, 24)
                 .frame(minHeight: 52)
                 .glassEffect(.regular.tint(Accent.signal.color), in: .capsule)
@@ -47,6 +47,7 @@ struct SendControl: View {
             Button(action: action) {
                 Label(phase.actionTitle, systemImage: phase.actionSymbol)
                     .font(.headline)
+                    .foregroundStyle((isFailed ? Accent.attention : Accent.action).onColor)
                     .padding(.horizontal, 12)
                     .frame(minHeight: 44)
             }

@@ -3,6 +3,7 @@ import SwiftUI
 /// Devices tab: nearby and paired devices. Solid rows; glass stays on the controls layer.
 struct DevicesView: View {
     @ObservedObject var model: LinkBridgeModel
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let items = model.deviceItems
@@ -22,10 +23,14 @@ struct DevicesView: View {
         return Button {
             model.select(item)
         } label: {
-            HStack(spacing: 12) {
+            // At accessibility text sizes the icon moves above the name so the name keeps the full width.
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 12))
+            layout {
                 Image(systemName: item.platform.symbol)
                     .font(.title3)
-                    .frame(width: 28)
+                    .frame(minWidth: 28)
                     .foregroundStyle(item.isNearby ? Accent.action.color : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name)
