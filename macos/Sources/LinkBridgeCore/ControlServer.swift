@@ -609,6 +609,14 @@ public final class ControlServer {
             return
         }
 
+        // The device that completed the TLS handshake must be the one the upload claims to be
+        // from, as on Android. The HMAC already needs that device's secret; this keeps one
+        // paired device from posing as another if that layer is ever weakened.
+        guard SecureTransport.negotiatedIdentity(of: connection) == SecureTransport.identity(for: senderId) else {
+            sendJSON(connection: connection, status: "401 Unauthorized", body: Data(#"{"error":"identity_mismatch"}"#.utf8))
+            return
+        }
+
         guard encryption == Security.encryptionScheme else {
             sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"encryption_required"}"#.data(using: .utf8)!)
             return

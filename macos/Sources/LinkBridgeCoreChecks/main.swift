@@ -377,6 +377,43 @@ func serverCloses(port: UInt16, parameters: NWParameters = .tcp, _ text: String 
     return closed
 }
 
+/// Sends `text` over a connection with `parameters` and returns the first reply, or "".
+func request(port: UInt16, parameters: NWParameters, _ text: String) -> String {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: parameters)
+    let done = DispatchSemaphore(value: 0)
+    var reply = ""
+    connection.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+            connection.send(content: Data(text.utf8), completion: .contentProcessed { _ in })
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+                reply = String(decoding: data ?? Data(), as: UTF8.self)
+                done.signal()
+            }
+        case .failed:
+            done.signal()
+        default:
+            break
+        }
+    }
+    connection.start(queue: .global())
+    _ = done.wait(timeout: .now() + 5)
+    connection.cancel()
+    return reply
+}
+
+/// A signed upload head for `deviceId`, with no body.
+func signedUploadHead(deviceId: UUID, secret: String, contentLength: Int = 1000) -> String {
+    let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
+    let transferId = UUID().uuidString
+    let signature = Security.hmacSHA256Base64(secret: secret, message: ["POST", "/transfer/upload", deviceId.uuidString, timestamp,
+                                                                       transferId, Security.encryptionScheme, String(contentLength)].joined(separator: "\n"))!
+    return ["POST /transfer/upload HTTP/1.1", "Content-Length: \(contentLength)",
+            "X-LinkBridge-Device-Id: \(deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
+            "X-LinkBridge-Transfer-Id: \(transferId)", "X-LinkBridge-Encryption: \(Security.encryptionScheme)",
+            "X-LinkBridge-Signature: \(signature)", "", ""].joined(separator: "\r\n")
+}
+
 /// Starts a server on the completion-based initializer. `pair` / `transfer` decide how each request is answered.
 func startDecisionServer(
     pair: @escaping (IncomingPairRequest, @escaping (Bool) -> Void) -> Void,
@@ -585,6 +622,15 @@ DispatchQueue.global().async {
             check(false, "upload with an unpaired key must fail")
         } catch {
             check("\(error)".contains("Secure connection failed"), "upload with the wrong key fails the TLS handshake")
+        }
+        // A paired device's TLS key can't carry an upload claiming to be another paired device.
+        if let other = TrustedPeerStore().load().first(where: { $0.deviceId != identity.deviceId && $0.authToken != nil }) {
+            let otherTLS = SecureTransport.clientParameters(identity: SecureTransport.identity(for: other.deviceId.uuidString),
+                                                            psk: SecureTransport.psk(fromSecret: other.authToken!)!)
+            let reply = request(port: server.securePort, parameters: otherTLS, signedUploadHead(deviceId: identity.deviceId, secret: secret))
+            check(reply.contains("identity_mismatch"), "upload claiming another device's ID refused, got \(reply.prefix(60))")
+        } else {
+            check(false, "needs a second paired device")
         }
         try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(server.securePort)", secret: secret)
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
