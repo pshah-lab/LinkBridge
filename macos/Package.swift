@@ -1,12 +1,12 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 
 import PackageDescription
 
 let package = Package(
     name: "LinkBridge",
     platforms: [
-        .macOS(.v13),
-        .iOS(.v16)
+        .macOS(.v26),
+        .iOS(.v26)
     ],
     products: [
         .library(name: "LinkBridgeCore", targets: ["LinkBridgeCore"]),
@@ -39,5 +39,6 @@ let package = Package(
             dependencies: ["LinkBridgeCore"],
             path: "Sources/LinkBridgeCoreChecks"
         )
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
