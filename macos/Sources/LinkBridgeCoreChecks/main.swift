@@ -128,6 +128,18 @@ section("Decryption rejects tampering, truncation and the wrong key") {
 
 // MARK: - Presentation (PresentationChecks.swift)
 
+section("A record shorter than its tag is refused, not a crash") {
+    for length in [1, 15] {
+        let decryptor = try ChunkedDecryptor(secret: Security.generateToken())
+        var record = Data(repeating: 0, count: 12)
+        record.append(contentsOf: [0, 0, 0, UInt8(length)])
+        record.append(Data(repeating: 7, count: length))
+        var threw = false
+        do { try decryptor.consume(record) { _ in } } catch { threw = true }
+        check(threw, "\(length)-byte record rejected")
+    }
+}
+
 // MARK: - Credential storage
 
 final class MemorySecrets: SecretBackend {

@@ -102,7 +102,8 @@ final class ChunkedDecryptor {
             guard buffer.count >= 16 else { return }
 
             let sealedLength = Int(buffer[12..<16].uint32BigEndian)
-            guard sealedLength > 0 && sealedLength <= Security.chunkSize + 16 else {
+            // At least the 16-byte tag; a shorter record would make the tag slice below trap.
+            guard sealedLength >= 16 && sealedLength <= Security.chunkSize + 16 else {
                 throw CryptoError.invalidChunk
             }
 
