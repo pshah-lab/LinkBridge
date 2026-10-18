@@ -143,8 +143,9 @@ class ControlClient {
             }
 
             val encryptedFile = File.createTempFile("linkbridge-upload-", ".enc")
+            val transferId = UUID.randomUUID().toString()
             val encryptedMetadata = JSONObject()
-                .put("transferId", UUID.randomUUID().toString())
+                .put("transferId", transferId)
                 .put("fileName", fileName)
                 .put("bytes", size)
                 .put("sha256", sha256)
@@ -152,13 +153,12 @@ class ControlClient {
                 .toByteArray(Charsets.UTF_8)
             val contentLength = encryptedFile.outputStream().use { output ->
                 (openInputStream() ?: error("Could not reopen selected file for encryption")).use { input ->
-                    Security.encryptChunked(localToken, input, output, metadata = encryptedMetadata) { read ->
+                    Security.encryptChunked(localToken, input, output, metadata = encryptedMetadata, transferId = transferId) { read ->
                         onProgress(read, size)
                     }
                 }
             }
             val timestamp = System.currentTimeMillis().toString()
-            val transferId = JSONObject(String(encryptedMetadata, Charsets.UTF_8)).getString("transferId")
             val signaturePayload = listOf(
                 "POST",
                 "/transfer/upload",
@@ -168,7 +168,7 @@ class ControlClient {
                 Security.ENCRYPTION_SCHEME,
                 contentLength.toString()
             ).joinToString("\n")
-            val signature = Security.hmacSha256Base64(localToken, signaturePayload)
+            val signature = Security.uploadSignature(localToken, Security.ENCRYPTION_SCHEME, signaturePayload)
 
             val tlsPort = peer.tlsPort
                 ?: run { encryptedFile.delete(); error("Update LinkBridge on ${peer.deviceName} to the secure transfer version.") }

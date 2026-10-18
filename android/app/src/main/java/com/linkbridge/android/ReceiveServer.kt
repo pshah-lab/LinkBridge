@@ -142,7 +142,7 @@ class ReceiveServer(
             reply.writeJsonResponse(401, """{"error":"stale_transfer"}""")
             return null
         }
-        if (encryption != Security.ENCRYPTION_SCHEME) {
+        if (encryption == null || encryption !in Security.SUPPORTED_SCHEMES) {
             reply.writeJsonResponse(400, """{"error":"encryption_required"}""")
             return null
         }
@@ -153,10 +153,11 @@ class ReceiveServer(
             senderId,
             timestamp,
             transferId,
-            Security.ENCRYPTION_SCHEME,
+            encryption,
             contentLength.toString()
         ).joinToString("\n")
-        val expectedSignature = Security.hmacSha256Base64(authToken, signaturePayload)
+        // The scheme is in the signed payload, so it can't be downgraded without the secret.
+        val expectedSignature = Security.uploadSignature(authToken, encryption, signaturePayload)
         if (!Security.timingSafeEquals(expectedSignature, suppliedSignature)) {
             reply.writeJsonResponse(401, """{"error":"invalid_signature"}""")
             return null
@@ -169,7 +170,7 @@ class ReceiveServer(
             return null
         }
 
-        return { receiveUpload(reply, input, contentLength, authToken, transferId, senderId, trustedPeer.deviceName) }
+        return { receiveUpload(reply, input, contentLength, authToken, encryption, transferId, senderId, trustedPeer.deviceName) }
     }
 
     /** Stage 2: decrypts the body, asks the user, and saves the file. */
@@ -178,6 +179,7 @@ class ReceiveServer(
         input: BufferedInputStream,
         contentLength: Long,
         authToken: String,
+        scheme: String,
         transferId: String,
         senderId: String,
         senderName: String
@@ -191,7 +193,7 @@ class ReceiveServer(
             var received = 0L
 
             try {
-                Security.decryptChunkedRecords(authToken, input, contentLength) { plain ->
+                Security.decryptChunkedRecords(authToken, input, contentLength, scheme, transferId) { plain ->
                     val currentMetadata = metadata
                     if (currentMetadata == null) {
                         val parsed = IncomingFileMetadata.fromEncryptedJson(plain)

@@ -631,7 +631,7 @@ public final class ControlServer {
             return
         }
 
-        guard encryption == Security.encryptionScheme else {
+        guard Security.supportedSchemes.contains(encryption) else {
             sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"encryption_required"}"#.data(using: .utf8)!)
             return
         }
@@ -648,11 +648,12 @@ public final class ControlServer {
             senderId,
             timestamp,
             transferId,
-            Security.encryptionScheme,
+            encryption,
             String(contentLength)
         ].joined(separator: "\n")
 
-        guard let expectedSignature = Security.hmacSHA256Base64(secret: authToken, message: signaturePayload),
+        // The scheme is in the signed payload, so it can't be downgraded without the secret.
+        guard let expectedSignature = Security.uploadSignature(secret: authToken, scheme: encryption, message: signaturePayload),
               Security.timingSafeEquals(expectedSignature, suppliedSignature) else {
             sendJSON(connection: connection, status: "401 Unauthorized", body: #"{"error":"invalid_signature"}"#.data(using: .utf8)!)
             return
@@ -674,7 +675,7 @@ public final class ControlServer {
             let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-            let decryptor = try ChunkedDecryptor(secret: authToken)
+            let decryptor = try ChunkedDecryptor(secret: authToken, scheme: encryption, transferId: transferUUID)
             var hasher = SHA256()
             var receivedEncrypted = 0
             var received = 0

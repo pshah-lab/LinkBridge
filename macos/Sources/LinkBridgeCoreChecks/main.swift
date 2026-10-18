@@ -96,10 +96,11 @@ func roundTrip(_ plaintext: Data, secret: String, metadata: Data?) throws -> [Da
     let output = dir.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: input); try? FileManager.default.removeItem(at: output) }
     try plaintext.write(to: input)
-    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret, metadata: metadata)
+    let transferId = UUID()
+    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret, metadata: metadata, transferId: transferId)
     let ciphertext = try Data(contentsOf: output)
     var records: [Data] = []
-    let decryptor = try ChunkedDecryptor(secret: secret)
+    let decryptor = try ChunkedDecryptor(secret: secret, transferId: transferId)
     // Feed in odd-sized pieces to exercise record reassembly.
     var offset = 0
     while offset < ciphertext.count {
@@ -119,7 +120,7 @@ section("Chunked AES-GCM round-trips across record boundaries") {
     check(records.count == 4, "metadata + 3 data records, got \(records.count)")
     check(records.first == Data("{\"m\":1}".utf8), "metadata first")
     check(Data(records.dropFirst().joined()) == plaintext, "plaintext restored")
-    check(try roundTrip(Data(), secret: secret, metadata: nil).isEmpty, "empty file")
+    check(try roundTrip(Data(), secret: secret, metadata: nil) == [Data()], "empty file is one empty last record")
 }
 
 section("Decryption rejects tampering, truncation and the wrong key") {
@@ -129,25 +130,79 @@ section("Decryption rejects tampering, truncation and the wrong key") {
     let output = dir.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: input); try? FileManager.default.removeItem(at: output) }
     try Data(repeating: 7, count: 5000).write(to: input)
-    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret)
+    let id = UUID()
+    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret, transferId: id)
     let good = try Data(contentsOf: output)
 
     var flipped = good
     flipped[flipped.count - 1] ^= 0x01
-    check((try? ChunkedDecryptor(secret: secret).consume(flipped) { _ in }) == nil, "bit flip rejected")
+    check((try? ChunkedDecryptor(secret: secret, transferId: id).consume(flipped) { _ in }) == nil, "bit flip rejected")
 
-    let truncated = try ChunkedDecryptor(secret: secret)
+    let truncated = try ChunkedDecryptor(secret: secret, transferId: id)
     try truncated.consume(good.prefix(good.count - 10)) { _ in }
     check((try? truncated.finalize()) == nil, "truncation rejected")
 
-    check((try? ChunkedDecryptor(secret: Security.generateToken()).consume(good) { _ in }) == nil, "wrong key rejected")
+    check((try? ChunkedDecryptor(secret: Security.generateToken(), transferId: id).consume(good) { _ in }) == nil, "wrong key rejected")
+    check((try? ChunkedDecryptor(secret: secret, transferId: UUID()).consume(good) { _ in }) == nil, "record from another transfer rejected")
+}
+
+section("Chunk v2: keys, record vector, order, drops and the last-record marker") {
+    let secret = Data((1...32).map { UInt8($0) }).base64EncodedString()
+    let keys = Security.keys(secret: secret, scheme: Security.encryptionScheme)!
+    let hex: (SymmetricKey) -> String = { $0.withUnsafeBytes { Data($0) }.map { String(format: "%02x", $0) }.joined() }
+    // HKDF vectors from Python hashlib/hmac; the same are in Android's SecurityTest.
+    check(hex(keys.encryption) == "6c287fccda61344df05fcd9bd3fabecb95ec350bfae04148f8ed849ef48ac1a7", "enc key vector")
+    check(hex(keys.mac) == "7e38b8fd173a295c5acf146530b517087bf70f64f50b04dc9c8e8534da4d4c3d", "mac key vector")
+    // Fixed-nonce record, checked byte for byte by Android's SecurityTest.
+    let id = UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!
+    let vector = try Security.record(Data("hello".utf8), key: keys.encryption, nonce: AES.GCM.Nonce(data: Data(repeating: 9, count: 12)),
+                                     transferId: id, index: 1, last: true)
+    check(vector.map { String(format: "%02x", $0) }.joined()
+          == "0909090909090909090909098000001574bb34452aad018c207bab7ab1c62197bce9d0cad6", "record vector")
+
+    func records(_ items: [(Data, Bool)], transfer: UUID = id) throws -> [Data] {
+        try items.enumerated().map { index, item in
+            try Security.record(item.0, key: keys.encryption, nonce: AES.GCM.Nonce(), transferId: transfer, index: UInt64(index), last: item.1)
+        }
+    }
+    func decrypts(_ parts: [Data]) -> Bool {
+        guard let decryptor = try? ChunkedDecryptor(secret: secret, transferId: id) else { return false }
+        do {
+            try decryptor.consume(parts.reduce(Data(), +)) { _ in }
+            try decryptor.finalize()
+            return true
+        } catch { return false }
+    }
+    let r = try records([(Data("meta".utf8), false), (Data("a".utf8), false), (Data("b".utf8), true)])
+    check(decrypts(r), "in order with a last record: accepted")
+    check(!decrypts([r[0], r[2], r[1]]), "reordered: rejected")
+    check(!decrypts([r[0], r[2]]), "a record dropped: rejected")
+    check(!decrypts([r[0], r[1]]), "cut off before the last record: rejected")
+    check(!decrypts(r + [r[2]]), "anything after the last record: rejected")
+    let other = try records([(Data("x".utf8), false), (Data("y".utf8), false)], transfer: UUID())
+    check(!decrypts([r[0], other[1], r[2]]), "spliced from another transfer: rejected")
+
+    // v1 records from older senders still decrypt.
+    let raw = SymmetricKey(data: Data(base64Encoded: secret)!)
+    let sealed = try AES.GCM.seal(Data("old".utf8), using: raw)
+    var v1 = sealed.nonce.withUnsafeBytes { Data($0) }
+    var length = UInt32(sealed.ciphertext.count + 16).bigEndian
+    v1.append(Data(bytes: &length, count: 4))
+    v1.append(sealed.ciphertext + sealed.tag)
+    let legacy = try ChunkedDecryptor(secret: secret, scheme: Security.legacyEncryptionScheme, transferId: id)
+    var got: [Data] = []
+    try legacy.consume(v1) { got.append($0) }
+    try legacy.finalize()
+    check(got == [Data("old".utf8)], "v1 record accepted")
+    check(Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: "m")
+          != Security.uploadSignature(secret: secret, scheme: Security.legacyEncryptionScheme, message: "m"), "v2 signs with its own key")
 }
 
 // MARK: - Presentation (PresentationChecks.swift)
 
 section("A record shorter than its tag is refused, not a crash") {
     for length in [1, 15] {
-        let decryptor = try ChunkedDecryptor(secret: Security.generateToken())
+        let decryptor = try ChunkedDecryptor(secret: Security.generateToken(), transferId: UUID())
         var record = Data(repeating: 0, count: 12)
         record.append(contentsOf: [0, 0, 0, UInt8(length)])
         record.append(Data(repeating: 7, count: length))
@@ -427,7 +482,7 @@ func request(port: UInt16, parameters: NWParameters, _ text: String) -> String {
 func signedUploadHead(deviceId: UUID, secret: String, contentLength: Int = 1000) -> String {
     let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
     let transferId = UUID().uuidString
-    let signature = Security.hmacSHA256Base64(secret: secret, message: ["POST", "/transfer/upload", deviceId.uuidString, timestamp,
+    let signature = Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: ["POST", "/transfer/upload", deviceId.uuidString, timestamp,
                                                                        transferId, Security.encryptionScheme, String(contentLength)].joined(separator: "\n"))!
     return ["POST /transfer/upload HTTP/1.1", "Content-Length: \(contentLength)",
             "X-LinkBridge-Device-Id: \(deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
@@ -721,7 +776,7 @@ DispatchQueue.global().async {
         let tls = SecureTransport.clientParameters(identity: SecureTransport.identity(for: identity.deviceId.uuidString), psk: psk)
         let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
         let transferId = UUID().uuidString
-        let signature = Security.hmacSHA256Base64(secret: secret, message: ["POST", "/transfer/upload", identity.deviceId.uuidString,
+        let signature = Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: ["POST", "/transfer/upload", identity.deviceId.uuidString,
                                                                            timestamp, transferId, Security.encryptionScheme, "1000"].joined(separator: "\n"))!
         let head = ["POST /transfer/upload HTTP/1.1", "Content-Length: 1000",
                     "X-LinkBridge-Device-Id: \(identity.deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
