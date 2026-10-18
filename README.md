@@ -1,62 +1,83 @@
 # LinkBridge
 
-LinkBridge is a planned Mac + Android companion app for local file transfer and wireless display.
+LinkBridge sends files directly between a Mac, an Android phone and an iPhone on the
+same Wi-Fi network. Nothing goes through the internet. Devices pair once with a
+six-digit code, and every transfer is encrypted over TLS-PSK keyed from that pairing.
+The goal is to ship on the Mac App Store, the App Store and Google Play. Screen
+mirroring between Mac and Android comes after file transfer, on the same pairing.
 
-The first milestone is local pairing and file transfer over the same Wi-Fi network. Wireless display will build on the same pairing, identity, and transport layer later.
+## What works today
 
-## Repository Layout
+| | Mac | Android | iPhone |
+|---|---|---|---|
+| Find nearby devices (Bonjour / NSD) | ✓ | ✓ | ✓ |
+| Pair with a six-digit code | Approves requests | Starts pairing with the Mac | Starts pairing with the Mac |
+| Send files | ✓ | ✓ | ✓ |
+| Receive files | ✓ | ✓ (also in the background) | Not yet |
 
-- `macos/` - macOS Swift package for the desktop companion app foundation.
-- `android/` - Android/Kotlin project skeleton for the mobile companion app.
-- `docs/` - shared protocol and product notes.
+Mac ↔ Android and iPhone → Mac transfers are verified end to end. The iPhone can't
+pair with Android yet, because the Android app can only start pairing, not answer it.
 
-## MVP Scope
+## Repository layout
 
-1. Discover nearby LinkBridge devices on the same LAN.
-2. Pair devices with a short code or QR payload.
-3. Transfer files directly over the local network.
-4. Ship file transfer on the Mac App Store and Google Play.
-5. Add screen mirroring between Mac and Android (both directions) on the same pairing.
+- `macos/` — Swift package: the Mac app, the shared core library, a developer CLI and checks.
+- `ios/` — the iPhone app (Xcode project), built on the same core library. See [ios/README.md](ios/README.md).
+- `android/` — the Android app (Kotlin). See [android/README.md](android/README.md).
+- `docs/` — protocol ([protocol.md](docs/protocol.md)), [roadmap](docs/roadmap.md),
+  design specs and screenshots.
+- `scripts/` — build, package and install scripts for Mac and Android.
 
-## Local Development
+## Local development
 
 ### macOS
 
-The Swift package in `macos/` has four targets:
+Requires macOS 26 and Xcode 26 (Swift 6.2 tools or newer). The package in `macos/`
+has five targets:
 
-- `LinkBridgeCore`: protocol, encryption, pairing, discovery and transfer (no UI)
-- `LinkBridge`: the Mac app (sandboxed, ships in the App Store bundle)
-- `linkbridge-cli`: developer tool for a headless server and command-line sends
-- `LinkBridgeCoreChecks`: checks for the core library
+- `LinkBridgeCore`: protocol, encryption, pairing, discovery and transfer (no UI). Used by the Mac and iPhone apps.
+- `LinkBridgePresentation`: view logic shared by the Mac and iPhone apps (device list, send state, history, approvals).
+- `LinkBridge`: the Mac app. Sandboxed, lives in the menu bar with a main window.
+- `linkbridge-cli`: developer tool for a headless server and command-line sends.
+- `LinkBridgeCoreChecks`: checks for the core and presentation libraries.
 
-Build and open the app:
+Build, install and open the app:
 
 ```sh
-./scripts/package-mac-app.sh
-open dist/LinkBridge.app
+./scripts/install-mac-app.sh
 ```
 
-Run the checks (they use a throwaway home folder, never your real keys or Downloads):
+To build without installing, run `./scripts/package-mac-app.sh`. It writes `dist/LinkBridge.app`.
+
+Run the checks. They use a throwaway home folder, never your real keys or Downloads:
 
 ```sh
 cd macos
-swift run LinkBridgeCoreChecks
+swift run --build-system native LinkBridgeCoreChecks
 ```
 
 Developer tool:
 
 ```sh
 cd macos
-swift run linkbridge-cli                     # headless server, declines new pairings
-swift run linkbridge-cli send-peer /path/to/file
+swift run --build-system native linkbridge-cli                     # headless server, declines new pairings
+swift run --build-system native linkbridge-cli send-peer /path/to/file
 ```
 
-On Swift 6.4 the default build system can fail with "Unknown error parsing property
-list"; add `--build-system native` to `swift build` / `swift run`. The packaging
-script does this automatically.
+On this toolchain the default build system can fail with "Unknown error parsing
+property list", so pass `--build-system native` to `swift build` and `swift run`.
+The packaging script does this automatically.
+
+Mac keyboard shortcuts: ⌘, Settings · ⌘O choose a file to send · ⇧⌘R open received
+files · ⌘1 / ⌘2 / ⌘3 Devices / History / Settings · ⌘0 show the window · ⌘Q quit
+(also from the menu bar popover).
 
 Version, bundle ID and build number live in `macos/version.env`. Sandbox permissions
 are in `macos/LinkBridge.entitlements`.
+
+### iPhone
+
+See [ios/README.md](ios/README.md). The app runs in the iOS Simulator, so you don't
+need an iPhone to try it.
 
 ### Android
 

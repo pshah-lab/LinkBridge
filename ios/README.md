@@ -26,14 +26,21 @@ pairing, TLS-PSK transport, AES-GCM chunk encryption, and SHA-256 verification.
 - `Info.plist` — extra keys (local network prompt, `_linkbridge._tcp` Bonjour)
   merged into the generated Info.plist.
 
-Build for the Simulator from the command line. To run the app (not just
-compile it), sign ad hoc instead (`CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
+Build for the Simulator from the command line. Sign ad hoc as below (`CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
 DEVELOPMENT_TEAM=`): an unsigned build can't use the Keychain, so pairing
 secrets can't be saved or read.
 
 ```bash
-xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project ios/LinkBridgeIOS.xcodeproj -scheme LinkBridgeIOS -destination 'platform=iOS Simulator,name=iPhone Duo' CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 ```
+
+## Try it without an iPhone
+
+The Simulator runs on your Mac and reaches the Mac app over your Wi-Fi like a real
+phone. Open the LinkBridge Mac app, run the iOS app in the Simulator, tap **Pair**
+next to your Mac and approve the code on the Mac. Then send a file. Received files
+land in `~/Downloads/LinkBridge` on the Mac. To get a test file into the Simulator,
+drag it onto the Simulator window; it shows up in Files under On My iPhone.
 
 ## What works
 
