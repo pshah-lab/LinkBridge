@@ -293,7 +293,7 @@ public final class ControlServer {
                     responseBody = (try? JSONEncoder().encode(publicIdentity)) ?? Data()
                     status = "200 OK"
                 } else if request.startLine.hasPrefix("POST /pair/request") {
-                    let pairResponse = handlePairRequest(body: request.body, identity: identity)
+                    let pairResponse = handlePairRequest(body: request.body, identity: identity, source: sourceHost(of: connection))
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else if request.startLine.hasPrefix("POST /pair/confirm") {
@@ -391,10 +391,23 @@ public final class ControlServer {
         receiveMore()
     }
 
-    private static func handlePairRequest(body: Data, identity: DeviceIdentity) -> HTTPResponse {
-        guard let peerIdentity = try? JSONDecoder().decode(PairRequestIdentity.self, from: body) else {
+    /// Caps on what a pairing request may keep in memory until it expires.
+    /// Variable so the checks can lower it.
+    static var maxPendingPairings = 8
+    static let maxDeviceNameLength = 64
+    static let maxFeatures = 16
+    static let maxFeatureLength = 32
+
+    /// Main queue only. For the checks.
+    static var pendingPairingCount: Int { pendingPairings.count }
+
+    private static func handlePairRequest(body: Data, identity: DeviceIdentity, source: String) -> HTTPResponse {
+        guard var peerIdentity = try? JSONDecoder().decode(PairRequestIdentity.self, from: body),
+              peerIdentity.features.count <= maxFeatures,
+              peerIdentity.features.allSatisfy({ $0.count <= maxFeatureLength }) else {
             return jsonError("400 Bad Request", "invalid_pair_request")
         }
+        peerIdentity.deviceName = String(peerIdentity.deviceName.prefix(maxDeviceNameLength))
         guard let peerPublicKey = peerIdentity.publicKey,
               let peerKey = try? PairingKeyStore.parsePublicKey(peerPublicKey),
               let sharedSecret = try? PairingKeyStore().deriveSecret(peerPublicKeyBase64: peerPublicKey),
@@ -404,13 +417,17 @@ public final class ControlServer {
 
         let nonce = PairingCode.randomNonce()
         let macKeyData = macKey.x963Representation
-        pendingPairings.begin(PendingPairing(
+        let started = pendingPairings.begin(PendingPairing(
             peer: peerIdentity,
+            source: source,
             peerKey: peerKey.x963Representation,
             macKey: macKeyData,
             sharedSecret: sharedSecret,
             nonce: nonce
-        ))
+        ), limit: maxPendingPairings)
+        guard started else {
+            return jsonError("429 Too Many Requests", "too_many_pairings")
+        }
 
         let commitment = PairingCode.commitment(publicKey: macKeyData, nonce: nonce).base64EncodedString()
         let json = #"{"status":"pending","publicKey":"\#(macKeyData.base64EncodedString())","commitment":"\#(commitment)"}"#
@@ -786,6 +803,14 @@ public final class ControlServer {
         })
     }
 
+    /// The remote IP address, used to limit what one LAN host can hold open.
+    static func sourceHost(of connection: NWConnection) -> String {
+        if case let .hostPort(host, _) = connection.endpoint {
+            return "\(host)"
+        }
+        return "\(connection.endpoint)"
+    }
+
     private static func sanitizeFileName(_ fileName: String) -> String {
         fileName
             .components(separatedBy: CharacterSet(charactersIn: "/\\:"))
@@ -864,7 +889,7 @@ private struct IncomingFileMetadata: Codable {
 
 private struct PairRequestIdentity: Codable {
     let deviceId: UUID
-    let deviceName: String
+    var deviceName: String
     let platform: String
     let protocolVersion: Int
     let features: [String]
@@ -882,6 +907,8 @@ private struct PairFinalizeBody: Codable {
 
 private struct PendingPairing {
     let peer: PairRequestIdentity
+    /// IP address the request came from.
+    let source: String
     let peerKey: Data
     let macKey: Data
     let sharedSecret: String
@@ -891,8 +918,9 @@ private struct PendingPairing {
     var waiters: [(Bool) -> Void] = []
     var expiresAt = Date().addingTimeInterval(ControlServer.pairingLifetime)
 
-    init(peer: PairRequestIdentity, peerKey: Data, macKey: Data, sharedSecret: String, nonce: Data) {
+    init(peer: PairRequestIdentity, source: String, peerKey: Data, macKey: Data, sharedSecret: String, nonce: Data) {
         self.peer = peer
+        self.source = source
         self.peerKey = peerKey
         self.macKey = macKey
         self.sharedSecret = sharedSecret
@@ -904,9 +932,20 @@ private struct PendingPairing {
 private final class PendingPairings {
     private var entries: [UUID: PendingPairing] = [:]
 
-    func begin(_ pairing: PendingPairing) {
+    /// Starts a pairing, replacing any not-yet-confirmed one from the same address, so one
+    /// LAN host holds at most one unconfirmed entry. Returns false when `limit` entries are
+    /// already pending, so pairing spam can't grow memory without bound.
+    func begin(_ pairing: PendingPairing, limit: Int) -> Bool {
         prune()
+        entries = entries.filter { $0.value.source != pairing.source || $0.value.peerNonce != nil }
+        guard entries[pairing.peer.deviceId] != nil || entries.count < limit else { return false }
         entries[pairing.peer.deviceId] = pairing
+        return true
+    }
+
+    var count: Int {
+        prune()
+        return entries.count
     }
 
     /// Records the phone's nonce. Only allowed once, so a MITM can't retry nonces.

@@ -309,6 +309,38 @@ DispatchQueue.global().async {
         check(status == 409, "confirm without request refused")
     }
 
+    section("Pairing spam can't grow pending pairings without bound") {
+        func request(_ host: String = "127.0.0.1", name: String = "Spam", features: [String] = []) -> Int {
+            var request = URLRequest(url: URL(string: "http://\(host):\(port)/pair/request")!)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 10
+            request.httpBody = try! JSONSerialization.data(withJSONObject: [
+                "deviceId": UUID().uuidString, "deviceName": name, "platform": "android", "protocolVersion": 2,
+                "features": features, "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()])
+            let done = DispatchSemaphore(value: 0)
+            var status = 0
+            URLSession.shared.dataTask(with: request) { _, response, _ in
+                status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                done.signal()
+            }.resume()
+            done.wait()
+            return status
+        }
+        let longName = String(repeating: "x", count: 30_000)
+        let statuses = (0..<20).map { _ in request(name: longName) }
+        check(statuses.allSatisfy { $0 == 200 }, "requests from one address are answered, got \(Set(statuses))")
+        check(DispatchQueue.main.sync { ControlServer.pendingPairingCount } == 1, "one address holds one unconfirmed pairing")
+        check(request(features: Array(repeating: "f", count: 17)) == 400, "too many features refused")
+        check(request(features: [String(repeating: "f", count: 33)]) == 400, "over-long feature refused")
+
+        // A second address can't add one once the total cap is reached.
+        let limit = ControlServer.maxPendingPairings
+        ControlServer.maxPendingPairings = 1
+        defer { ControlServer.maxPendingPairings = limit }
+        check(request("[::1]") == 429, "cap reached: a new address gets 429")
+        check(request() == 200, "the same address can still replace its own request")
+    }
+
     section("Busy preferred port falls back to another port") {
         let (second, secondPort) = startServer(preferredPort: port, approve: { false })
         check(secondPort != 0 && secondPort != port, "got a different port (\(secondPort))")
