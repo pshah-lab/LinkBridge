@@ -670,6 +670,13 @@ DispatchQueue.global().async {
         answer = { _, done in done(false) }
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "declined transfer fails")
 
+        // A decline holds off that sender's next prompt.
+        let askedBefore = requests.count
+        answer = { _, done in done(true) }
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "upload right after a decline is refused")
+        check(requests.count == askedBefore, "user not asked again right after declining")
+        DispatchQueue.main.sync { ControlServer.resetTransferApprovalLimits() }
+
         // Not enough free space: refused before the user is asked.
         let capacity = ControlServer.availableCapacity
         ControlServer.availableCapacity = { _ in ControlServer.freeSpaceMargin + 10 }
@@ -690,6 +697,22 @@ DispatchQueue.global().async {
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "unanswered transfer fails")
         Thread.sleep(forTimeInterval: 0.2)
         check(withdrawnIds == [requests.last!.id], "timeout withdraws the waiting request")
+
+        // One prompt per sender at a time: a second upload while one waits is refused unasked.
+        ControlServer.transferApprovalTimeout = 1.5
+        answer = { _, _ in }
+        let firstDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)
+            firstDone.signal()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+        let waiting = requests.count
+        let started = Date()
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "second upload while one waits is refused")
+        check(Date().timeIntervalSince(started) < 1, "refused at once, not after the approval timeout")
+        check(requests.count == waiting, "no second prompt from the same sender")
+        firstDone.wait()
     }
 
     section("Unpair removes a trusted peer") {

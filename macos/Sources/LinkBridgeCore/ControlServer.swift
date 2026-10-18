@@ -44,6 +44,14 @@ public final class ControlServer {
     /// An upload that makes no progress for this long is dropped. Not counted while the
     /// upload waits for the user's decision.
     static var uploadIdleTimeout: TimeInterval = 30
+    /// File prompts waiting for the user: one per sender, a few in total, so a hostile paired
+    /// device can't bury the user in prompts. Main queue only.
+    static var maxPendingTransferApprovals = 3
+    /// After the user declines a sender's file, its next uploads are refused for this long.
+    static var declineCooldown: TimeInterval = 30
+    /// Transfer ID -> sender ID of each upload waiting for the user.
+    private static var awaitingApproval: [UUID: UUID] = [:]
+    private static var declinedUntil: [UUID: Date] = [:]
     /// Open-connection caps, so one LAN host can't exhaust file descriptors.
     static var maxPlainConnections = 32
     static var maxSecureConnections = 8
@@ -430,6 +438,21 @@ public final class ControlServer {
     static let maxFeatures = 16
     static let maxFeatureLength = 32
 
+    /// Why a new upload from `sender` can't ask the user now, or nil if it can. Main queue only.
+    private static func approvalRefusal(sender: UUID) -> String? {
+        let now = Date()
+        declinedUntil = declinedUntil.filter { $0.value > now }
+        if declinedUntil[sender] != nil { return "recently_declined" }
+        if awaitingApproval.values.contains(sender) { return "approval_pending" }
+        if awaitingApproval.count >= maxPendingTransferApprovals { return "too_many_pending" }
+        return nil
+    }
+
+    /// Main queue only. For the checks.
+    static func resetTransferApprovalLimits() {
+        declinedUntil = [:]
+    }
+
     /// Main queue only. For the checks.
     var openConnectionCounts: (plain: Int, secure: Int) { (plainLimiter.openCount, secureLimiter.openCount) }
 
@@ -612,6 +635,11 @@ public final class ControlServer {
             return
         }
 
+        if let refusal = approvalRefusal(sender: senderUUID) {
+            sendJSON(connection: connection, status: "429 Too Many Requests", body: Data(#"{"error":"\#(refusal)"}"#.utf8))
+            return
+        }
+
         let replayKey = "\(senderId):\(transferId)"
         guard Self.replayCache.reserve(replayKey) else {
             sendJSON(connection: connection, status: "409 Conflict", body: #"{"error":"replayed_transfer"}"#.data(using: .utf8)!)
@@ -755,10 +783,19 @@ public final class ControlServer {
             func askForDecision(_ pending: (request: IncomingTransferRequest, metadata: IncomingFileMetadata)) {
                 guard !askedForDecision else { return }
                 askedForDecision = true
+                // Checked again here: another upload from this sender may have reached this
+                // point since the header was checked.
+                if let refusal = approvalRefusal(sender: senderUUID) {
+                    discard()
+                    sendJSON(connection: connection, status: "429 Too Many Requests", body: Data(#"{"error":"\#(refusal)"}"#.utf8))
+                    return
+                }
+                awaitingApproval[transferUUID] = senderUUID
                 var answered = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + transferApprovalTimeout) {
                     guard !answered else { return }
                     answered = true
+                    awaitingApproval[transferUUID] = nil
                     transferWithdrawn(pending.request.id)
                     decline()
                 }
@@ -766,7 +803,11 @@ public final class ControlServer {
                     DispatchQueue.main.async {
                         guard !answered else { return }
                         answered = true
-                        guard approved else { return decline() }
+                        awaitingApproval[transferUUID] = nil
+                        guard approved else {
+                            declinedUntil[senderUUID] = Date().addingTimeInterval(declineCooldown)
+                            return decline()
+                        }
                         do {
                             try accept(pending)
                             receiveMore()
