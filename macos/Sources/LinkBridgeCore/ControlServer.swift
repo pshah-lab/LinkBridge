@@ -11,7 +11,7 @@ public final class ControlServer {
     /// serves device info and pairing.
     public static let protocolVersion = 2
 
-    public let identity: DeviceIdentity
+    public private(set) var identity: DeviceIdentity
     /// Plain port (device info and pairing). Equals the preferred port unless it was taken.
     public private(set) var port: UInt16
     /// TLS-PSK port for transfers between paired devices.
@@ -134,6 +134,12 @@ public final class ControlServer {
         }
     }
 
+    /// Uses a new identity (a new display name) for new connections and Bonjour. Main queue.
+    public func updateIdentity(_ identity: DeviceIdentity) {
+        self.identity = identity
+        updateAdvertisement()
+    }
+
     private func startPlain(on requestedPort: NWEndpoint.Port, onReady: @escaping (UInt16?) -> Void) {
         let listener: NWListener
         do {
@@ -146,12 +152,12 @@ public final class ControlServer {
         self.listener = listener
         listener.service = advertisedService()
 
-        listener.newConnectionHandler = { [weak self, identity, trustedPeerStore, pairDecision, plainLimiter] connection in
-            guard plainLimiter.admit(connection) else { return }
+        listener.newConnectionHandler = { [weak self, trustedPeerStore, pairDecision, plainLimiter] connection in
+            guard let self, plainLimiter.admit(connection) else { connection.cancel(); return }
             connection.start(queue: .main)
             Self.handlePlain(
-                connection: connection, identity: identity, trustedPeerStore: trustedPeerStore,
-                pairDecision: pairDecision, onPaired: { self?.reloadTrustedPeers() }
+                connection: connection, identity: self.identity, trustedPeerStore: trustedPeerStore,
+                pairDecision: pairDecision, onPaired: { [weak self] in self?.reloadTrustedPeers() }
             )
         }
 

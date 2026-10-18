@@ -40,7 +40,7 @@ final class MacModel {
     /// Last send failure; cleared by the next user action.
     private(set) var lastError: String?
     let approvals = ApprovalCenter()
-    let identity: DeviceIdentity
+    private(set) var identity: DeviceIdentity
 
     /// Called when a request starts waiting, so a notification can be posted.
     @ObservationIgnored var onApprovalAdded: (PendingApproval) -> Void = { _ in }
@@ -82,7 +82,8 @@ final class MacModel {
     }
 
     init() {
-        identity = IdentityStore().loadOrCreate()
+        let identity = IdentityStore().loadOrCreate()
+        self.identity = identity
         browser = PeerBrowser(localDeviceId: identity.deviceId)
         trusted = trustedStore.load()
         history = historyStore.load()
@@ -128,6 +129,12 @@ final class MacModel {
     }
 
     private static let sendRowId = UUID()
+
+    /// Changes the name other devices see. Takes effect at once.
+    func rename(to name: String) {
+        identity = IdentityStore().rename(identity, to: name)
+        server?.updateIdentity(identity)
+    }
 
     // MARK: - Lifecycle
 

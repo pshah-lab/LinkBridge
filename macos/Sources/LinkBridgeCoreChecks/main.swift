@@ -176,6 +176,10 @@ section("Device names are one short line with no hidden characters") {
         check(DeviceNames.sanitize(input) == expected, "\(input.debugDescription) -> \(DeviceNames.sanitize(input).debugDescription)")
     }
     check(DeviceNames.sanitize(String(repeating: "x", count: 500)).count == DeviceNames.maxLength, "capped at \(DeviceNames.maxLength)")
+    check(DeviceNames.withoutOwner("Priya’s MacBook Pro") == "MacBook Pro", "curly possessive dropped")
+    check(DeviceNames.withoutOwner("Sam's Mac mini") == "Mac mini", "straight possessive dropped")
+    check(DeviceNames.withoutOwner("James’ iMac") == "iMac", "plural-style possessive dropped")
+    check(DeviceNames.withoutOwner("Studio Mac") == "Studio Mac", "names without an owner kept")
 }
 
 // MARK: - Credential storage
@@ -577,6 +581,21 @@ DispatchQueue.global().async {
         defer { ControlServer.maxPendingPairings = limit }
         check(request("[::1]") == 429, "cap reached: a new address gets 429")
         check(request() == 200, "the same address can still replace its own request")
+    }
+
+    section("Renaming this Mac updates what pairing shows") {
+        let before = IdentityStore().loadOrCreate()
+        let renamed = IdentityStore().rename(before, to: "Desk\nMac")
+        DispatchQueue.main.sync { server.updateIdentity(renamed) }
+        var name: String?
+        for _ in 0..<20 where name != "Desk Mac" {
+            Thread.sleep(forTimeInterval: 0.15)
+            let reply = rawRequest(port: server.port, "GET /device HTTP/1.1\r\nHost: x\r\n\r\n")
+            let body = reply.components(separatedBy: "\r\n\r\n").last.flatMap { $0.data(using: .utf8) }
+            name = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["deviceName"] as? String
+        }
+        check(name == "Desk Mac", "renamed and sanitized name served, got \(name ?? "nil")")
+        check(IdentityStore().loadOrCreate().deviceName == "Desk Mac", "new name persisted")
     }
 
     section("Busy preferred port falls back to another port") {
