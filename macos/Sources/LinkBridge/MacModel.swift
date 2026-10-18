@@ -46,6 +46,8 @@ final class MacModel {
     @ObservationIgnored var onApprovalAdded: (PendingApproval) -> Void = { _ in }
     /// Opens the SwiftUI window; set by a view that has `openWindow`.
     @ObservationIgnored var openMainWindow: () -> Void = {}
+    /// Set by menu commands; the main window switches its sidebar to it and clears it.
+    var sidebarRequest: SidebarItem?
 
     func showMainWindow() {
         openMainWindow()

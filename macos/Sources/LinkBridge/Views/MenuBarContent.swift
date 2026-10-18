@@ -52,6 +52,7 @@ struct MenuBarContent: View {
                     }
                     Spacer()
                     Button("Quit") { NSApp.terminate(nil) }
+                        .keyboardShortcut("q")
                 }
                 .buttonStyle(.borderless)
             }

@@ -13,6 +13,7 @@ struct LinkBridgeApp: App {
                 .frame(minWidth: 720, minHeight: 480)
         }
         .defaultSize(width: 900, height: 600)
+        .commands { LinkBridgeCommands(model: appDelegate.model) }
 
         MenuBarExtra {
             MenuBarContent()

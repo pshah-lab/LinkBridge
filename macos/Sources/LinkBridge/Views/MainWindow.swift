@@ -45,12 +45,20 @@ struct MainWindow: View {
             ApprovalSheet(item: item) { model.resolve(item.id, approved: $0) }
         }
         .onAppear {
+            takeSidebarRequest()
             if selection == nil, let id = model.selectedItem?.id { selection = .device(id) }
         }
+        .onChange(of: model.sidebarRequest) { takeSidebarRequest() }
         .onChange(of: selection) { _, new in
             guard case .device(let id) = new else { return }
             model.select(model.deviceItems.first { $0.id == id }?.deviceId)
         }
+    }
+
+    private func takeSidebarRequest() {
+        guard let request = model.sidebarRequest else { return }
+        selection = request
+        model.sidebarRequest = nil
     }
 
     @ViewBuilder
