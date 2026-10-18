@@ -46,8 +46,9 @@ Shared Swift core (`macos/Sources/LinkBridgeCore/`), used by Mac and iOS:
   handler, file name sanitizing, replay cache, approval flow.
 - `PairingCode.swift`, `PairingKeyStore.swift`, `PairingClient.swift`: pairing crypto.
 - `SecureTransport.swift`: TLS-PSK parameters. `Security.swift`: AES-GCM chunks, HMAC.
-- `CredentialStore.swift`: iOS Keychain, but a 0600 JSON file on macOS (a known
-  trade-off of ad-hoc signing; see roadmap).
+- `CredentialStore.swift`: data-protection Keychain on iOS and on Team-ID-signed Mac
+  builds (which migrate and delete the old file); a 0600 JSON file only for ad-hoc
+  signed Mac builds.
 - `TrustedPeerStore.swift`, `DeviceIdentity.swift`, `FileSender.swift`, `PeerBrowser.swift`.
 
 Mac app: `macos/Sources/LinkBridge/` (approval UI, notifications) and

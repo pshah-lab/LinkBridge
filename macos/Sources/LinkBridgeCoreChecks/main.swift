@@ -128,6 +128,45 @@ section("Decryption rejects tampering, truncation and the wrong key") {
 
 // MARK: - Presentation (PresentationChecks.swift)
 
+// MARK: - Credential storage
+
+final class MemorySecrets: SecretBackend {
+    var items: [String: String] = [:]
+    var failWrites = false
+    func read(account: String) -> String? { items[account] }
+    func write(_ value: String, account: String) -> Bool {
+        guard !failWrites else { return false }
+        items[account] = value
+        return true
+    }
+    func delete(account: String) { items[account] = nil }
+}
+
+section("Credentials: ad-hoc builds use the file, signed builds migrate it to the Keychain") {
+    // This binary is ad-hoc signed, so it must not touch the Keychain (that prompts for a password).
+    check(!CredentialStore.hasTeamIdentifier(), "checks binary has no Team ID")
+    check(CredentialStore.defaultBackend is FileSecretBackend, "ad-hoc build uses the file store")
+
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("creds-\(UUID().uuidString)/credentials.json")
+    let file = FileSecretBackend(fileURL: url)
+    file.write("private-key", account: "identity.pairingPrivateKey")
+    file.write("peer-secret", account: "peer.ABC")
+    let perms = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? -1
+    check(perms == 0o600, "file is 0600, got \(String(perms, radix: 8))")
+
+    let failing = MemorySecrets()
+    failing.failWrites = true
+    check(!CredentialStore.migrate(from: file, to: failing), "failed migration reports failure")
+    check(FileManager.default.fileExists(atPath: url.path), "failed migration keeps the file")
+
+    let keychain = MemorySecrets()
+    check(CredentialStore.migrate(from: file, to: keychain), "migration succeeds")
+    check(keychain.items == ["identity.pairingPrivateKey": "private-key", "peer.ABC": "peer-secret"], "every item moved")
+    check(!FileManager.default.fileExists(atPath: url.path), "plaintext file deleted after migration")
+    check(CredentialStore.migrate(from: file, to: keychain), "nothing to migrate is a success")
+    check(CredentialStore(backend: keychain).read(account: "peer.ABC") == "peer-secret", "store reads through its backend")
+}
+
 runPresentationChecks()
 runApprovalChecks()
 runHistoryStoreChecks()
