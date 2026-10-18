@@ -44,6 +44,13 @@ final class MacModel {
 
     /// Called when a request starts waiting, so a notification can be posted.
     @ObservationIgnored var onApprovalAdded: (PendingApproval) -> Void = { _ in }
+    /// Opens the SwiftUI window; set by a view that has `openWindow`.
+    @ObservationIgnored var openMainWindow: () -> Void = {}
+
+    func showMainWindow() {
+        openMainWindow()
+        NSApp.activate()
+    }
 
     private var receiving: (id: UUID, fileName: String, sender: String, progress: Double, updatedAt: Date)?
     private var sendingTarget: String?
