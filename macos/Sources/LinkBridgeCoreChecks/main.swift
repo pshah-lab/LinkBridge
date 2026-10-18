@@ -225,6 +225,30 @@ func halfClosedRequest(port: UInt16, _ text: String, timeout: TimeInterval = 3) 
     return reply
 }
 
+/// Opens a connection, sends `text` (if any) and waits for the server to close it.
+/// Returns true if the server closed it within `timeout`, false if it was still open.
+func serverCloses(port: UInt16, parameters: NWParameters = .tcp, _ text: String = "", timeout: TimeInterval = 3) -> Bool {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: parameters)
+    let done = DispatchSemaphore(value: 0)
+    connection.stateUpdateHandler = { state in
+        if case .ready = state {
+            if !text.isEmpty { connection.send(content: Data(text.utf8), completion: .contentProcessed { _ in }) }
+            func read() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, isComplete, error in
+                    if isComplete || error != nil { done.signal() } else if data != nil { read() }
+                }
+            }
+            read()
+        } else if case .failed = state {
+            done.signal()
+        }
+    }
+    connection.start(queue: .global())
+    let closed = done.wait(timeout: .now() + timeout) == .success
+    connection.cancel()
+    return closed
+}
+
 /// Starts a server on the completion-based initializer. `pair` / `transfer` decide how each request is answered.
 func startDecisionServer(
     pair: @escaping (IncomingPairRequest, @escaping (Bool) -> Void) -> Void,
@@ -416,6 +440,52 @@ DispatchQueue.global().async {
             .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)
         check((try? Data(contentsOf: downloads)) == payload, "saved file matches")
         check(downloads.path.hasPrefix(ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? "/nonexistent"), "wrote inside the throwaway home")
+    }
+
+    section("Slow or silent connections are closed and capped") {
+        let requestTimeout = ControlServer.requestTimeout
+        let idleTimeout = ControlServer.uploadIdleTimeout
+        let perSource = ControlServer.maxConnectionsPerSource
+        ControlServer.requestTimeout = 0.5
+        ControlServer.uploadIdleTimeout = 0.5
+        defer {
+            ControlServer.requestTimeout = requestTimeout
+            ControlServer.uploadIdleTimeout = idleTimeout
+            ControlServer.maxConnectionsPerSource = perSource
+        }
+
+        check(serverCloses(port: port), "silent plain connection is closed")
+        check(serverCloses(port: port, "GET /dev"), "half a header is closed")
+        check(serverCloses(port: port, "POST /pair/request HTTP/1.1\r\nContent-Length: 100\r\n\r\n{"), "unfinished body is closed")
+
+        // A signed upload head that never sends its body is dropped by the idle timer.
+        let identity = IdentityStore().loadOrCreate()
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        let psk = SecureTransport.psk(fromSecret: secret)!
+        let tls = SecureTransport.clientParameters(identity: SecureTransport.identity(for: identity.deviceId.uuidString), psk: psk)
+        let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
+        let transferId = UUID().uuidString
+        let signature = Security.hmacSHA256Base64(secret: secret, message: ["POST", "/transfer/upload", identity.deviceId.uuidString,
+                                                                           timestamp, transferId, Security.encryptionScheme, "1000"].joined(separator: "\n"))!
+        let head = ["POST /transfer/upload HTTP/1.1", "Content-Length: 1000",
+                    "X-LinkBridge-Device-Id: \(identity.deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
+                    "X-LinkBridge-Transfer-Id: \(transferId)", "X-LinkBridge-Encryption: \(Security.encryptionScheme)",
+                    "X-LinkBridge-Signature: \(signature)", "", ""].joined(separator: "\r\n")
+        check(serverCloses(port: server.securePort, parameters: tls, head), "stalled upload is closed")
+        check(serverCloses(port: server.securePort, parameters: tls), "silent TLS connection is closed")
+
+        // Over the per-source cap, a new connection is refused at once.
+        ControlServer.requestTimeout = 3
+        ControlServer.maxConnectionsPerSource = 2
+        let held = (0..<2).map { _ in NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp) }
+        held.forEach { $0.start(queue: .global()) }
+        Thread.sleep(forTimeInterval: 0.3)
+        check(DispatchQueue.main.sync { server.openConnectionCounts.plain } == 2, "two connections held open")
+        check(serverCloses(port: port, timeout: 1), "third connection from the same address refused")
+        held.forEach { $0.cancel() }
+        Thread.sleep(forTimeInterval: 0.3)
+        check(DispatchQueue.main.sync { server.openConnectionCounts.plain } == 0, "closed connections are no longer counted")
+        check(rawRequest(port: port, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n").hasPrefix("HTTP/1.1 200"), "server still answers")
     }
 
     section("Async approvals: pairing") {

@@ -35,6 +35,19 @@ public final class ControlServer {
     /// How long an incoming file waits for approval before it is declined. Senders time out
     /// after 120 s, so the Mac gives up first and clears the request.
     public internal(set) static var transferApprovalTimeout: TimeInterval = 110
+    /// A connection must deliver its request (headers, and the body on the plain port) within
+    /// this time of being accepted, so slow or silent clients can't hold sockets open.
+    static var requestTimeout: TimeInterval = 10
+    /// An upload that makes no progress for this long is dropped. Not counted while the
+    /// upload waits for the user's decision.
+    static var uploadIdleTimeout: TimeInterval = 30
+    /// Open-connection caps, so one LAN host can't exhaust file descriptors.
+    static var maxPlainConnections = 32
+    static var maxSecureConnections = 8
+    static var maxConnectionsPerSource = 4
+    /// Owned by the server, not the listener, so the counts survive a secure-listener restart.
+    private let plainLimiter = ConnectionLimiter(total: { ControlServer.maxPlainConnections })
+    private let secureLimiter = ConnectionLimiter(total: { ControlServer.maxSecureConnections })
 
     /// Answers a pairing request by calling the completion with the user's decision. Called on
     /// the main queue; the completion may be called from any thread, and only its first call counts.
@@ -121,7 +134,8 @@ public final class ControlServer {
         self.listener = listener
         listener.service = advertisedService()
 
-        listener.newConnectionHandler = { [weak self, identity, trustedPeerStore, pairDecision] connection in
+        listener.newConnectionHandler = { [weak self, identity, trustedPeerStore, pairDecision, plainLimiter] connection in
+            guard plainLimiter.admit(connection) else { return }
             connection.start(queue: .main)
             Self.handlePlain(
                 connection: connection, identity: identity, trustedPeerStore: trustedPeerStore,
@@ -168,7 +182,8 @@ public final class ControlServer {
         }
         self.secureListener = listener
 
-        listener.newConnectionHandler = { [transferDecision, transferProgress, transferReceived, transferWithdrawn] connection in
+        listener.newConnectionHandler = { [transferDecision, transferProgress, transferReceived, transferWithdrawn, secureLimiter] connection in
+            guard secureLimiter.admit(connection) else { return }
             connection.start(queue: .main)
             Self.handleSecure(
                 connection: connection,
@@ -225,7 +240,10 @@ public final class ControlServer {
         transferReceived: @escaping (IncomingTransferRequest, URL) -> Void,
         transferWithdrawn: @escaping (UUID) -> Void
     ) {
+        // Covers the TLS handshake and the request head; the upload has its own idle timer.
+        let deadline = Deadline(connection: connection, after: requestTimeout)
         receiveRequestHead(connection: connection) { head in
+            deadline.disarm()
             guard let head else {
                 connection.cancel()
                 return
@@ -255,6 +273,8 @@ public final class ControlServer {
         pairDecision: @escaping PairDecision,
         onPaired: @escaping () -> Void
     ) {
+        // Covers the head and the small body. Disarmed before /pair/finalize waits for the user.
+        let deadline = Deadline(connection: connection, after: requestTimeout)
         receiveRequestHead(connection: connection) { head in
             guard let head else {
                 connection.cancel()
@@ -268,6 +288,7 @@ public final class ControlServer {
             }
 
             receiveSmallBodyIfNeeded(connection: connection, head: head) { request in
+                deadline.disarm()
                 if request.startLine.hasPrefix("POST /pair/finalize") {
                     handlePairFinalize(body: request.body) { response in
                         sendJSON(connection: connection, status: response.status, body: response.body)
@@ -404,6 +425,9 @@ public final class ControlServer {
     static let maxDeviceNameLength = 64
     static let maxFeatures = 16
     static let maxFeatureLength = 32
+
+    /// Main queue only. For the checks.
+    var openConnectionCounts: (plain: Int, secure: Int) { (plainLimiter.openCount, secureLimiter.openCount) }
 
     /// Main queue only. For the checks.
     static var pendingPairingCount: Int { pendingPairings.count }
@@ -607,6 +631,8 @@ public final class ControlServer {
             var awaiting: (request: IncomingTransferRequest, metadata: IncomingFileMetadata)?
             var heldPlaintext: [Data] = []
             var askedForDecision = false
+            // Bumped by every read callback; a timer armed for an older read does nothing.
+            var readGeneration = 0
 
             func consumePlaintext(_ data: Data) throws {
                 guard !data.isEmpty else { return }
@@ -749,7 +775,15 @@ public final class ControlServer {
                     return
                 }
 
+                readGeneration += 1
+                let generation = readGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + uploadIdleTimeout) {
+                    guard generation == readGeneration else { return }
+                    discard()
+                    connection.cancel()
+                }
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { data, _, isComplete, error in
+                    readGeneration += 1
                     if error != nil {
                         try? fileHandle?.close()
                         if let destination { try? FileManager.default.removeItem(at: destination) }
@@ -843,6 +877,56 @@ public final class ControlServer {
         }
 
         return directory.appendingPathComponent("\(UUID().uuidString)-\(fileName)")
+    }
+}
+
+/// Cancels a connection unless disarmed in time. Main queue only.
+private final class Deadline {
+    private var armed = true
+
+    init(connection: NWConnection, after seconds: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [self] in
+            if armed { connection.cancel() }
+        }
+    }
+
+    func disarm() { armed = false }
+}
+
+/// Counts open connections for one port and refuses new ones over the caps.
+/// Called on the listener's queue (main), like all request handling.
+final class ConnectionLimiter {
+    private let total: () -> Int
+    private var open: [ObjectIdentifier: String] = [:]
+
+    init(total: @escaping () -> Int) {
+        self.total = total
+    }
+
+    var openCount: Int { open.count }
+
+    /// Admits the connection and tracks it until it ends, or cancels it and returns false.
+    func admit(_ connection: NWConnection) -> Bool {
+        let source = ControlServer.sourceHost(of: connection)
+        let fromSource = open.values.filter { $0 == source }.count
+        guard open.count < total(), fromSource < ControlServer.maxConnectionsPerSource else {
+            connection.cancel()
+            return false
+        }
+        let key = ObjectIdentifier(connection)
+        open[key] = source
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled:
+                self?.open[key] = nil
+            case .failed:
+                self?.open[key] = nil
+                connection.cancel()
+            default:
+                break
+            }
+        }
+        return true
     }
 }
 
