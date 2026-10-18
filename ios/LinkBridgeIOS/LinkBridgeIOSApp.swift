@@ -28,7 +28,7 @@ struct LinkBridgeRootView: View {
                 screen("Devices") { DevicesView(model: model) }
             }
             Tab("Send", systemImage: "paperplane", value: AppTab.send) {
-                screen("Send") { Text("Send") }
+                screen("Send") { SendView(model: model, onPickDevice: { tab = .devices }) }
             }
             Tab("History", systemImage: "clock.arrow.circlepath", value: AppTab.history) {
                 screen("History") { Text("History") }
