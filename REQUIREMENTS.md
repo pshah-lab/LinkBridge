@@ -7,19 +7,19 @@ This document lists all required software, dependencies, environment configurati
 ## 1. System Requirements
 
 ### macOS Desktop App (`macos/`)
-- **Operating System**: macOS 13.0 (Ventura) or newer
-- **Build System / Toolchain**: Swift 5.9+ (Included with Xcode or Xcode Command Line Tools)
+- **Operating System**: macOS 26 or newer
+- **Build System / Toolchain**: Xcode 26 or newer (Swift 6.2+ tools)
 - **Network Environment**: Wi-Fi local network with mDNS / Multicast enabled (for LAN device discovery and file transfer)
 
 ### Android Mobile App (`android/`)
 - **Java Development Kit (JDK)**: OpenJDK 17
 - **Android SDK Specifications**:
   - `compileSdk`: 36 (Android 16)
-  - `minSdk`: 26 (Android 8.0 Oreo or higher)
+  - `minSdk`: 31 (Android 12 or higher)
   - `targetSdk`: 36 (required by Google Play)
   - `buildToolsVersion`: 36.0.0
 - **Gradle**: provided by the wrapper (`android/gradlew`, Gradle 9.8.1, Android Gradle Plugin 9.4.1 with built-in Kotlin)
-- **Target Physical/Virtual Device**: Android 8.0+ device with **Developer Options & USB Debugging** enabled.
+- **Target Physical/Virtual Device**: Android 12+ device with **Developer Options & USB Debugging** enabled.
 
 ---
 
