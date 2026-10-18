@@ -20,11 +20,12 @@ struct LinkBridgeRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: AppTab = .devices
     @State private var showingSettings = false
+    @State private var confirmingPairing = false
 
     var body: some View {
         TabView(selection: $tab) {
             Tab("Devices", systemImage: "dot.radiowaves.left.and.right", value: AppTab.devices) {
-                screen("Devices") { Text("Devices") }
+                screen("Devices") { DevicesView(model: model) }
             }
             Tab("Send", systemImage: "paperplane", value: AppTab.send) {
                 screen("Send") { Text("Send") }
@@ -35,6 +36,15 @@ struct LinkBridgeRootView: View {
         }
         .tint(Accent.action.color)
         .sheet(isPresented: $showingSettings) { SettingsView(model: model) }
+        .sheet(item: $model.pairingPrompt, onDismiss: {
+            // Swiping the sheet away without confirming cancels pairing.
+            if model.pairingPeerId != nil && !confirmingPairing { model.cancelPairing() }
+            confirmingPairing = false
+        }) { prompt in
+            PairingSheet(prompt: prompt,
+                         onConfirm: { confirmingPairing = true; model.confirmPairing() },
+                         onCancel: { model.cancelPairing() })
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { model.startDiscovery() } else if phase == .background { model.stopDiscovery() }
         }
