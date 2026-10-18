@@ -30,7 +30,7 @@ queues, screen mirroring.
 
 ### Package (`macos/Package.swift`)
 
-- Platforms: `.macOS(.v26)`, `.iOS(.v26)`.
+- Platforms: `.macOS(.v26)`, `.iOS(.v26)`; tools version 6.2 (required for `.v26`) in Swift 5 language mode.
 - New target `LinkBridgePresentation` (depends on `LinkBridgeCore`, imports only
   Foundation) and a matching library product.
 - `LinkBridge` (Mac app) depends on Core + Presentation.
@@ -78,7 +78,12 @@ transferApproval: @escaping (IncomingTransferRequest, @escaping (Bool) -> Void) 
 - The existing `Bool` initializer stays and wraps the new one, so `linkbridge-cli`
   and existing checks compile unchanged.
 - `IncomingPairRequest` / `IncomingTransferRequest` gain a stable `id: UUID` so the UI
-  and notifications can refer to one request.
+  and notifications can refer to one request; `IncomingPairRequest` also exposes
+  `expiresAt` for the countdown.
+- An unanswered incoming file is declined after 300 s and the app is told
+  (`transferWithdrawn`) so its row disappears.
+- The completion for a received file includes its final URL (for Show in Finder).
+- `TrustedPeerStore.remove(deviceId:)` backs Unpair in Settings.
 
 ### Mac app (`macos/Sources/LinkBridge/`)
 
@@ -105,9 +110,11 @@ live `PeerBrowser`, merged with trusted peers via `DeviceListItem.merge`; the se
 target follows `DeviceSelection.resolve`, as on iOS. The selected device ID persists in
 `UserDefaults`.
 
-Testing seam: `MacModel` takes its stores and a `ServerFactory` through its initializer;
-production passes the real ones, checks pass stubs with in-memory keychain storage so no
-check touches the login keychain.
+Testing seam: `LinkBridgeCoreChecks` cannot import the executable Mac target, so all
+testable logic (approval queue and resolve-once rules in `ApprovalCenter`, `HistoryStore`
+and its migration) lives in `LinkBridgePresentation`; `MacModel` stays thin wiring,
+verified by the manual pass. Checks keep their throwaway-home isolation and never touch
+the login keychain.
 
 ## Screens
 
@@ -198,8 +205,8 @@ digit.
   - Ported presentation checks (ConnectionState, SendPhase, DeviceListItem merge and
     selection, HistoryRowContent incl. received rows, Accent contrast).
   - `ApprovalQueue` add / resolve / expire / ordering.
-  - Completion-based approvals against a real `ControlServer` on loopback with stubbed
-    keychain storage: accept, decline, late completion after expiry ignored, first
+  - Completion-based approvals against a real `ControlServer` on loopback in the
+    checks' isolated home: accept, decline, late completion after expiry ignored, first
     completion wins; the `Bool` initializer still works.
   - Mac history migration from the old `MacTransferHistoryEntry` JSON.
 - iOS: `LinkBridgeIOSTests` pass after switching imports; the app builds for iOS 26.
