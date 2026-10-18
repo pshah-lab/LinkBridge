@@ -1,3 +1,0 @@
-import LinkBridgeCore
-
-MacGuiApp().run()

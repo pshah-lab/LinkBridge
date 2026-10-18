@@ -1,3 +1,4 @@
+import LinkBridgePresentation
 import SwiftUI
 import UniformTypeIdentifiers
 import LinkBridgeCore
@@ -11,90 +12,65 @@ struct LinkBridgeIOSApp: App {
     }
 }
 
+enum AppTab: Hashable {
+    case devices, send, history
+}
+
 struct LinkBridgeRootView: View {
-    @State private var showingFileImporter = false
-    @State private var status = "Ready for private transfers over local Wi-Fi"
+    @StateObject private var model = LinkBridgeModel()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var tab: AppTab = .devices
+    @State private var showingSettings = false
+    @State private var confirmingPairing = false
 
     var body: some View {
+        TabView(selection: $tab) {
+            Tab("Devices", systemImage: "dot.radiowaves.left.and.right", value: AppTab.devices) {
+                screen("Devices") { DevicesView(model: model) }
+            }
+            Tab("Send", systemImage: "paperplane", value: AppTab.send) {
+                screen("Send") { SendView(model: model, onPickDevice: { tab = .devices }) }
+            }
+            Tab("History", systemImage: "clock.arrow.circlepath", value: AppTab.history) {
+                screen("History") { HistoryView(model: model) }
+            }
+        }
+        .tint(Accent.action.color)
+        .sheet(isPresented: $showingSettings) { SettingsView(model: model) }
+        .sheet(item: $model.pairingPrompt, onDismiss: {
+            // Swiping the sheet away without confirming cancels pairing.
+            if model.pairingPeerId != nil && !confirmingPairing { model.cancelPairing() }
+            confirmingPairing = false
+        }) { prompt in
+            PairingSheet(prompt: prompt,
+                         onConfirm: { confirmingPairing = true; model.confirmPairing() },
+                         onCancel: { model.cancelPairing() })
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { model.startDiscovery() } else if phase == .background { model.stopDiscovery() }
+        }
+        .onAppear { model.startDiscovery() }
+    }
+
+    /// Shared frame for each tab: tinted backdrop, connection rail on top, Settings button.
+    private func screen<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    deviceCard
-                    connectionCard
-                    transferCard
-                    historyCard
-                }
-                .padding(20)
-            }
-            .background(Color(uiColor: .systemGroupedBackground))
-            .navigationBarHidden(true)
-            .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.item]) { result in
-                switch result {
-                case .success(let url): status = "Selected \(url.lastPathComponent)"
-                case .failure: status = "Could not select that file"
-                }
-            }
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("LinkBridge")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-            Text("iPhone companion")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var deviceCard: some View {
-        infoCard(title: "THIS IPHONE", icon: "iphone") {
-            Label("Ready to connect", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        }
-    }
-
-    private var connectionCard: some View {
-        infoCard(title: "NEARBY DEVICES", icon: "dot.radiowaves.left.and.right") {
-            Text("Discovery and pairing will use the shared LinkBridge protocol.")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var transferCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("TRANSFER", systemImage: "arrow.up.arrow.down")
-                .font(.headline)
-            Text(status)
-                .foregroundStyle(.secondary)
-            Button {
-                showingFileImporter = true
-            } label: {
-                Label("Choose a file", systemImage: "doc.badge.plus")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding(18)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    private var historyCard: some View {
-        infoCard(title: "RECENT ACTIVITY", icon: "clock.arrow.circlepath") {
-            Text("Completed transfers will appear here.")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func infoCard<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: icon)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
             content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .linkBridgeBackdrop()
+                .safeAreaInset(edge: .top) {
+                    ConnectionRail(state: model.connectionState)
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                }
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                            .accessibilityLabel("Settings")
+                    }
+                }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(.background, in: RoundedRectangle(cornerRadius: 14))
     }
 }

@@ -10,6 +10,15 @@ public struct ResolvedPeer {
     /// TLS-PSK port for transfers (protocol 2). Nil means the peer runs an older app.
     public let tlsPort: UInt16?
 
+    public init(deviceName: String, deviceId: UUID?, platform: String?, host: String, port: UInt16, tlsPort: UInt16?) {
+        self.deviceName = deviceName
+        self.deviceId = deviceId
+        self.platform = platform
+        self.host = host
+        self.port = port
+        self.tlsPort = tlsPort
+    }
+
     public var endpoint: String {
         "\(host):\(port)"
     }

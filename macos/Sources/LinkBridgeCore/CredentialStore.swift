@@ -1,4 +1,50 @@
 import Foundation
+#if os(iOS)
+import Security
+
+/// Stores secrets (identity token, pairing private key, per-peer secrets) in the
+/// iOS Keychain, readable only while the device is unlocked and never synced.
+final class CredentialStore {
+    private let service = "com.pshahlab.linkbridge.credentials"
+
+    func read(account: String) -> String? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    func write(_ value: String, account: String) -> Bool {
+        let data = Data(value.utf8)
+        let query = baseQuery(account: account)
+        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var item = query
+            item[kSecValueData as String] = data
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            status = SecItemAdd(item as CFDictionary, nil)
+        }
+        if status != errSecSuccess {
+            print("Warning: could not save credential \(account): OSStatus \(status)")
+        }
+        return status == errSecSuccess
+    }
+
+    func delete(account: String) {
+        SecItemDelete(baseQuery(account: account) as CFDictionary)
+    }
+
+    private func baseQuery(account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+}
+#else
 
 /// Stores secrets (identity token, pairing private key, per-peer secrets) in
 /// ~/Library/Application Support/LinkBridge/credentials.json, readable only by
@@ -30,6 +76,20 @@ final class CredentialStore {
         defer { Self.lock.unlock() }
         var items = load()
         items[account] = value
+        return persist(items, account: account)
+    }
+
+    func delete(account: String) {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        var items = load()
+        guard items.removeValue(forKey: account) != nil else { return }
+        persist(items, account: account)
+    }
+
+    /// Caller holds the lock.
+    @discardableResult
+    private func persist(_ items: [String: String], account: String) -> Bool {
         do {
             let directory = fileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -57,3 +117,4 @@ final class CredentialStore {
         return items
     }
 }
+#endif

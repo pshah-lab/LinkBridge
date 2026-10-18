@@ -1,34 +1,27 @@
 # LinkBridge Design System
 
-## Direction
-
-LinkBridge is a private transfer desk for two devices on one local network. The interface should feel calm, technical, and immediate: one clear connection state, one primary transfer action, and quiet operational detail around it.
+The design language lives in
+[docs/superpowers/specs/2026-10-17-liquid-glass-design-language-design.md](docs/superpowers/specs/2026-10-17-liquid-glass-design-language-design.md):
+Liquid Glass on macOS 26 / iOS 26, Material 3 Expressive with glass surfaces on Android.
 
 ## Tokens
 
-- Canvas: `#F4F5F1` (paper grey-green)
-- Ink: `#10151F` (near-black blue ink)
-- Surface: `#FFFFFF`
-- Line: `#D9DED8`
-- Action: `#3E62E8` (cobalt)
-- Action soft: `#E8EDFF`
-- Signal: `#35C98B` (mint)
-- Signal soft: `#E7F8F0`
-- Attention: `#F08A5D` (coral)
-- Muted: `#68717D`
+| Role | Light | Dark | Label on a fill of it |
+|---|---|---|---|
+| Action (cobalt) | `#3E62E8` | `#7C95FF` | white (light), ink `#10151F` (dark) |
+| Signal (mint) | `#35C98B` | `#4ADBA0` | ink `#10151F` |
+| Attention (coral) | `#F08A5D` | `#FF9F78` | ink `#10151F` |
+| Backdrop | cobalt 6% over system background | cobalt 10% over system background | — |
 
-## Composition
+Labels on accent fills must reach 4.5:1; `ThemeTests` in the iOS app checks every pair.
+Everything else uses system colours.
 
-The transfer canvas is the primary object on both platforms. Connection and device identity sit above it as a single rail; history and diagnostics stay below the action. Cards are framed tools, not decorative containers, with 8-12px corners and thin borders.
+## Rules
 
-## Typography
-
-Use the platform system sans for legibility. Reserve heavy weight for product name, device names, and the primary action. Labels are compact uppercase utility text with generous tracking. Body copy is sentence case and action-oriented.
-
-## Interaction rules
-
-- Show one dominant action at a time.
-- Keep the connection state visible while scanning, pairing, transferring, and receiving.
+- Glass only on controls: tab bar / toolbar, connection rail, the primary Send control, sheets. Lists, history and the drop zone stay solid.
+- One dominant action per screen.
 - Pairing and incoming transfers require explicit approval.
-- A failed transfer must state the recovery action, not only the error.
-- Respect platform focus, reduced motion, and native touch/keyboard behavior.
+- A failed transfer states the recovery action, not only the error.
+- Respect Reduce Motion, Reduce Transparency, Dynamic Type and native touch/keyboard behaviour.
+
+iOS screenshots of the current design: `docs/screenshots/ios/`.

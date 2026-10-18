@@ -8,6 +8,17 @@ public struct TrustedPeer: Codable {
     public let features: [String]
     public let pairedAt: Date
     public let authToken: String?
+
+    public init(deviceId: UUID, deviceName: String, platform: String, protocolVersion: Int,
+                features: [String], pairedAt: Date, authToken: String?) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.platform = platform
+        self.protocolVersion = protocolVersion
+        self.features = features
+        self.pairedAt = pairedAt
+        self.authToken = authToken
+    }
 }
 
 public final class TrustedPeerStore {
@@ -62,6 +73,18 @@ public final class TrustedPeerStore {
 
     public func find(deviceId: UUID) -> TrustedPeer? {
         load().first { $0.deviceId == deviceId }
+    }
+
+    /// Unpairs a device: forgets it and deletes its secret.
+    public func remove(deviceId: UUID) {
+        let peers = load().filter { $0.deviceId != deviceId }
+        do {
+            let data = try JSONEncoder().encode(peers.map(PersistedTrustedPeer.init))
+            try data.write(to: fileURL, options: [.atomic])
+            credentials.delete(account: "peer.\(deviceId.uuidString)")
+        } catch {
+            print("Warning: could not remove trusted peer: \(error.localizedDescription)")
+        }
     }
 }
 

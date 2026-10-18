@@ -4,6 +4,12 @@
 <dict>
     <key>NSLocalNetworkUsageDescription</key>
     <string>LinkBridge finds nearby devices on this Wi-Fi network and transfers files directly between them.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <!-- Pairing uses plain HTTP to the Mac's local port, protected by the six-digit code. -->
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <key>NSBonjourServices</key>
     <array>
         <string>_linkbridge._tcp</string>
