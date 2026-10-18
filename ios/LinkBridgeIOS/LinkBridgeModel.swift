@@ -38,6 +38,8 @@ final class LinkBridgeModel: ObservableObject {
     private let trustedStore = TrustedPeerStore()
     private var pairingClient: PairingClient?
     private var selectedFile: (url: URL, bookmark: Data?, bytes: Int64)?
+    /// The device the user picked; survives backgrounding and brief drop-outs.
+    private var preferredPeerId: UUID?
     private static let historyKey = "transferHistory"
 
     init() {
@@ -52,9 +54,8 @@ final class LinkBridgeModel: ObservableObject {
             self.nearby = peers
             let now = Date()
             for id in peers.compactMap(\.deviceId) { self.lastSeen[id] = now }
-            if self.selectedItem?.isSendable != true {
-                self.selectedPeerId = self.deviceItems.first { $0.isSendable }?.deviceId
-            }
+            self.selectedPeerId = DeviceSelection.resolve(current: self.selectedPeerId, preferred: self.preferredPeerId,
+                                                          items: self.deviceItems, isSending: self.isSending)
         }
     }
 
@@ -83,6 +84,7 @@ final class LinkBridgeModel: ObservableObject {
     func select(_ item: DeviceListItem) {
         guard item.isSendable else { return }
         selectedPeerId = item.deviceId
+        preferredPeerId = item.deviceId
         lastError = nil
     }
 
@@ -111,6 +113,7 @@ final class LinkBridgeModel: ObservableObject {
                 let peer = try await client.finish()
                 trusted = trustedStore.load()
                 selectedPeerId = peer.deviceId
+                preferredPeerId = peer.deviceId
                 pairingFinished(error: nil)
             } catch {
                 pairingFinished(error: error.localizedDescription)

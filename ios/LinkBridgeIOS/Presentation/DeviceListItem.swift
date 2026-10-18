@@ -84,3 +84,16 @@ struct DeviceListItem: Identifiable, Equatable {
             + awayItems.sorted(by: byName)
     }
 }
+
+/// Which device Send targets. The user's pick wins whenever it is sendable; otherwise the first
+/// sendable device stands in until the pick comes back. Nothing changes mid-send or when discovery
+/// reports no devices at all (for example while the app is in the background).
+enum DeviceSelection {
+    static func resolve(current: UUID?, preferred: UUID?, items: [DeviceListItem], isSending: Bool) -> UUID? {
+        if isSending || items.isEmpty { return current }
+        let sendable = items.filter(\.isSendable)
+        if let preferred, sendable.contains(where: { $0.deviceId == preferred }) { return preferred }
+        if let current, sendable.contains(where: { $0.deviceId == current }) { return current }
+        return sendable.first?.deviceId ?? current
+    }
+}

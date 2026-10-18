@@ -9,7 +9,7 @@ struct SendView: View {
 
     var body: some View {
         Group {
-            if let target = model.selectedItem, target.isSendable {
+            if let target = model.selectedItem, target.isSendable || model.isSending {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("To \(target.name)")
                         .font(.headline)
@@ -81,8 +81,9 @@ struct SendView: View {
         .buttonStyle(.plain)
         .disabled(model.isSending)
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first, !model.isSending else { return false }
-            model.choose(fileAt: url)
+            guard let url = urls.first, !model.isSending,
+                  let staged = try? DroppedFile.stage(url) else { return false }
+            model.choose(fileAt: staged)
             return true
         }
     }

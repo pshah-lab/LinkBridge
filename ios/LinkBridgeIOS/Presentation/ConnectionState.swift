@@ -12,12 +12,11 @@ enum ConnectionState: Equatable {
     static func derive(nearbyCount: Int, selected: DeviceListItem?, sendPhase: SendPhase,
                        errorMessage: String?) -> ConnectionState {
         if let errorMessage { return .error(message: errorMessage) }
-        if let selected, selected.isSendable {
-            if case .sending(_, let progress) = sendPhase {
-                return .sending(deviceName: selected.name, progress: progress)
-            }
-            return .ready(deviceName: selected.name)
+        // A transfer in flight stays visible even if its target briefly drops off discovery.
+        if let selected, case .sending(_, let progress) = sendPhase {
+            return .sending(deviceName: selected.name, progress: progress)
         }
+        if let selected, selected.isSendable { return .ready(deviceName: selected.name) }
         return nearbyCount == 0 ? .searching : .noPairedDevice
     }
 
