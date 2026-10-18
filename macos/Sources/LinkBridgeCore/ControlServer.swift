@@ -524,7 +524,8 @@ public final class ControlServer {
             platform: pending.peer.platform,
             code: code,
             replacesExisting: trustedPeerStore.find(deviceId: pending.peer.deviceId) != nil,
-            expiresAt: pending.expiresAt
+            expiresAt: pending.expiresAt,
+            sourceAddress: pending.source
         )
 
         // Reply first so the phone can show its code while the Mac user decides.
@@ -1241,6 +1242,8 @@ public struct IncomingPairRequest {
     public let replacesExisting: Bool
     /// After this the pairing is declined automatically.
     public let expiresAt: Date
+    /// IP address the request came from, shown so the user can spot an unexpected one.
+    public let sourceAddress: String
 }
 
 public struct IncomingTransferRequest {

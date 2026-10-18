@@ -2,16 +2,32 @@ import Foundation
 import LinkBridgeCore
 
 public enum ApprovalKind: Equatable {
-    case pair(deviceName: String, code: String, replacesExisting: Bool, expiresAt: Date)
+    case pair(deviceName: String, code: String, replacesExisting: Bool, expiresAt: Date, sourceAddress: String)
     case file(senderName: String, fileName: String, bytes: Int)
 
     public init(_ request: IncomingPairRequest) {
         self = .pair(deviceName: request.deviceName, code: request.code,
-                     replacesExisting: request.replacesExisting, expiresAt: request.expiresAt)
+                     replacesExisting: request.replacesExisting, expiresAt: request.expiresAt,
+                     sourceAddress: request.sourceAddress)
     }
 
     public init(_ request: IncomingTransferRequest) {
         self = .file(senderName: request.senderName, fileName: request.fileName, bytes: request.bytes)
+    }
+}
+
+/// The Mac doesn't show its pairing code; the user types the one the phone shows. That makes
+/// the comparison something the user must do, not something they can skip.
+public enum PairingCodeEntry {
+    /// Digits only, so "123 456" and "123456" both match.
+    public static func digits(_ text: String) -> String {
+        String(text.filter(\.isASCII).filter(\.isNumber).prefix(6))
+    }
+
+    public static func matches(_ entered: String, code: String) -> Bool {
+        let typed = Array(digits(entered).utf8), expected = Array(code.utf8)
+        guard typed.count == expected.count else { return false }
+        return zip(typed, expected).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
 }
 
@@ -61,7 +77,7 @@ public struct ApprovalQueue: Equatable {
     public mutating func expire(now: Date) -> [UUID] {
         notices.removeAll { $0.until <= now }
         let expired = items.filter {
-            if case .pair(_, _, _, let expiresAt) = $0.kind { return expiresAt <= now }
+            if case .pair(_, _, _, let expiresAt, _) = $0.kind { return expiresAt <= now }
             return false
         }
         items.removeAll { item in expired.contains { $0.id == item.id } }

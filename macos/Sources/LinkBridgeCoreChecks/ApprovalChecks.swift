@@ -6,7 +6,8 @@ import LinkBridgePresentation
 private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
 private func pairItem(_ id: UUID = UUID(), expiresAt: Date = t0.addingTimeInterval(180)) -> PendingApproval {
-    PendingApproval(id: id, kind: .pair(deviceName: "Pixel 8", code: "123456", replacesExisting: false, expiresAt: expiresAt),
+    PendingApproval(id: id, kind: .pair(deviceName: "Pixel 8", code: "123456", replacesExisting: false, expiresAt: expiresAt,
+                                                 sourceAddress: "192.168.1.20"),
                     receivedAt: t0)
 }
 
@@ -15,6 +16,16 @@ private func fileItem(_ id: UUID = UUID()) -> PendingApproval {
 }
 
 func runApprovalChecks() {
+    section("Pairing code entry: the user must type the phone's code") {
+        check(PairingCodeEntry.matches("123456", code: "123456"), "exact")
+        check(PairingCodeEntry.matches("123 456", code: "123456"), "with the display space")
+        check(!PairingCodeEntry.matches("123457", code: "123456"), "one digit off")
+        check(!PairingCodeEntry.matches("12345", code: "123456"), "too short")
+        check(!PairingCodeEntry.matches("", code: "123456"), "empty")
+        check(PairingCodeEntry.digits("12a3 4567") == "123456", "digits only, at most six")
+        check(PairingCodeEntry.digits("١٢٣٤٥٦").isEmpty, "non-ASCII digits ignored")
+    }
+
     section("Approval queue: order and removal") {
         var queue = ApprovalQueue()
         let a = fileItem(), b = pairItem()

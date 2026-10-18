@@ -10,21 +10,31 @@ struct ApprovalContent: View {
     /// on screen. Pairing has no default button, so Return can't pair a device by accident.
     var keyboardShortcuts = false
     let onDecide: (Bool) -> Void
+    @State private var enteredCode = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch item.kind {
-            case let .pair(name, code, replacesExisting, expiresAt):
+            case let .pair(name, _, replacesExisting, expiresAt, sourceAddress):
                 // A different icon and layout from file prompts, so a pairing request can't pass
                 // for an incoming file at a glance.
                 Label("Pair with \(name)?", systemImage: "link.badge.plus")
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(PairingCode.display(code))
-                    .font(.system(.largeTitle, design: .monospaced).weight(.semibold))
-                    .accessibilityLabel("Code \(code.map(String.init).joined(separator: " "))")
-                Text("Only accept if your phone shows the same code.")
+                Text(replacesExisting ? "Already paired · \(sourceAddress)" : "New device · \(sourceAddress)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // The Mac doesn't show its own code: typing the one on the phone is the check.
+                TextField("Code shown on the device", text: $enteredCode)
+                    .font(.system(.title2, design: .monospaced).weight(.semibold))
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: enteredCode) { _, text in
+                        let digits = PairingCodeEntry.digits(text)
+                        if digits != text { enteredCode = digits }
+                    }
+                    .accessibilityHint("Type the six-digit code shown on the device that is pairing")
+                Text("If the device isn't showing a code, or you didn't start pairing, decline.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if replacesExisting {
@@ -49,11 +59,18 @@ struct ApprovalContent: View {
                     .keyboardShortcut(keyboardShortcuts ? .cancelAction : nil)
                 Button(isPairing ? "Pair" : "Accept") { onDecide(true) }
                     .keyboardShortcut(keyboardShortcuts && !isPairing ? .defaultAction : nil)
+                    .disabled(!codeMatches)
                     .buttonStyle(.glassProminent)
                     .tint(Accent.action.color)
             }
             .controlSize(.large)
         }
+    }
+
+    /// Files need no code; pairing needs the phone's code typed in.
+    private var codeMatches: Bool {
+        guard case let .pair(_, code, _, _, _) = item.kind else { return true }
+        return PairingCodeEntry.matches(enteredCode, code: code)
     }
 
     private var isPairing: Bool {

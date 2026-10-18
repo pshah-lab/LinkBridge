@@ -48,9 +48,9 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
     func post(_ item: PendingApproval) {
         let content = UNMutableNotificationContent()
         switch item.kind {
-        case let .pair(name, _, _, _):
+        case let .pair(name, _, _, _, _):
             content.title = "Pairing request"
-            content.body = "\(name) wants to pair. Compare the code in LinkBridge."
+            content.body = "\(name) wants to pair. Type the code from that device in LinkBridge."
             content.categoryIdentifier = Self.pairCategory
         case let .file(sender, fileName, bytes):
             content.title = "Incoming file"
