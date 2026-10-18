@@ -92,7 +92,7 @@ struct CompactDropTarget: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .dropDestination(for: URL.self) { urls, _ in
-            guard enabled, let url = urls.first, let staged = try? DroppedFile.stage(url) else { return false }
+            guard enabled, let url = urls.first, let staged = DroppedFile.sendable(url) else { return false }
             model.sendNow(staged)
             return true
         } isTargeted: { targeted = $0 }

@@ -117,6 +117,14 @@ func runPresentationChecks() {
         try FileManager.default.removeItem(at: source)
         check(staged?.lastPathComponent == source.lastPathComponent, "staged keeps its name")
         check(staged.flatMap { try? Data(contentsOf: $0) } == Data("hello".utf8), "staged copy outlives the drop")
+
+        // macOS: a drop already grants access, so the original file is sent, never copied.
+        let original = FileManager.default.temporaryDirectory.appendingPathComponent("drop-\(UUID()).txt")
+        try Data("hi".utf8).write(to: original)
+        defer { try? FileManager.default.removeItem(at: original) }
+        check(DroppedFile.sendable(original) == original, "a dropped file is used in place")
+        check(DroppedFile.sendable(FileManager.default.temporaryDirectory) == nil, "a dropped folder is rejected")
+        check(DroppedFile.sendable(URL(string: "https://example.com")!) == nil, "a dropped web link is rejected")
     }
 
     section("History rows") {

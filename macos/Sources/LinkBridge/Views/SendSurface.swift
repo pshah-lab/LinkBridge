@@ -54,7 +54,7 @@ struct SendSurface: View {
         .buttonStyle(.plain)
         .disabled(model.isSending)
         .dropDestination(for: URL.self) { urls, _ in
-            guard !model.isSending, let url = urls.first, let staged = try? DroppedFile.stage(url) else { return false }
+            guard !model.isSending, let url = urls.first, let staged = DroppedFile.sendable(url) else { return false }
             model.stage(staged)
             return true
         } isTargeted: { targeted = $0 }

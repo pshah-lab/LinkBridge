@@ -71,7 +71,7 @@ transferApproval: @escaping (IncomingTransferRequest, @escaping (Bool) -> Void) 
 
 - Pairing: the server calls `pairApproval` on the main queue and records the decision
   when the completion fires, instead of blocking main on a `Bool`. A completion after
-  the 3-minute expiry is ignored.
+  the 110 s expiry (below the phone's 120 s finalize timeout) is ignored.
 - Transfers: the receive thread waits on a semaphore for the completion (it blocks
   today too, just inside the closure). The completion may be called from any thread;
   only the first call counts.
@@ -80,7 +80,7 @@ transferApproval: @escaping (IncomingTransferRequest, @escaping (Bool) -> Void) 
 - `IncomingPairRequest` / `IncomingTransferRequest` gain a stable `id: UUID` so the UI
   and notifications can refer to one request; `IncomingPairRequest` also exposes
   `expiresAt` for the countdown.
-- An unanswered incoming file is declined after 300 s and the app is told
+- An unanswered incoming file is declined after 110 s (senders time out at 120 s) and the app is told
   (`transferWithdrawn`) so its row disappears.
 - The completion for a received file includes its final URL (for Show in Finder).
 - `TrustedPeerStore.remove(deviceId:)` backs Unpair in Settings.

@@ -370,7 +370,10 @@ DispatchQueue.global().async {
         let accepted = pairAsPhone(port: asyncPort)
         check(accepted.finalizeStatus == 200, "accept after a delay pairs, got \(accepted.finalizeStatus)")
         check(TrustedPeerStore().find(deviceId: accepted.deviceId) != nil, "accepted peer saved")
-        check(seen.map { abs($0.expiresAt.timeIntervalSinceNow - 180) < 10 } == true, "request carries its 3-minute expiry")
+        let lifetime = ControlServer.pairingLifetime
+        check(seen.map { abs($0.expiresAt.timeIntervalSinceNow - lifetime) < 10 } == true, "request carries its expiry")
+        // Phones stop waiting on /pair/finalize after 120 s; a later Accept would pair one side only.
+        check(lifetime < 120, "pairing expires before the phone's 120 s finalize timeout, is \(lifetime)")
 
         answer = { _, done in done(false) }
         let declined = pairAsPhone(port: asyncPort)
@@ -383,7 +386,7 @@ DispatchQueue.global().async {
               "first completion wins")
 
         ControlServer.pairingLifetime = 0.3
-        defer { ControlServer.pairingLifetime = 180 }
+        defer { ControlServer.pairingLifetime = lifetime }
         answer = { _, done in DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) { done(true) } }
         let late = pairAsPhone(port: asyncPort)
         check(late.finalizeStatus == 403, "expired pairing is declined, got \(late.finalizeStatus)")
@@ -416,8 +419,11 @@ DispatchQueue.global().async {
         answer = { _, done in done(false) }
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "declined transfer fails")
 
+        // Senders stop waiting after 120 s, so the Mac must give up first and clear the row.
+        let timeout = ControlServer.transferApprovalTimeout
+        check(timeout < 120, "file approval gives up before the sender's 120 s timeout, is \(timeout)")
         ControlServer.transferApprovalTimeout = 0.4
-        defer { ControlServer.transferApprovalTimeout = 300 }
+        defer { ControlServer.transferApprovalTimeout = timeout }
         answer = { _, _ in }
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "unanswered transfer fails")
         Thread.sleep(forTimeInterval: 0.2)

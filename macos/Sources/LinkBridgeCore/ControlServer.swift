@@ -28,10 +28,13 @@ public final class ControlServer {
     private static let pendingPairings = PendingPairings()
     /// Main queue only, like all request handling.
     private static var approvalInProgress = false
-    /// How long a pairing waits for the Mac user. Variable so the checks can shorten it.
-    static var pairingLifetime: TimeInterval = 180
-    /// How long an incoming file waits for approval before it is declined.
-    public internal(set) static var transferApprovalTimeout: TimeInterval = 300
+    /// How long a pairing waits for the Mac user. Phones give up on /pair/finalize after 120 s,
+    /// so this stays below that; a later Accept would pair only the Mac's side.
+    /// Variable so the checks can shorten it.
+    static var pairingLifetime: TimeInterval = 110
+    /// How long an incoming file waits for approval before it is declined. Senders time out
+    /// after 120 s, so the Mac gives up first and clears the request.
+    public internal(set) static var transferApprovalTimeout: TimeInterval = 110
 
     /// Answers a pairing request by calling the completion with the user's decision. Called on
     /// the main queue; the completion may be called from any thread, and only its first call counts.
@@ -722,7 +725,7 @@ public final class ControlServer {
                     return
                 }
 
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { data, _, _, error in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { data, _, isComplete, error in
                     if error != nil {
                         try? fileHandle?.close()
                         if let destination { try? FileManager.default.removeItem(at: destination) }
@@ -734,6 +737,12 @@ public final class ControlServer {
                         if let data {
                             let remaining = contentLength - receivedEncrypted
                             try consumeEncrypted(Data(data.prefix(remaining)))
+                        }
+                        // The sender closed before sending everything; asking again would spin.
+                        if isComplete && receivedEncrypted < contentLength {
+                            discard()
+                            sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"truncated_upload"}"#.data(using: .utf8)!)
+                            return
                         }
                         continueReading()
                     } catch {
