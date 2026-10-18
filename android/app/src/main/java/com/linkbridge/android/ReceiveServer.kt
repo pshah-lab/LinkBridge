@@ -23,7 +23,12 @@ class ReceiveServer(
     private val port: Int,
     private val onStatus: (String) -> Unit,
     private val onTransferCompleted: (ReceivedTransfer) -> Unit = {},
-    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true }
+    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true },
+    /** Free bytes where Downloads lives, or -1 if unknown. */
+    private val availableBytes: () -> Long = {
+        @Suppress("DEPRECATION")
+        runCatching { Environment.getExternalStorageDirectory().usableSpace }.getOrDefault(-1L)
+    }
 ) {
     private val running = AtomicBoolean(false)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -191,6 +196,9 @@ class ReceiveServer(
                     if (currentMetadata == null) {
                         val parsed = IncomingFileMetadata.fromEncryptedJson(plain)
                         if (parsed.transferId != transferId) error("Transfer ID mismatch")
+                        if (!ReceiveLimits.sizeIsPlausible(parsed.bytes, contentLength)) error("Declared size exceeds the body")
+                        // Refuse before asking the user, so an accepted file can't fill the storage.
+                        if (!ReceiveLimits.hasRoom(parsed.bytes, availableBytes())) throw InsufficientStorageException()
                         val approval = IncomingTransferRequest(
                             senderName = senderName,
                             senderId = senderId,
@@ -248,6 +256,11 @@ class ReceiveServer(
             savedUri?.let { context.contentResolver.delete(it, null, null) }
             if (error is TransferDeclinedException) {
                 reply.writeJsonResponse(403, """{"error":"transfer_declined"}""")
+                return
+            }
+            if (error is InsufficientStorageException) {
+                onStatus("Not enough free space to receive a file")
+                reply.writeJsonResponse(507, """{"error":"insufficient_storage"}""")
                 return
             }
             Log.e(TAG, "Receive failed", error)
@@ -332,6 +345,8 @@ private data class IncomingFileMetadata(
 }
 
 private class TransferDeclinedException : RuntimeException("Transfer declined")
+
+private class InsufficientStorageException : RuntimeException("Not enough free space")
 
 private data class HttpRequestHeader(
     val startLine: String,

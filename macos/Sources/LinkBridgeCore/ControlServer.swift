@@ -657,6 +657,9 @@ public final class ControlServer {
                         let parsed = try JSONDecoder().decode(IncomingFileMetadata.self, from: plaintext)
                         guard parsed.transferId == transferUUID else { throw UploadError.invalidMetadata }
                         let fileName = sanitizeFileName(parsed.fileName)
+                        guard parsed.bytes >= 0, parsed.bytes <= contentLength else { throw UploadError.invalidMetadata }
+                        // Refuse before asking the user, so an accepted file can't fill the disk.
+                        guard hasRoom(for: Int64(parsed.bytes), in: directory) else { throw UploadError.insufficientStorage }
                         let request = IncomingTransferRequest(
                             id: transferUUID,
                             senderName: peer.deviceName,
@@ -824,6 +827,10 @@ public final class ControlServer {
                             sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
                             return
                         }
+                        if case UploadError.insufficientStorage = error {
+                            sendJSON(connection: connection, status: "507 Insufficient Storage", body: #"{"error":"insufficient_storage"}"#.data(using: .utf8)!)
+                            return
+                        }
                         sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"write_failed"}"#.data(using: .utf8)!)
                     }
                 }
@@ -833,6 +840,10 @@ public final class ControlServer {
         } catch {
             if case UploadError.transferDeclined = error {
                 sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
+                return
+            }
+            if case UploadError.insufficientStorage = error {
+                sendJSON(connection: connection, status: "507 Insufficient Storage", body: #"{"error":"insufficient_storage"}"#.data(using: .utf8)!)
                 return
             }
             // The detail can name local paths (and the user's name), so it stays in the log.
@@ -905,6 +916,19 @@ public final class ControlServer {
         var target = url
         do { try target.setResourceValues(values) } catch { print("Warning: could not quarantine \(url.lastPathComponent): \(error)") }
         #endif
+    }
+
+    /// Free space to leave after a transfer, so receiving never fills the disk.
+    static let freeSpaceMargin: Int64 = 512 * 1024 * 1024
+    /// Variable so the checks can fake a full disk.
+    static var availableCapacity: (URL) -> Int64? = { url in
+        (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage
+    }
+
+    private static func hasRoom(for bytes: Int64, in directory: URL) -> Bool {
+        // If the volume can't say, let the write fail (and clean up) rather than refuse.
+        guard let available = availableCapacity(directory) else { return true }
+        return bytes <= available - freeSpaceMargin
     }
 
     static let partialFilePrefix = ".linkbridge-"
@@ -1162,6 +1186,7 @@ private enum UploadError: Error {
     case invalidMetadata
     case outputNotReady
     case transferDeclined
+    case insufficientStorage
 }
 
 public struct IncomingPairRequest {

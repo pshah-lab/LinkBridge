@@ -670,6 +670,17 @@ DispatchQueue.global().async {
         answer = { _, done in done(false) }
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "declined transfer fails")
 
+        // Not enough free space: refused before the user is asked.
+        let capacity = ControlServer.availableCapacity
+        ControlServer.availableCapacity = { _ in ControlServer.freeSpaceMargin + 10 }
+        let asked = requests.count
+        answer = { _, done in done(true) }
+        // The server replies 507 and closes while the sender is still writing, so the sender
+        // may see that as a broken pipe; either way the send fails.
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "transfer bigger than the free space fails")
+        check(requests.count == asked, "user not asked about a file that can't fit")
+        ControlServer.availableCapacity = capacity
+
         // Senders stop waiting after 120 s, so the Mac must give up first and clear the row.
         let timeout = ControlServer.transferApprovalTimeout
         check(timeout < 120, "file approval gives up before the sender's 120 s timeout, is \(timeout)")
