@@ -281,13 +281,6 @@ class ReceiveServer(
         flush()
     }
 
-    private fun sanitizeFileName(fileName: String): String {
-        return fileName
-            .replace(Regex("""[/\\:]"""), "-")
-            .trim()
-            .ifBlank { "received-file" }
-    }
-
     private fun formatBytes(bytes: Long): String {
         if (bytes < 1024) return "$bytes B"
         val units = arrayOf("KB", "MB", "GB")
@@ -330,17 +323,10 @@ private data class IncomingFileMetadata(
             val json = org.json.JSONObject(bytes.toString(Charsets.UTF_8))
             return IncomingFileMetadata(
                 transferId = json.getString("transferId"),
-                fileName = sanitizeMetadataFileName(json.getString("fileName")),
+                fileName = FileNames.sanitize(json.getString("fileName")),
                 bytes = json.getLong("bytes"),
                 sha256 = json.getString("sha256")
             )
-        }
-
-        private fun sanitizeMetadataFileName(fileName: String): String {
-            return fileName
-                .replace(Regex("""[/\\:]"""), "-")
-                .trim()
-                .ifBlank { "received-file" }
         }
     }
 }

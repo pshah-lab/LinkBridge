@@ -140,6 +140,29 @@ section("A record shorter than its tag is refused, not a crash") {
     }
 }
 
+section("File names can't hide their extension, be hidden, or run long") {
+    // Same cases as Android's FileNamesTest.
+    let cases: [(String, String)] = [
+        ("report\u{202E}fdp.command", "reportfdp.command"),
+        ("a\u{2066}b\u{2069}c\u{200B}.txt", "abc.txt"),
+        ("nul\u{0}and\ttab\n.txt", "nulandtab.txt"),
+        (".hidden", "hidden"),
+        ("...env", "env"),
+        ("../../etc/passwd", "-..-etc-passwd"),
+        ("a:b\\c", "a-b-c"),
+        ("  .  ", "received-file"),
+        ("\u{202E}", "received-file"),
+        ("photo.jpg", "photo.jpg"),
+        ("café ☕️.png", "café ☕️.png"),
+    ]
+    for (input, expected) in cases {
+        let got = ControlServer.sanitizeFileName(input)
+        check(got == expected, "\(input.debugDescription) -> \(expected.debugDescription), got \(got.debugDescription)")
+    }
+    let long = ControlServer.sanitizeFileName(String(repeating: "é", count: 300) + ".pdf")
+    check(long.utf8.count <= 200 && long.hasSuffix(".pdf"), "long name capped at 200 bytes keeping .pdf, got \(long.utf8.count)")
+}
+
 // MARK: - Credential storage
 
 final class MemorySecrets: SecretBackend {
@@ -530,6 +553,8 @@ DispatchQueue.global().async {
             .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)
         check((try? Data(contentsOf: downloads)) == payload, "saved file matches")
         check(downloads.path.hasPrefix(ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? "/nonexistent"), "wrote inside the throwaway home")
+        let quarantine = (try? downloads.resourceValues(forKeys: [.quarantinePropertiesKey]))?.quarantineProperties
+        check(quarantine?[kLSQuarantineAgentNameKey as String] as? String == "LinkBridge", "received file is quarantined")
     }
 
     section("Slow or silent connections are closed and capped") {

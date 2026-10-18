@@ -1,6 +1,9 @@
 import Foundation
 import Network
 import CryptoKit
+#if os(macOS)
+import CoreServices
+#endif
 
 public final class ControlServer {
     public static let serviceType = "_linkbridge._tcp"
@@ -653,7 +656,6 @@ public final class ControlServer {
                         let parsed = try JSONDecoder().decode(IncomingFileMetadata.self, from: plaintext)
                         guard parsed.transferId == transferUUID else { throw UploadError.invalidMetadata }
                         let fileName = sanitizeFileName(parsed.fileName)
-                        guard !fileName.isEmpty else { throw UploadError.invalidMetadata }
                         let request = IncomingTransferRequest(
                             id: transferUUID,
                             senderName: peer.deviceName,
@@ -697,6 +699,7 @@ public final class ControlServer {
                         sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"checksum_mismatch"}"#.data(using: .utf8)!)
                         return
                     }
+                    markQuarantined(destination)
                     print("Received file: \(destination.path) (\(received) bytes, sha256: \(sha256))")
 
                     if let completedRequest {
@@ -853,11 +856,44 @@ public final class ControlServer {
         return "\(connection.endpoint)"
     }
 
-    private static func sanitizeFileName(_ fileName: String) -> String {
-        fileName
-            .components(separatedBy: CharacterSet(charactersIn: "/\\:"))
-            .joined(separator: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Same rules as Android's `FileNames.sanitize`: no path separators, no control or
+    /// format characters (bidi overrides could make `x\u{202E}fdp.command` look like a PDF), no
+    /// leading dots (hidden files), and at most 200 UTF-8 bytes with the extension kept.
+    static func sanitizeFileName(_ fileName: String) -> String {
+        let scalars = fileName.unicodeScalars.compactMap { scalar -> Unicode.Scalar? in
+            if "/\\:".unicodeScalars.contains(scalar) { return "-" }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator: return nil
+            default: return scalar
+            }
+        }
+        var name = String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
+        while name.hasPrefix(".") { name.removeFirst() }
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.utf8.count > maxFileNameBytes {
+            let ext = (name as NSString).pathExtension
+            let keep = ext.isEmpty || ext.utf8.count > 20 ? "" : "." + ext
+            var stem = keep.isEmpty ? name : String(name.dropLast(keep.count))
+            while stem.utf8.count + keep.utf8.count > maxFileNameBytes { stem.removeLast() }
+            name = stem + keep
+        }
+        return name.isEmpty ? "received-file" : name
+    }
+
+    static let maxFileNameBytes = 200
+
+    /// Received files come from another device, so Gatekeeper should check them on first open
+    /// like any download. Set explicitly rather than relying on the sandbox to add it.
+    static func markQuarantined(_ url: URL) {
+        #if os(macOS)
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            kLSQuarantineAgentNameKey as String: "LinkBridge",
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeOtherDownload as String
+        ]
+        var target = url
+        do { try target.setResourceValues(values) } catch { print("Warning: could not quarantine \(url.lastPathComponent): \(error)") }
+        #endif
     }
 
     private static func uniqueDestination(in directory: URL, fileName: String) -> URL {
