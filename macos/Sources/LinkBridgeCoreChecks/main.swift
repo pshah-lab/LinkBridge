@@ -145,7 +145,11 @@ section("A record shorter than its tag is refused, not a crash") {
 final class MemorySecrets: SecretBackend {
     var items: [String: String] = [:]
     var failWrites = false
-    func read(account: String) -> String? { items[account] }
+    var unavailable = false
+    func lookup(account: String) -> SecretLookup {
+        if unavailable { return .unavailable }
+        return items[account].map(SecretLookup.found) ?? .notFound
+    }
     func write(_ value: String, account: String) -> Bool {
         guard !failWrites else { return false }
         items[account] = value
@@ -177,6 +181,41 @@ section("Credentials: ad-hoc builds use the file, signed builds migrate it to th
     check(!FileManager.default.fileExists(atPath: url.path), "plaintext file deleted after migration")
     check(CredentialStore.migrate(from: file, to: keychain), "nothing to migrate is a success")
     check(CredentialStore(backend: keychain).read(account: "peer.ABC") == "peer-secret", "store reads through its backend")
+}
+
+section("Credentials: an unreadable store is never overwritten or re-keyed") {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("creds-\(UUID().uuidString)/credentials.json")
+    let file = FileSecretBackend(fileURL: url)
+    check(file.lookup(account: "x") == .notFound, "no file: not found")
+    file.write("one", account: "peer.A")
+
+    // A file restored with loose permissions is rewritten as 0600, never written in place.
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+    file.write("two", account: "peer.B")
+    let perms = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? -1
+    check(perms == 0o600, "rewritten file is 0600, got \(String(perms, radix: 8))")
+    check(file.read(account: "peer.A") == "one" && file.read(account: "peer.B") == "two", "both secrets kept")
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+    check(leftovers == ["credentials.json"], "no temporary files left, got \(leftovers)")
+
+    try Data("{not json".utf8).write(to: url)
+    check(file.lookup(account: "peer.A") == .unavailable, "corrupt file: unavailable, not missing")
+    check(!file.write("three", account: "identity.pairingPrivateKey"), "refuses to write over a corrupt file")
+    check((try? String(contentsOf: url, encoding: .utf8)) == "{not json", "corrupt file left untouched")
+
+    let locked = MemorySecrets()
+    locked.unavailable = true
+    let lockedKeys = PairingKeyStore(credentials: CredentialStore(backend: locked))
+    let peer = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
+    check((try? lockedKeys.deriveSecret(peerPublicKeyBase64: peer)) == nil, "unreadable store: no secret derived")
+    check(lockedKeys.publicKeyBase64.isEmpty, "unreadable store: no public key")
+    check(locked.items.isEmpty, "unreadable store: no new key written")
+
+    let empty = MemorySecrets()
+    let keys = PairingKeyStore(credentials: CredentialStore(backend: empty))
+    let first = keys.publicKeyBase64
+    check(!first.isEmpty && empty.items.count == 1, "missing key: one is created")
+    check(keys.publicKeyBase64 == first, "and reused afterwards")
 }
 
 runPresentationChecks()

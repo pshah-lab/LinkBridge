@@ -25,6 +25,12 @@ final class CredentialStore {
         backend.read(account: account)
     }
 
+    /// Like `read`, but tells a missing item apart from a store that can't be read right now
+    /// (locked device, corrupt file). Never create a replacement secret on `.unavailable`.
+    func lookup(account: String) -> SecretLookup {
+        backend.lookup(account: account)
+    }
+
     @discardableResult
     func write(_ value: String, account: String) -> Bool {
         backend.write(value, account: account)
@@ -48,7 +54,9 @@ final class CredentialStore {
             print("Warning: Keychain unavailable; keeping secrets in the local file store")
             return file
         }
-        migrate(from: file, to: keychain)
+        if migrate(from: file, to: keychain) {
+            deleteLegacyLoginKeychainItems()
+        }
         return keychain
         #endif
     }()
@@ -68,6 +76,18 @@ final class CredentialStore {
         return file.removeFile()
     }
 
+    /// Before the 0600 file, ad-hoc builds kept secrets in the login keychain under this
+    /// service. Nothing reads them, so delete them once the Keychain store is in use. Only on
+    /// signed builds: on ad-hoc builds touching the login keychain prompts for the password.
+    static func deleteLegacyLoginKeychainItems() {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: "com.linkbridge.credentials"]
+        let status = SecItemDelete(query as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            print("Warning: could not delete old login keychain items: OSStatus \(status)")
+        }
+    }
+
     /// True when this process is signed with a Team ID, so its Keychain items keep a stable
     /// owner across updates.
     static func hasTeamIdentifier() -> Bool {
@@ -83,10 +103,24 @@ final class CredentialStore {
     #endif
 }
 
+enum SecretLookup: Equatable {
+    case found(String)
+    case notFound
+    /// The store exists but can't be read (locked device, corrupt file, Keychain error).
+    case unavailable
+}
+
 protocol SecretBackend: AnyObject {
-    func read(account: String) -> String?
+    func lookup(account: String) -> SecretLookup
     @discardableResult func write(_ value: String, account: String) -> Bool
     func delete(account: String)
+}
+
+extension SecretBackend {
+    func read(account: String) -> String? {
+        if case let .found(value) = lookup(account: account) { return value }
+        return nil
+    }
 }
 
 /// Data-protection Keychain items, readable only while unlocked and never synced or migrated.
@@ -97,14 +131,23 @@ final class KeychainSecretBackend: SecretBackend {
         self.service = service
     }
 
-    func read(account: String) -> String? {
+    func lookup(account: String) -> SecretLookup {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else { return .unavailable }
+            return .found(value)
+        case errSecItemNotFound:
+            return .notFound
+        default:
+            // For example errSecInteractionNotAllowed while the device is locked.
+            print("Warning: could not read credential \(account): OSStatus \(status)")
+            return .unavailable
+        }
     }
 
     @discardableResult
@@ -160,17 +203,22 @@ final class FileSecretBackend: SecretBackend {
             .appendingPathComponent("credentials.json")
     }
 
-    func read(account: String) -> String? {
+    func lookup(account: String) -> SecretLookup {
         Self.lock.lock()
         defer { Self.lock.unlock() }
-        return load()[account]
+        guard let items = load() else { return .unavailable }
+        return items[account].map(SecretLookup.found) ?? .notFound
     }
 
+    /// Refuses to write over a file it can't read, which would drop every other secret.
     @discardableResult
     func write(_ value: String, account: String) -> Bool {
         Self.lock.lock()
         defer { Self.lock.unlock() }
-        var items = load()
+        guard var items = load() else {
+            print("Warning: credentials file is unreadable; not saving \(account)")
+            return false
+        }
         items[account] = value
         return persist(items, account: account)
     }
@@ -178,8 +226,7 @@ final class FileSecretBackend: SecretBackend {
     func delete(account: String) {
         Self.lock.lock()
         defer { Self.lock.unlock() }
-        var items = load()
-        guard items.removeValue(forKey: account) != nil else { return }
+        guard var items = load(), items.removeValue(forKey: account) != nil else { return }
         persist(items, account: account)
     }
 
@@ -188,7 +235,7 @@ final class FileSecretBackend: SecretBackend {
         Self.lock.lock()
         defer { Self.lock.unlock() }
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        return load()
+        return load() ?? [:]
     }
 
     /// Deletes the file. Returns true if it is gone.
@@ -207,15 +254,22 @@ final class FileSecretBackend: SecretBackend {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
             let data = try JSONEncoder().encode(items)
-            // Create with 0600 before writing so the secrets are never world-readable.
-            if !FileManager.default.fileExists(atPath: fileURL.path) {
-                FileManager.default.createFile(atPath: fileURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            // Write a fresh 0600 file and rename it over the old one, so the secrets never sit
+            // in a file with looser permissions (for example one restored from a backup).
+            let temporary = directory.appendingPathComponent(".credentials-\(UUID().uuidString).tmp")
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw CocoaError(.fileWriteUnknown)
             }
-            let handle = try FileHandle(forWritingTo: fileURL)
-            defer { try? handle.close() }
-            try handle.truncate(atOffset: 0)
-            try handle.write(contentsOf: data)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+            do {
+                let handle = try FileHandle(forWritingTo: temporary)
+                try handle.write(contentsOf: data)
+                try handle.synchronize()
+                try handle.close()
+                guard rename(temporary.path, fileURL.path) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+            } catch {
+                try? FileManager.default.removeItem(at: temporary)
+                throw error
+            }
             return true
         } catch {
             print("Warning: could not save credential \(account): \(error.localizedDescription)")
@@ -223,9 +277,14 @@ final class FileSecretBackend: SecretBackend {
         }
     }
 
-    private func load() -> [String: String] {
+    /// Every item, `[:]` if there is no file, or nil if the file exists but can't be read.
+    private func load() -> [String: String]? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [:] }
         guard let data = try? Data(contentsOf: fileURL),
-              let items = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+              let items = try? JSONDecoder().decode([String: String].self, from: data) else {
+            print("Warning: could not read \(fileURL.lastPathComponent)")
+            return nil
+        }
         return items
     }
 }
