@@ -648,6 +648,10 @@ DispatchQueue.global().async {
         var requests: [IncomingTransferRequest] = []
         var savedTo: URL?
         var withdrawnIds: [UUID] = []
+        // A partial file left by a crash is removed when the server starts.
+        let received = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].appendingPathComponent("LinkBridge")
+        let leftover = received.appendingPathComponent(".linkbridge-\(UUID().uuidString).part")
+        try Data("half".utf8).write(to: leftover)
         let (asyncServer, _) = startDecisionServer(pair: { _, done in done(false) },
                                                    transfer: { request, done in requests.append(request); answer(request, done) },
                                                    received: { _, url in savedTo = url },
@@ -658,6 +662,10 @@ DispatchQueue.global().async {
         answer = { _, done in DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) { done(true) } }
         try FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)
         check(savedTo.flatMap { try? Data(contentsOf: $0) } == payload, "accepted after a delay: file saved and URL reported")
+        check(!FileManager.default.fileExists(atPath: leftover.path), "leftover partial file removed at start")
+        check(savedTo?.lastPathComponent == file.lastPathComponent, "saved under its real name, got \(savedTo?.lastPathComponent ?? "nil")")
+        let parts = ((try? FileManager.default.contentsOfDirectory(atPath: received.path)) ?? []).filter { $0.hasSuffix(".part") }
+        check(parts.isEmpty, "no partial files after a finished transfer, got \(parts)")
 
         answer = { _, done in done(false) }
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "declined transfer fails")

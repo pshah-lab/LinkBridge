@@ -101,6 +101,7 @@ public final class ControlServer {
     /// free port if taken, and advertises `_linkbridge._tcp` with both ports.
     /// `onReady` runs on the main queue with the plain port, or nil on failure.
     public func start(onReady: @escaping (UInt16?) -> Void = { _ in }) {
+        Self.removeLeftoverPartialFiles()
         startSecure(on: NWEndpoint.Port(rawValue: preferredSecurePort) ?? .any) { [weak self] securePort in
             guard let self, securePort != nil else { onReady(nil); return }
             self.startPlain(on: NWEndpoint.Port(rawValue: self.preferredPort) ?? .any, onReady: onReady)
@@ -699,16 +700,26 @@ public final class ControlServer {
                         sendJSON(connection: connection, status: "400 Bad Request", body: #"{"error":"checksum_mismatch"}"#.data(using: .utf8)!)
                         return
                     }
-                    markQuarantined(destination)
-                    print("Received file: \(destination.path) (\(received) bytes, sha256: \(sha256))")
+                    // Only now does the file get its real name, so a crash or power loss mid-transfer
+                    // leaves a hidden .part file instead of one that looks complete.
+                    let finalURL = uniqueDestination(in: directory, fileName: metadata.fileName)
+                    do {
+                        try FileManager.default.moveItem(at: destination, to: finalURL)
+                    } catch {
+                        try? FileManager.default.removeItem(at: destination)
+                        throw error
+                    }
+                    markQuarantined(finalURL)
+                    print("Received file: \(finalURL.path) (\(received) bytes, sha256: \(sha256))")
 
                     if let completedRequest {
-                        transferReceived(completedRequest, destination)
+                        transferReceived(completedRequest, finalURL)
                     }
 
-                    let json = #"{"status":"received","fileName":"\#(destination.lastPathComponent)","bytes":\#(received),"sha256":"\#(sha256)"}"#
+                    let json = #"{"status":"received","fileName":"\#(finalURL.lastPathComponent)","bytes":\#(received),"sha256":"\#(sha256)"}"#
                     sendJSON(connection: connection, status: "200 OK", body: Data(json.utf8))
                 } catch {
+                    if let destination { try? FileManager.default.removeItem(at: destination) }
                     sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"close_failed"}"#.data(using: .utf8)!)
                 }
             }
@@ -723,9 +734,9 @@ public final class ControlServer {
                 sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
             }
 
-            /// Opens the destination and writes what arrived while the user was deciding.
+            /// Opens a hidden partial file and writes what arrived while the user was deciding.
             func accept(_ pending: (request: IncomingTransferRequest, metadata: IncomingFileMetadata)) throws {
-                let fileURL = uniqueDestination(in: directory, fileName: pending.metadata.fileName)
+                let fileURL = partialFileURL(in: directory, transferId: transferUUID)
                 FileManager.default.createFile(atPath: fileURL.path, contents: nil)
                 fileHandle = try FileHandle(forWritingTo: fileURL)
                 destination = fileURL
@@ -894,6 +905,23 @@ public final class ControlServer {
         var target = url
         do { try target.setResourceValues(values) } catch { print("Warning: could not quarantine \(url.lastPathComponent): \(error)") }
         #endif
+    }
+
+    static let partialFilePrefix = ".linkbridge-"
+    static let partialFileSuffix = ".part"
+
+    private static func partialFileURL(in directory: URL, transferId: UUID) -> URL {
+        directory.appendingPathComponent("\(partialFilePrefix)\(transferId.uuidString)\(partialFileSuffix)")
+    }
+
+    /// Deletes partial files left by a crash, quit or power loss during a transfer.
+    static func removeLeftoverPartialFiles() {
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names where name.hasPrefix(partialFilePrefix) && name.hasSuffix(partialFileSuffix) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 
     private static func uniqueDestination(in directory: URL, fileName: String) -> URL {
