@@ -14,7 +14,7 @@ class ControlClient {
     private val pairingKeys = PairingKeyStore()
     fun fetchDevice(peer: DiscoveredPeer): Result<DeviceIdentity> {
         return runCatching {
-            val url = URL("http://${peer.endpoint}/device")
+            val url = URL("http://${localEndpoint(peer)}/device")
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 3000
@@ -75,9 +75,15 @@ class ControlClient {
         }
     }
 
+    /** Cleartext is allowed app-wide, so refuse anything that isn't on the local network. */
+    private fun localEndpoint(peer: DiscoveredPeer): String {
+        require(LanAddress.isLocal(peer.host)) { "Refusing plain HTTP to a non-local address" }
+        return peer.endpoint
+    }
+
     private fun postJson(peer: DiscoveredPeer, path: String, json: JSONObject, readTimeoutMs: Int = 5000): JSONObject {
         val body = json.toString().toByteArray()
-        val connection = (URL("http://${peer.endpoint}$path").openConnection() as HttpURLConnection).apply {
+        val connection = (URL("http://${localEndpoint(peer)}$path").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 3000
             readTimeout = readTimeoutMs

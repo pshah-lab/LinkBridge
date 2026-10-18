@@ -1,4 +1,7 @@
 <network-security-config>
+    <!-- Pairing uses plain HTTP to the Mac on the LAN (protected by the six-digit code), and
+         domain configs can't express "private IP ranges", so cleartext is allowed here.
+         LanAddress.isLocal limits the only cleartext client (ControlClient) to local IP
+         literals, and CleartextTest fails on any other http:// URL in the code. -->
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
-
