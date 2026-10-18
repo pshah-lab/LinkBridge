@@ -24,18 +24,21 @@ cd "$MACOS_DIR"
 
 # Newer toolchains (Swift 6.4+) can fail in the default build system with
 # "Unknown error parsing property list"; fall back to the native one.
+# Prints the built binary's path; the two build systems use different output folders.
 build() {
   local arch="$1"
-  if ! swift build -c "$CONF" --arch "$arch" --product "$APP_NAME"; then
-    echo "Default build system failed; retrying with --build-system native"
-    swift build -c "$CONF" --arch "$arch" --product "$APP_NAME" --build-system native
+  if swift build -c "$CONF" --arch "$arch" --product "$APP_NAME" >&2; then
+    echo "$(swift build -c "$CONF" --arch "$arch" --show-bin-path)/$APP_NAME"
+  else
+    echo "Default build system failed; retrying with --build-system native" >&2
+    swift build -c "$CONF" --arch "$arch" --product "$APP_NAME" --build-system native >&2
+    echo "$(swift build -c "$CONF" --arch "$arch" --build-system native --show-bin-path)/$APP_NAME"
   fi
 }
 
 binaries=()
 for arch in "${ARCH_LIST[@]}"; do
-  build "$arch"
-  binaries+=("$MACOS_DIR/.build/${arch}-apple-macosx/$CONF/$APP_NAME")
+  binaries+=("$(build "$arch")")
 done
 
 rm -rf "$APP"
