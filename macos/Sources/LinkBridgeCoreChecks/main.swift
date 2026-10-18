@@ -129,6 +129,7 @@ section("Decryption rejects tampering, truncation and the wrong key") {
 // MARK: - Presentation (PresentationChecks.swift)
 
 runPresentationChecks()
+runApprovalChecks()
 
 // MARK: - Live server checks (run off the main thread; the server uses the main queue)
 
