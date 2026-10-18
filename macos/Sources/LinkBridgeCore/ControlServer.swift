@@ -434,7 +434,6 @@ public final class ControlServer {
     /// Caps on what a pairing request may keep in memory until it expires.
     /// Variable so the checks can lower it.
     static var maxPendingPairings = 8
-    static let maxDeviceNameLength = 64
     static let maxFeatures = 16
     static let maxFeatureLength = 32
 
@@ -465,7 +464,7 @@ public final class ControlServer {
               peerIdentity.features.allSatisfy({ $0.count <= maxFeatureLength }) else {
             return jsonError("400 Bad Request", "invalid_pair_request")
         }
-        peerIdentity.deviceName = String(peerIdentity.deviceName.prefix(maxDeviceNameLength))
+        peerIdentity.deviceName = DeviceNames.sanitize(peerIdentity.deviceName)
         guard let peerPublicKey = peerIdentity.publicKey,
               let peerKey = try? PairingKeyStore.parsePublicKey(peerPublicKey),
               let sharedSecret = try? PairingKeyStore().deriveSecret(peerPublicKeyBase64: peerPublicKey),

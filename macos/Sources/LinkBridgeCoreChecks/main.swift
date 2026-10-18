@@ -163,6 +163,21 @@ section("File names can't hide their extension, be hidden, or run long") {
     check(long.utf8.count <= 200 && long.hasSuffix(".pdf"), "long name capped at 200 bytes keeping .pdf, got \(long.utf8.count)")
 }
 
+section("Device names are one short line with no hidden characters") {
+    let cases: [(String, String)] = [
+        ("Pixel 8\nwants to send you \"Q3 report.pdf\" (2 MB)\n", "Pixel 8 wants to send you \"Q3 report.pdf"),
+        ("Pixel\u{202E}8", "Pixel 8"),
+        ("  Pixel\t\t8  ", "Pixel 8"),
+        ("A\u{200B}B", "A B"),
+        ("\n\n\u{202E}", DeviceNames.fallback),
+        ("Priya’s Mac 🍎", "Priya’s Mac 🍎"),
+    ]
+    for (input, expected) in cases {
+        check(DeviceNames.sanitize(input) == expected, "\(input.debugDescription) -> \(DeviceNames.sanitize(input).debugDescription)")
+    }
+    check(DeviceNames.sanitize(String(repeating: "x", count: 500)).count == DeviceNames.maxLength, "capped at \(DeviceNames.maxLength)")
+}
+
 // MARK: - Credential storage
 
 final class MemorySecrets: SecretBackend {

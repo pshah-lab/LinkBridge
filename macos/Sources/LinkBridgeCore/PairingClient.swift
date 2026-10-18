@@ -53,7 +53,7 @@ public final class PairingClient {
 
         pending = (peer, secret)
         let code = PairingCode.code(initiatorKey: localKey, responderKey: peerKey, initiatorNonce: nonce, responderNonce: peerNonce)
-        return Started(code: code, peerName: peer.deviceName)
+        return Started(code: code, peerName: DeviceNames.sanitize(peer.deviceName))
     }
 
     /// Waits (up to two minutes) for the peer user to approve, then saves the peer as trusted.
@@ -63,7 +63,7 @@ public final class PairingClient {
         let body = try JSONSerialization.data(withJSONObject: ["deviceId": identity.deviceId.uuidString])
         _ = try await request("POST", "/pair/finalize", body: body, timeout: 150)
         let peer = TrustedPeer(
-            deviceId: pending.peer.deviceId, deviceName: pending.peer.deviceName, platform: pending.peer.platform,
+            deviceId: pending.peer.deviceId, deviceName: DeviceNames.sanitize(pending.peer.deviceName), platform: pending.peer.platform,
             protocolVersion: pending.peer.protocolVersion, features: pending.peer.features,
             pairedAt: Date(), authToken: pending.secret
         )

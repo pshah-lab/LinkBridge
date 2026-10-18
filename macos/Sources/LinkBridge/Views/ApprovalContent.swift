@@ -6,7 +6,8 @@ import SwiftUI
 struct ApprovalContent: View {
     let item: PendingApproval
     let now: Date
-    /// Return accepts and Escape declines; only in the sheet, where one request is on screen.
+    /// Escape declines, and for files Return accepts; only in the sheet, where one request is
+    /// on screen. Pairing has no default button, so Return can't pair a device by accident.
     var keyboardShortcuts = false
     let onDecide: (Bool) -> Void
 
@@ -14,8 +15,12 @@ struct ApprovalContent: View {
         VStack(alignment: .leading, spacing: 10) {
             switch item.kind {
             case let .pair(name, code, replacesExisting, expiresAt):
-                Text("Pair with \(name)?")
+                // A different icon and layout from file prompts, so a pairing request can't pass
+                // for an incoming file at a glance.
+                Label("Pair with \(name)?", systemImage: "link.badge.plus")
                     .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Text(PairingCode.display(code))
                     .font(.system(.largeTitle, design: .monospaced).weight(.semibold))
                     .accessibilityLabel("Code \(code.map(String.init).joined(separator: " "))")
@@ -30,7 +35,7 @@ struct ApprovalContent: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             case let .file(sender, fileName, bytes):
-                Text(fileName)
+                Label(fileName, systemImage: "doc")
                     .font(.headline)
                     .lineLimit(2)
                     .truncationMode(.middle)
@@ -42,13 +47,18 @@ struct ApprovalContent: View {
                 Spacer()
                 Button("Decline") { onDecide(false) }
                     .keyboardShortcut(keyboardShortcuts ? .cancelAction : nil)
-                Button("Accept") { onDecide(true) }
-                    .keyboardShortcut(keyboardShortcuts ? .defaultAction : nil)
+                Button(isPairing ? "Pair" : "Accept") { onDecide(true) }
+                    .keyboardShortcut(keyboardShortcuts && !isPairing ? .defaultAction : nil)
                     .buttonStyle(.glassProminent)
                     .tint(Accent.action.color)
             }
             .controlSize(.large)
         }
+    }
+
+    private var isPairing: Bool {
+        if case .pair = item.kind { return true }
+        return false
     }
 
     static func countdown(until date: Date, now: Date) -> String {
