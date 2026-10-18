@@ -19,16 +19,50 @@ public final class ControlServer {
     private var listener: NWListener?
     private var secureListener: NWListener?
     private let trustedPeerStore = TrustedPeerStore()
-    private let pairApproval: (IncomingPairRequest) -> Bool
-    private let transferApproval: (IncomingTransferRequest) -> Bool
+    private let pairDecision: PairDecision
+    private let transferDecision: TransferDecision
     private let transferProgress: (Int64, Int64) -> Void
-    private let transferCompleted: (IncomingTransferRequest) -> Void
+    private let transferReceived: (IncomingTransferRequest, URL) -> Void
+    private let transferWithdrawn: (UUID) -> Void
     private static let replayCache = ReplayCache()
     private static let pendingPairings = PendingPairings()
     /// Main queue only, like all request handling.
     private static var approvalInProgress = false
+    /// How long a pairing waits for the Mac user. Variable so the checks can shorten it.
+    static var pairingLifetime: TimeInterval = 180
+    /// How long an incoming file waits for approval before it is declined.
+    public internal(set) static var transferApprovalTimeout: TimeInterval = 300
+
+    /// Answers a pairing request by calling the completion with the user's decision. Called on
+    /// the main queue; the completion may be called from any thread, and only its first call counts.
+    public typealias PairDecision = (IncomingPairRequest, @escaping (Bool) -> Void) -> Void
+    /// Same contract for incoming files.
+    public typealias TransferDecision = (IncomingTransferRequest, @escaping (Bool) -> Void) -> Void
 
     public init(
+        identity: DeviceIdentity,
+        preferredPort: UInt16 = 49152,
+        preferredSecurePort: UInt16 = 49162,
+        pairDecision: @escaping PairDecision,
+        transferDecision: @escaping TransferDecision,
+        transferProgress: @escaping (Int64, Int64) -> Void = { _, _ in },
+        transferReceived: @escaping (IncomingTransferRequest, URL) -> Void = { _, _ in },
+        transferWithdrawn: @escaping (UUID) -> Void = { _ in }
+    ) {
+        self.identity = identity
+        self.preferredPort = preferredPort
+        self.preferredSecurePort = preferredSecurePort
+        self.port = preferredPort
+        self.securePort = preferredSecurePort
+        self.pairDecision = pairDecision
+        self.transferDecision = transferDecision
+        self.transferProgress = transferProgress
+        self.transferReceived = transferReceived
+        self.transferWithdrawn = transferWithdrawn
+    }
+
+    /// Synchronous approvals, for callers that can answer on the spot (CLI, checks).
+    public convenience init(
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
         preferredSecurePort: UInt16 = 49162,
@@ -37,15 +71,11 @@ public final class ControlServer {
         transferProgress: @escaping (Int64, Int64) -> Void = { _, _ in },
         transferCompleted: @escaping (IncomingTransferRequest) -> Void = { _ in }
     ) {
-        self.identity = identity
-        self.preferredPort = preferredPort
-        self.preferredSecurePort = preferredSecurePort
-        self.port = preferredPort
-        self.securePort = preferredSecurePort
-        self.pairApproval = pairApproval
-        self.transferApproval = transferApproval
-        self.transferProgress = transferProgress
-        self.transferCompleted = transferCompleted
+        self.init(identity: identity, preferredPort: preferredPort, preferredSecurePort: preferredSecurePort,
+                  pairDecision: { request, done in done(pairApproval(request)) },
+                  transferDecision: { request, done in done(transferApproval(request)) },
+                  transferProgress: transferProgress,
+                  transferReceived: { request, _ in transferCompleted(request) })
     }
 
     /// Starts the TLS listener, then the plain listener, each on its preferred port or any
@@ -88,11 +118,11 @@ public final class ControlServer {
         self.listener = listener
         listener.service = advertisedService()
 
-        listener.newConnectionHandler = { [weak self, identity, trustedPeerStore, pairApproval] connection in
+        listener.newConnectionHandler = { [weak self, identity, trustedPeerStore, pairDecision] connection in
             connection.start(queue: .main)
             Self.handlePlain(
                 connection: connection, identity: identity, trustedPeerStore: trustedPeerStore,
-                pairApproval: pairApproval, onPaired: { self?.reloadTrustedPeers() }
+                pairDecision: pairDecision, onPaired: { self?.reloadTrustedPeers() }
             )
         }
 
@@ -135,13 +165,14 @@ public final class ControlServer {
         }
         self.secureListener = listener
 
-        listener.newConnectionHandler = { [transferApproval, transferProgress, transferCompleted] connection in
+        listener.newConnectionHandler = { [transferDecision, transferProgress, transferReceived, transferWithdrawn] connection in
             connection.start(queue: .main)
             Self.handleSecure(
                 connection: connection,
-                transferApproval: transferApproval,
+                transferDecision: transferDecision,
                 transferProgress: transferProgress,
-                transferCompleted: transferCompleted
+                transferReceived: transferReceived,
+                transferWithdrawn: transferWithdrawn
             )
         }
 
@@ -186,9 +217,10 @@ public final class ControlServer {
     /// TLS-PSK connections from paired devices: transfers only.
     private static func handleSecure(
         connection: NWConnection,
-        transferApproval: @escaping (IncomingTransferRequest) -> Bool,
+        transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void,
-        transferCompleted: @escaping (IncomingTransferRequest) -> Void
+        transferReceived: @escaping (IncomingTransferRequest, URL) -> Void,
+        transferWithdrawn: @escaping (UUID) -> Void
     ) {
         receiveRequestHead(connection: connection) { head in
             guard let head else {
@@ -199,9 +231,10 @@ public final class ControlServer {
                 handleUpload(
                     connection: connection,
                     head: head,
-                    transferApproval: transferApproval,
+                    transferDecision: transferDecision,
                     transferProgress: transferProgress,
-                    transferCompleted: transferCompleted
+                    transferReceived: transferReceived,
+                    transferWithdrawn: transferWithdrawn
                 )
             } else if head.startLine.hasPrefix("GET /health") {
                 sendJSON(connection: connection, status: "200 OK", body: Data(#"{"status":"ok","tls":true}"#.utf8))
@@ -216,7 +249,7 @@ public final class ControlServer {
         connection: NWConnection,
         identity: DeviceIdentity,
         trustedPeerStore: TrustedPeerStore,
-        pairApproval: @escaping (IncomingPairRequest) -> Bool,
+        pairDecision: @escaping PairDecision,
         onPaired: @escaping () -> Void
     ) {
         receiveRequestHead(connection: connection) { head in
@@ -261,7 +294,7 @@ public final class ControlServer {
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else if request.startLine.hasPrefix("POST /pair/confirm") {
-                    let pairResponse = handlePairConfirm(body: request.body, identity: identity, trustedPeerStore: trustedPeerStore, pairApproval: pairApproval, onPaired: onPaired)
+                    let pairResponse = handlePairConfirm(body: request.body, identity: identity, trustedPeerStore: trustedPeerStore, pairDecision: pairDecision, onPaired: onPaired)
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else {
@@ -385,7 +418,7 @@ public final class ControlServer {
         body: Data,
         identity: DeviceIdentity,
         trustedPeerStore: TrustedPeerStore,
-        pairApproval: @escaping (IncomingPairRequest) -> Bool,
+        pairDecision: @escaping PairDecision,
         onPaired: @escaping () -> Void
     ) -> HTTPResponse {
         guard let confirm = try? JSONDecoder().decode(PairConfirmBody.self, from: body),
@@ -408,17 +441,22 @@ public final class ControlServer {
             responderNonce: pending.nonce
         )
         let request = IncomingPairRequest(
+            id: UUID(),
             deviceName: pending.peer.deviceName,
             deviceId: pending.peer.deviceId,
             platform: pending.peer.platform,
             code: code,
-            replacesExisting: trustedPeerStore.find(deviceId: pending.peer.deviceId) != nil
+            replacesExisting: trustedPeerStore.find(deviceId: pending.peer.deviceId) != nil,
+            expiresAt: pending.expiresAt
         )
 
         // Reply first so the phone can show its code while the Mac user decides.
         approvalInProgress = true
-        DispatchQueue.main.async {
-            let approved = pairApproval(request)
+        var decided = false
+        // Main queue only. The first answer wins; the expiry timer answers "no" if the user doesn't.
+        func decide(_ approved: Bool) {
+            guard !decided else { return }
+            decided = true
             approvalInProgress = false
             if approved {
                 trustedPeerStore.save(
@@ -435,6 +473,12 @@ public final class ControlServer {
                 onPaired()
             }
             pendingPairings.decide(deviceId: pending.peer.deviceId, approved: approved)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, pending.expiresAt.timeIntervalSinceNow)) { decide(false) }
+        DispatchQueue.main.async {
+            pairDecision(request) { approved in
+                DispatchQueue.main.async { decide(approved && Date() < pending.expiresAt) }
+            }
         }
 
         let json = #"{"status":"awaiting_approval","nonce":"\#(pending.nonce.base64EncodedString())"}"#
@@ -463,9 +507,10 @@ public final class ControlServer {
     private static func handleUpload(
         connection: NWConnection,
         head: HTTPRequestHead,
-        transferApproval: @escaping (IncomingTransferRequest) -> Bool,
+        transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void,
-        transferCompleted: @escaping (IncomingTransferRequest) -> Void
+        transferReceived: @escaping (IncomingTransferRequest, URL) -> Void,
+        transferWithdrawn: @escaping (UUID) -> Void
     ) {
         guard let contentLength = head.contentLength, contentLength >= 0 else {
             sendJSON(connection: connection, status: "411 Length Required", body: #"{"error":"missing_content_length"}"#.data(using: .utf8)!)
@@ -531,6 +576,10 @@ public final class ControlServer {
             var completedRequest: IncomingTransferRequest?
             var destination: URL?
             var fileHandle: FileHandle?
+            // While the user decides, reading pauses; plaintext already decrypted waits here.
+            var awaiting: (request: IncomingTransferRequest, metadata: IncomingFileMetadata)?
+            var heldPlaintext: [Data] = []
+            var askedForDecision = false
 
             func consumePlaintext(_ data: Data) throws {
                 guard !data.isEmpty else { return }
@@ -547,25 +596,23 @@ public final class ControlServer {
                 let chunk = Data(data.prefix(remaining))
                 receivedEncrypted += chunk.count
                 try decryptor.consume(chunk) { plaintext in
-                    if metadata == nil {
+                    if metadata == nil && awaiting == nil {
                         let parsed = try JSONDecoder().decode(IncomingFileMetadata.self, from: plaintext)
                         guard parsed.transferId == transferUUID else { throw UploadError.invalidMetadata }
                         let fileName = sanitizeFileName(parsed.fileName)
                         guard !fileName.isEmpty else { throw UploadError.invalidMetadata }
                         let request = IncomingTransferRequest(
+                            id: transferUUID,
                             senderName: peer.deviceName,
                             senderId: senderUUID,
                             fileName: fileName,
                             bytes: parsed.bytes
                         )
-                        guard transferApproval(request) else { throw UploadError.transferDeclined }
-
-                        let fileURL = uniqueDestination(in: directory, fileName: fileName)
-                        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
-                        fileHandle = try FileHandle(forWritingTo: fileURL)
-                        destination = fileURL
-                        metadata = IncomingFileMetadata(transferId: parsed.transferId, fileName: fileName, bytes: parsed.bytes, sha256: parsed.sha256)
-                        completedRequest = request
+                        awaiting = (request, IncomingFileMetadata(transferId: parsed.transferId, fileName: fileName, bytes: parsed.bytes, sha256: parsed.sha256))
+                        return
+                    }
+                    if fileHandle == nil {
+                        heldPlaintext.append(plaintext)
                         return
                     }
 
@@ -600,13 +647,72 @@ public final class ControlServer {
                     print("Received file: \(destination.path) (\(received) bytes, sha256: \(sha256))")
 
                     if let completedRequest {
-                        transferCompleted(completedRequest)
+                        transferReceived(completedRequest, destination)
                     }
 
                     let json = #"{"status":"received","fileName":"\#(destination.lastPathComponent)","bytes":\#(received),"sha256":"\#(sha256)"}"#
                     sendJSON(connection: connection, status: "200 OK", body: Data(json.utf8))
                 } catch {
                     sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"close_failed"}"#.data(using: .utf8)!)
+                }
+            }
+
+            func discard() {
+                try? fileHandle?.close()
+                if let destination { try? FileManager.default.removeItem(at: destination) }
+            }
+
+            func decline() {
+                discard()
+                sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
+            }
+
+            /// Opens the destination and writes what arrived while the user was deciding.
+            func accept(_ pending: (request: IncomingTransferRequest, metadata: IncomingFileMetadata)) throws {
+                let fileURL = uniqueDestination(in: directory, fileName: pending.metadata.fileName)
+                FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+                fileHandle = try FileHandle(forWritingTo: fileURL)
+                destination = fileURL
+                metadata = pending.metadata
+                completedRequest = pending.request
+                awaiting = nil
+                for data in heldPlaintext { try consumePlaintext(data) }
+                heldPlaintext = []
+                transferProgress(Int64(received), Int64(pending.metadata.bytes))
+            }
+
+            /// Asks once, then resumes reading on approval. Main queue only.
+            func askForDecision(_ pending: (request: IncomingTransferRequest, metadata: IncomingFileMetadata)) {
+                guard !askedForDecision else { return }
+                askedForDecision = true
+                var answered = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + transferApprovalTimeout) {
+                    guard !answered else { return }
+                    answered = true
+                    transferWithdrawn(pending.request.id)
+                    decline()
+                }
+                transferDecision(pending.request) { approved in
+                    DispatchQueue.main.async {
+                        guard !answered else { return }
+                        answered = true
+                        guard approved else { return decline() }
+                        do {
+                            try accept(pending)
+                            receiveMore()
+                        } catch {
+                            discard()
+                            sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"write_failed"}"#.data(using: .utf8)!)
+                        }
+                    }
+                }
+            }
+
+            func continueReading() {
+                if let pending = awaiting {
+                    askForDecision(pending)
+                } else {
+                    receiveMore()
                 }
             }
 
@@ -629,7 +735,7 @@ public final class ControlServer {
                             let remaining = contentLength - receivedEncrypted
                             try consumeEncrypted(Data(data.prefix(remaining)))
                         }
-                        receiveMore()
+                        continueReading()
                     } catch {
                         try? fileHandle?.close()
                         if let destination { try? FileManager.default.removeItem(at: destination) }
@@ -642,7 +748,7 @@ public final class ControlServer {
                 }
             }
 
-            receiveMore()
+            continueReading()
         } catch {
             if case UploadError.transferDeclined = error {
                 sendJSON(connection: connection, status: "403 Forbidden", body: #"{"error":"transfer_declined"}"#.data(using: .utf8)!)
@@ -774,7 +880,7 @@ private struct PendingPairing {
     var peerNonce: Data?
     var decision: Bool?
     var waiters: [(Bool) -> Void] = []
-    var expiresAt = Date().addingTimeInterval(3 * 60)
+    var expiresAt = Date().addingTimeInterval(ControlServer.pairingLifetime)
 
     init(peer: PairRequestIdentity, peerKey: Data, macKey: Data, sharedSecret: String, nonce: Data) {
         self.peer = peer
@@ -855,6 +961,8 @@ private enum UploadError: Error {
 }
 
 public struct IncomingPairRequest {
+    /// Identifies this request in the UI and in notifications.
+    public let id: UUID
     public let deviceName: String
     public let deviceId: UUID
     public let platform: String
@@ -862,9 +970,13 @@ public struct IncomingPairRequest {
     public let code: String
     /// A device with this ID is already paired; approving replaces its key.
     public let replacesExisting: Bool
+    /// After this the pairing is declined automatically.
+    public let expiresAt: Date
 }
 
 public struct IncomingTransferRequest {
+    /// The sender's transfer ID.
+    public let id: UUID
     public let senderName: String
     public let senderId: UUID
     public let fileName: String

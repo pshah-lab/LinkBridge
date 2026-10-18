@@ -207,6 +207,23 @@ func rawRequest(port: UInt16, _ text: String) -> String {
     return reply
 }
 
+/// Starts a server on the completion-based initializer. `pair` / `transfer` decide how each request is answered.
+func startDecisionServer(
+    pair: @escaping (IncomingPairRequest, @escaping (Bool) -> Void) -> Void,
+    transfer: @escaping (IncomingTransferRequest, @escaping (Bool) -> Void) -> Void = { _, done in done(true) },
+    received: @escaping (IncomingTransferRequest, URL) -> Void = { _, _ in },
+    withdrawn: @escaping (UUID) -> Void = { _ in }
+) -> (ControlServer, UInt16) {
+    let server = ControlServer(identity: IdentityStore().loadOrCreate(), preferredPort: 0, preferredSecurePort: 0,
+                               pairDecision: pair, transferDecision: transfer,
+                               transferReceived: received, transferWithdrawn: withdrawn)
+    let ready = DispatchSemaphore(value: 0)
+    var bound: UInt16?
+    DispatchQueue.main.async { server.start { port in bound = port; ready.signal() } }
+    ready.wait()
+    return (server, bound ?? 0)
+}
+
 /// Plays the phone's side of the three-step pairing protocol.
 func pairAsPhone(port: UInt16, id: UUID = UUID()) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
     let phone = P256.KeyAgreement.PrivateKey()
@@ -339,6 +356,79 @@ DispatchQueue.global().async {
             .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)
         check((try? Data(contentsOf: downloads)) == payload, "saved file matches")
         check(downloads.path.hasPrefix(ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? "/nonexistent"), "wrote inside the throwaway home")
+    }
+
+    section("Async approvals: pairing") {
+        var answer: (IncomingPairRequest, @escaping (Bool) -> Void) -> Void = { _, done in done(true) }
+        var seen: IncomingPairRequest?
+        let (asyncServer, asyncPort) = startDecisionServer(pair: { request, done in seen = request; answer(request, done) })
+        defer { DispatchQueue.main.sync { asyncServer.stop() } }
+
+        answer = { _, done in DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { done(true) } }
+        let accepted = pairAsPhone(port: asyncPort)
+        check(accepted.finalizeStatus == 200, "accept after a delay pairs, got \(accepted.finalizeStatus)")
+        check(TrustedPeerStore().find(deviceId: accepted.deviceId) != nil, "accepted peer saved")
+        check(seen.map { abs($0.expiresAt.timeIntervalSinceNow - 180) < 10 } == true, "request carries its 3-minute expiry")
+
+        answer = { _, done in done(false) }
+        let declined = pairAsPhone(port: asyncPort)
+        check(declined.finalizeStatus == 403, "decline refuses finalize, got \(declined.finalizeStatus)")
+        check(TrustedPeerStore().find(deviceId: declined.deviceId) == nil, "declined peer not saved")
+
+        answer = { _, done in done(false); done(true) }
+        let firstWins = pairAsPhone(port: asyncPort)
+        check(firstWins.finalizeStatus == 403 && TrustedPeerStore().find(deviceId: firstWins.deviceId) == nil,
+              "first completion wins")
+
+        ControlServer.pairingLifetime = 0.3
+        defer { ControlServer.pairingLifetime = 180 }
+        answer = { _, done in DispatchQueue.global().asyncAfter(deadline: .now() + 0.8) { done(true) } }
+        let late = pairAsPhone(port: asyncPort)
+        check(late.finalizeStatus == 403, "expired pairing is declined, got \(late.finalizeStatus)")
+        Thread.sleep(forTimeInterval: 0.8)
+        check(TrustedPeerStore().find(deviceId: late.deviceId) == nil, "late accept after expiry is ignored")
+    }
+
+    section("Async approvals: transfers") {
+        let secret = TrustedPeerStore().find(deviceId: IdentityStore().loadOrCreate().deviceId)?.authToken ?? ""
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("async-\(UUID().uuidString).bin")
+        let payload = Data((0..<(Security.chunkSize * 2 + 17)).map { UInt8(truncatingIfNeeded: $0 &* 13) })
+        try payload.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        var answer: (IncomingTransferRequest, @escaping (Bool) -> Void) -> Void = { _, done in done(true) }
+        var requests: [IncomingTransferRequest] = []
+        var savedTo: URL?
+        var withdrawnIds: [UUID] = []
+        let (asyncServer, _) = startDecisionServer(pair: { _, done in done(false) },
+                                                   transfer: { request, done in requests.append(request); answer(request, done) },
+                                                   received: { _, url in savedTo = url },
+                                                   withdrawn: { withdrawnIds.append($0) })
+        defer { DispatchQueue.main.sync { asyncServer.stop() } }
+        let endpoint = "127.0.0.1:\(asyncServer.securePort)"
+
+        answer = { _, done in DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) { done(true) } }
+        try FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)
+        check(savedTo.flatMap { try? Data(contentsOf: $0) } == payload, "accepted after a delay: file saved and URL reported")
+
+        answer = { _, done in done(false) }
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "declined transfer fails")
+
+        ControlServer.transferApprovalTimeout = 0.4
+        defer { ControlServer.transferApprovalTimeout = 300 }
+        answer = { _, _ in }
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "unanswered transfer fails")
+        Thread.sleep(forTimeInterval: 0.2)
+        check(withdrawnIds == [requests.last!.id], "timeout withdraws the waiting request")
+    }
+
+    section("Unpair removes a trusted peer") {
+        let id = UUID()
+        TrustedPeerStore().save(TrustedPeer(deviceId: id, deviceName: "Gone", platform: "android", protocolVersion: 2,
+                                            features: [], pairedAt: Date(), authToken: "secret"))
+        check(TrustedPeerStore().find(deviceId: id) != nil, "saved")
+        TrustedPeerStore().remove(deviceId: id)
+        check(TrustedPeerStore().find(deviceId: id) == nil, "removed")
     }
 
     section("PairingClient pairs as the initiator") {

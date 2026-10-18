@@ -34,6 +34,10 @@ final class CredentialStore {
         return status == errSecSuccess
     }
 
+    func delete(account: String) {
+        SecItemDelete(baseQuery(account: account) as CFDictionary)
+    }
+
     private func baseQuery(account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service,
@@ -72,6 +76,20 @@ final class CredentialStore {
         defer { Self.lock.unlock() }
         var items = load()
         items[account] = value
+        return persist(items, account: account)
+    }
+
+    func delete(account: String) {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        var items = load()
+        guard items.removeValue(forKey: account) != nil else { return }
+        persist(items, account: account)
+    }
+
+    /// Caller holds the lock.
+    @discardableResult
+    private func persist(_ items: [String: String], account: String) -> Bool {
         do {
             let directory = fileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
