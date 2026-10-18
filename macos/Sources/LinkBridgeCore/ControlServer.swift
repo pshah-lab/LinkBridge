@@ -369,7 +369,7 @@ public final class ControlServer {
         }
 
         func receiveMore() {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, _, error in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
                 if error != nil {
                     completion(HTTPRequest(startLine: head.startLine, headers: head.headers, body: body))
                     return
@@ -381,6 +381,13 @@ public final class ControlServer {
 
                 if body.count >= expectedLength {
                     completion(HTTPRequest(startLine: head.startLine, headers: head.headers, body: body))
+                    return
+                }
+
+                // The sender closed before sending the whole body. Don't rely on the next read
+                // failing: asking again after EOF could spin the main queue.
+                if isComplete {
+                    sendJSON(connection: connection, status: "400 Bad Request", body: Data(#"{"error":"truncated_body"}"#.utf8))
                     return
                 }
 

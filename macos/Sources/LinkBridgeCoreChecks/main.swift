@@ -209,6 +209,22 @@ func rawRequest(port: UInt16, _ text: String) -> String {
     return reply
 }
 
+/// Sends `text`, then half-closes the sending side. Returns the reply, or "" on timeout.
+func halfClosedRequest(port: UInt16, _ text: String, timeout: TimeInterval = 3) -> String {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+    let done = DispatchSemaphore(value: 0)
+    var reply = ""
+    connection.start(queue: .global())
+    connection.send(content: Data(text.utf8), contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in })
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+        reply = String(decoding: data ?? Data(), as: UTF8.self)
+        done.signal()
+    }
+    _ = done.wait(timeout: .now() + timeout)
+    connection.cancel()
+    return reply
+}
+
 /// Starts a server on the completion-based initializer. `pair` / `transfer` decide how each request is answered.
 func startDecisionServer(
     pair: @escaping (IncomingPairRequest, @escaping (Bool) -> Void) -> Void,
@@ -307,6 +323,16 @@ DispatchQueue.global().async {
         check(TrustedPeerStore().find(deviceId: result.deviceId) == nil, "declined phone not trusted")
         let (status, _) = post(port, "/pair/confirm", ["deviceId": UUID().uuidString, "nonce": PairingCode.randomNonce().base64EncodedString()])
         check(status == 409, "confirm without request refused")
+    }
+
+    section("A half-closed short body is refused instead of spinning") {
+        let reply = halfClosedRequest(port: port, "POST /pair/request HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n0123456789")
+        check(reply.hasPrefix("HTTP/1.1 400"), "truncated body gets 400, got \(reply.prefix(40))")
+        // If the main queue were spinning, this would never be answered.
+        let main = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { main.signal() }
+        check(main.wait(timeout: .now() + 2) == .success, "main queue still responsive")
+        check(rawRequest(port: port, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n").hasPrefix("HTTP/1.1 200"), "server still answers")
     }
 
     section("Pairing spam can't grow pending pairings without bound") {
