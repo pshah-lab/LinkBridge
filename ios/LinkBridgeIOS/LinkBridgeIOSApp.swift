@@ -31,7 +31,7 @@ struct LinkBridgeRootView: View {
                 screen("Send") { SendView(model: model, onPickDevice: { tab = .devices }) }
             }
             Tab("History", systemImage: "clock.arrow.circlepath", value: AppTab.history) {
-                screen("History") { Text("History") }
+                screen("History") { HistoryView(model: model) }
             }
         }
         .tint(Accent.action.color)
