@@ -130,6 +130,7 @@ section("Decryption rejects tampering, truncation and the wrong key") {
 
 runPresentationChecks()
 runApprovalChecks()
+runHistoryStoreChecks()
 
 // MARK: - Live server checks (run off the main thread; the server uses the main queue)
 
