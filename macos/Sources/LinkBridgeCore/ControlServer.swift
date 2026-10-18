@@ -302,7 +302,7 @@ public final class ControlServer {
             receiveSmallBodyIfNeeded(connection: connection, head: head) { request in
                 deadline.disarm()
                 if request.startLine.hasPrefix("POST /pair/finalize") {
-                    handlePairFinalize(body: request.body) { response in
+                    handlePairFinalize(body: request.body, source: sourceHost(of: connection)) { response in
                         sendJSON(connection: connection, status: response.status, body: response.body)
                     }
                     return
@@ -330,7 +330,7 @@ public final class ControlServer {
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else if request.startLine.hasPrefix("POST /pair/confirm") {
-                    let pairResponse = handlePairConfirm(body: request.body, identity: identity, trustedPeerStore: trustedPeerStore, pairDecision: pairDecision, onPaired: onPaired)
+                    let pairResponse = handlePairConfirm(body: request.body, source: sourceHost(of: connection), identity: identity, trustedPeerStore: trustedPeerStore, pairDecision: pairDecision, onPaired: onPaired)
                     responseBody = pairResponse.body
                     status = pairResponse.status
                 } else {
@@ -483,7 +483,7 @@ public final class ControlServer {
             nonce: nonce
         ), limit: maxPendingPairings)
         guard started else {
-            return jsonError("429 Too Many Requests", "too_many_pairings")
+            return jsonError("429 Too Many Requests", "pairing_unavailable")
         }
 
         let commitment = PairingCode.commitment(publicKey: macKeyData, nonce: nonce).base64EncodedString()
@@ -493,6 +493,7 @@ public final class ControlServer {
 
     private static func handlePairConfirm(
         body: Data,
+        source: String,
         identity: DeviceIdentity,
         trustedPeerStore: TrustedPeerStore,
         pairDecision: @escaping PairDecision,
@@ -507,7 +508,7 @@ public final class ControlServer {
         guard !approvalInProgress else {
             return jsonError("409 Conflict", "pairing_busy")
         }
-        guard let pending = pendingPairings.confirm(deviceId: confirm.deviceId, peerNonce: peerNonce) else {
+        guard let pending = pendingPairings.confirm(deviceId: confirm.deviceId, peerNonce: peerNonce, source: source) else {
             return jsonError("409 Conflict", "no_pending_pairing")
         }
 
@@ -563,12 +564,12 @@ public final class ControlServer {
         return HTTPResponse(status: "200 OK", body: Data(json.utf8))
     }
 
-    private static func handlePairFinalize(body: Data, completion: @escaping (HTTPResponse) -> Void) {
+    private static func handlePairFinalize(body: Data, source: String, completion: @escaping (HTTPResponse) -> Void) {
         guard let finalize = try? JSONDecoder().decode(PairFinalizeBody.self, from: body) else {
             completion(jsonError("400 Bad Request", "invalid_pair_finalize"))
             return
         }
-        let waiting = pendingPairings.awaitDecision(deviceId: finalize.deviceId) { approved in
+        let waiting = pendingPairings.awaitDecision(deviceId: finalize.deviceId, source: source) { approved in
             completion(approved
                 ? HTTPResponse(status: "200 OK", body: Data(#"{"status":"paired"}"#.utf8))
                 : jsonError("403 Forbidden", "pair_declined"))
@@ -1159,6 +1160,9 @@ private final class PendingPairings {
     func begin(_ pairing: PendingPairing, limit: Int) -> Bool {
         prune()
         entries = entries.filter { $0.value.source != pairing.source || $0.value.peerNonce != nil }
+        // A confirmed pairing is waiting for the user; nobody may replace it, or any LAN host
+        // could cancel someone else's pairing by sending its device ID.
+        if let existing = entries[pairing.peer.deviceId], existing.peerNonce != nil { return false }
         guard entries[pairing.peer.deviceId] != nil || entries.count < limit else { return false }
         entries[pairing.peer.deviceId] = pairing
         return true
@@ -1169,10 +1173,11 @@ private final class PendingPairings {
         return entries.count
     }
 
-    /// Records the phone's nonce. Only allowed once, so a MITM can't retry nonces.
-    func confirm(deviceId: UUID, peerNonce: Data) -> PendingPairing? {
+    /// Records the phone's nonce. Only allowed once, so a MITM can't retry nonces, and only
+    /// from the address that sent the request, so another host can't use up that one try.
+    func confirm(deviceId: UUID, peerNonce: Data, source: String) -> PendingPairing? {
         prune()
-        guard var entry = entries[deviceId], entry.peerNonce == nil else { return nil }
+        guard var entry = entries[deviceId], entry.peerNonce == nil, entry.source == source else { return nil }
         entry.peerNonce = peerNonce
         entries[deviceId] = entry
         return entry
@@ -1189,9 +1194,9 @@ private final class PendingPairings {
     }
 
     /// Returns false if there is no confirmed pairing to wait on.
-    func awaitDecision(deviceId: UUID, completion: @escaping (Bool) -> Void) -> Bool {
+    func awaitDecision(deviceId: UUID, source: String, completion: @escaping (Bool) -> Void) -> Bool {
         prune()
-        guard var entry = entries[deviceId], entry.peerNonce != nil else { return false }
+        guard var entry = entries[deviceId], entry.peerNonce != nil, entry.source == source else { return false }
         if let decision = entry.decision {
             entries[deviceId] = nil
             completion(decision)

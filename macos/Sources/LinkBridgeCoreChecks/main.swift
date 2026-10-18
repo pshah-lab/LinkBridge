@@ -278,8 +278,8 @@ func startServer(preferredPort: UInt16, approve: @escaping () -> Bool, lastReque
     return (server, bound ?? 0)
 }
 
-func post(_ port: UInt16, _ path: String, _ json: [String: Any]) -> (Int, [String: Any]) {
-    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+func post(_ port: UInt16, _ path: String, _ json: [String: Any], host: String = "127.0.0.1") -> (Int, [String: Any]) {
+    var request = URLRequest(url: URL(string: "http://\(host):\(port)\(path)")!)
     request.httpMethod = "POST"
     request.httpBody = try! JSONSerialization.data(withJSONObject: json)
     request.timeoutInterval = 10
@@ -485,6 +485,29 @@ DispatchQueue.global().async {
         DispatchQueue.main.async { main.signal() }
         check(main.wait(timeout: .now() + 2) == .success, "main queue still responsive")
         check(rawRequest(port: port, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n").hasPrefix("HTTP/1.1 200"), "server still answers")
+    }
+
+    section("Another LAN host can't cancel or hijack a pairing in progress") {
+        let id = UUID()
+        let phone = P256.KeyAgreement.PrivateKey()
+        let (status, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Phone", "platform": "android",
+                                                       "protocolVersion": 2, "features": [],
+                                                       "publicKey": phone.publicKey.x963Representation.base64EncodedString()])
+        check(status == 200, "request accepted")
+        let nonce = PairingCode.randomNonce().base64EncodedString()
+        let (other, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce], host: "[::1]")
+        check(other == 409, "confirm from another address refused, got \(other)")
+        let (own, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce])
+        check(own == 200, "phone's own confirm still works, got \(own)")
+        let (replace, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Evil", "platform": "android",
+                                                        "protocolVersion": 2, "features": [],
+                                                        "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()],
+                                host: "[::1]")
+        check(replace == 429, "confirmed pairing can't be replaced, got \(replace)")
+        let (finalizeOther, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString], host: "[::1]")
+        check(finalizeOther == 409, "finalize from another address refused, got \(finalizeOther)")
+        let (finalize, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString])
+        check(finalize == 200 || finalize == 403, "phone's own finalize gets the decision, got \(finalize)")
     }
 
     section("Pairing spam can't grow pending pairings without bound") {
