@@ -76,4 +76,6 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for JVM tests (the android.jar copy is a stub that throws).
+    testImplementation("org.json:json:20240303")
 }
