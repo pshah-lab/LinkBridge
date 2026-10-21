@@ -63,7 +63,7 @@ Existing networking files stay where they are. New code:
 |---|---|
 | `presentation/ConnectionState.kt` | `Searching`, `NoPairedDevice`, `Ready(name)`, `Sending(name, progress)`, `Error(message)`; `derive(nearbyCount, selected, sendPhase, errorMessage)`; `title`, `dotLabel`, `accent`. Same rules and copy as the Mac. |
 | `presentation/SendPhase.kt` | `Idle`, `Ready(fileName)`, `Sending(fileName, progress)`, `Sent(fileName)`, `Failed(fileName, message)`; `actionTitle` ("Choose a file" / "Send" / "Sending…" / "Sent" / "Retry"), `isEnabled(targetSendable)`. |
-| `presentation/DeviceListItem.kt` | `DevicePlatform`, `DeviceListItem`, `merge(nearby, trusted)` and `DeviceSelection.resolve(current, preferred, items, isSending)`. Order: nearby paired, nearby unpaired, paired away; A→Z in each group. |
+| `presentation/DeviceListItem.kt` | `DevicePlatform`, `DeviceListItem`, `merge(nearby, trusted)` and `DeviceSelection.resolve(current, preferred, items, isSending)`. Order: nearby paired, nearby unpaired, paired away; A→Z in each group. Unpaired peers are matched by `deviceId ?: serviceName` (see Devices). |
 | `presentation/HistoryRowContent.kt` | Title, detail ("To Mac mini · 2.1 MB · 21 Oct, 14:05" / "From …"), direction, accent, `failureReason`, `canRetry`, `canOpen`. |
 | `presentation/ApprovalQueue.kt` | Ordered pending file requests with `add`, `resolve(id)`, `expire(now)`, `oldest`. |
 | `presentation/ReceiveState.kt` | `Starting`, `Listening`, `Receiving(fileName, received, total)`, `Stopped`, `Failed(message)`; `bannerText` and `bannerAction` where relevant. |
@@ -148,8 +148,11 @@ replaces the dot. Tapping it opens Devices. TalkBack reads "<dotLabel>, <title>"
   - nearby + paired: "Paired · Nearby"
   - nearby + unpaired Mac: "Not paired" with a trailing **Pair** button
   - other unpaired: "Pair from the Mac app"
-  - no device ID: "Needs a LinkBridge update"
+  - no `tlsPort` (an older app): "Needs a LinkBridge update", not pairable or sendable
   - paired + away: "Paired · Not nearby"
+- Unlike the Mac rule, a missing device ID does not mean an old app. With tag-based
+  discovery an unpaired Mac advertises no device ID; it is learned through `fetchDevice`
+  when pairing starts. Row identity is `deviceId ?: serviceName`.
 - Tapping a sendable row selects it (persisted in preferences) and switches to Send. Tapping
   an unpaired Mac opens `PairingSheet`.
 - Pull-to-refresh calls `rescan()`. It replaces the Refresh button.
@@ -171,9 +174,10 @@ Modal bottom sheet, not dismissible by swipe while finalize is running. States:
    (`PairingCode.display`), and TalkBack reads it digit by digit. Below it: "If the Mac
    won't accept the code, cancel — someone may be intercepting the connection." Buttons:
    Continue (primary) and Cancel.
-3. **Waiting** — "Waiting for you to confirm on <Mac>…" with Cancel. Cancel abandons the
-   request on the phone; the finalize thread is left to time out at 120 s and its result is
-   ignored.
+3. **Waiting** — "Waiting for you to confirm on <Mac>…" with Cancel. Cancel closes the sheet;
+   the finalize call keeps running until it returns (at most 120 s). If it then succeeds,
+   the Mac has already paired, so the phone still saves the trusted peer silently and both
+   sides agree. A failure after Cancel is dropped.
 4. **Paired** — checkmark, "Paired with <Mac>". The sheet closes after a moment, the device
    becomes the send target, and the app switches to Send.
 5. **Failed** — coral, "Couldn't pair with <Mac>: <reason>", with Try again and Close.
