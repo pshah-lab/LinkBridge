@@ -161,7 +161,7 @@ class LinkBridgeService : Service() {
                     return false
                 }
             }
-            return answer.poll(APPROVAL_TIMEOUT_SECONDS, TimeUnit.SECONDS) ?: false
+            return answer.poll(Timeouts.APPROVAL_TIMEOUT_SECONDS, TimeUnit.SECONDS) ?: false
         } finally {
             pendingApprovals.remove(id)
             NotificationManagerCompat.from(this).cancel(APPROVAL_NOTIFICATION_BASE + id)
@@ -247,7 +247,7 @@ class LinkBridgeService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentIntent(openAppIntent())
-            .setTimeoutAfter(APPROVAL_TIMEOUT_SECONDS * 1000)
+            .setTimeoutAfter(Timeouts.APPROVAL_TIMEOUT_SECONDS * 1000)
             .setAutoCancel(true)
             .addAction(accept)
             .addAction(0, "Decline", action(ACTION_DECLINE))
@@ -283,7 +283,6 @@ class LinkBridgeService : Service() {
         private const val CHANNEL_REQUESTS = "requests"
         private const val STATUS_NOTIFICATION_ID = 1
         private const val APPROVAL_NOTIFICATION_BASE = 1000
-        private const val APPROVAL_TIMEOUT_SECONDS = 60L
         private const val ACTION_STOP = "com.linkbridge.android.action.STOP"
         private const val ACTION_ACCEPT = "com.linkbridge.android.action.ACCEPT"
         private const val ACTION_DECLINE = "com.linkbridge.android.action.DECLINE"

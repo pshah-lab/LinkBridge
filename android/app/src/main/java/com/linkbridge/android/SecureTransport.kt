@@ -84,7 +84,7 @@ object SecureTransport {
         val socket = Socket()
         try {
             socket.connect(InetSocketAddress(host, port), timeoutMs)
-            socket.soTimeout = 120_000 // the receiver may wait for the user to accept the file
+            socket.soTimeout = Timeouts.UPLOAD_SOCKET_TIMEOUT_MS // the receiver may wait for the user to accept the file
             val client = object : PSKTlsClient(BcTlsCrypto(random), BasicTlsPSKIdentity(identity, psk)) {
                 override fun getSupportedCipherSuites() = intArrayOf(CIPHER_SUITE)
                 override fun getSupportedVersions(): Array<ProtocolVersion> = ProtocolVersion.TLSv12.only()

@@ -82,7 +82,7 @@ class ControlClient {
     /** Step 3: wait for the Mac user to accept or decline. */
     fun finalizePairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<Unit> {
         return runCatching {
-            postJson(peer, "/pair/finalize", JSONObject().put("deviceId", localIdentity.deviceId), readTimeoutMs = 120_000)
+            postJson(peer, "/pair/finalize", JSONObject().put("deviceId", localIdentity.deviceId), readTimeoutMs = Timeouts.PAIR_FINALIZE_READ_TIMEOUT_MS)
             Unit
         }
     }
