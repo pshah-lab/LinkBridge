@@ -8,6 +8,11 @@ public struct DeviceIdentity: Codable {
     public let features: [String]
     public let authToken: String
     public let publicKey: String
+
+    func renamed(_ name: String) -> DeviceIdentity {
+        DeviceIdentity(deviceId: deviceId, deviceName: name, platform: platform, protocolVersion: protocolVersion,
+                       features: features, authToken: authToken, publicKey: publicKey)
+    }
 }
 
 struct PublicDeviceIdentity: Codable {
@@ -17,6 +22,8 @@ struct PublicDeviceIdentity: Codable {
     let protocolVersion: Int
     let features: [String]
     let publicKey: String?
+    /// Sent in /pair/request only; see `PairingCode.pairingVersion`.
+    var pairingVersion: Int? = nil
 }
 
 public final class IdentityStore {
@@ -36,7 +43,14 @@ public final class IdentityStore {
             if let stored = try? JSONDecoder().decode(PersistedIdentity.self, from: data),
                let token = credentials.read(account: "identity.authToken") {
                 // Always derive from the stored private key; older builds persisted a 64-byte encoding.
-                return stored.identity(authToken: token, publicKey: pairingKeys.publicKeyBase64)
+                let identity = stored.identity(authToken: token, publicKey: pairingKeys.publicKeyBase64)
+                // Older builds defaulted to the computer name, which usually holds the owner's
+                // name and is advertised on every network. Replace it if it's still that default.
+                let generic = Self.defaultDeviceName
+                if identity.deviceName != generic, identity.deviceName == Self.computerName {
+                    return rename(identity, to: generic)
+                }
+                return identity
             }
             if let legacy = try? JSONDecoder().decode(DeviceIdentity.self, from: data) {
                 credentials.write(legacy.authToken, account: "identity.authToken")
@@ -75,13 +89,23 @@ public final class IdentityStore {
     #if os(iOS)
     // iOS 16+ only reveals the user-assigned device name with a special entitlement.
     private static let defaultDeviceName = "iPhone"
+    private static let computerName: String? = nil
     private static let platformName = "ios"
     private static let defaultFeatures = ["file-transfer"]
     #else
-    private static var defaultDeviceName: String { Host.current().localizedName ?? "Mac" }
+    private static var computerName: String? { Host.current().localizedName }
+    private static var defaultDeviceName: String { DeviceNames.withoutOwner(computerName ?? "Mac") }
     private static let platformName = "macos"
     private static let defaultFeatures = ["file-transfer", "display-send", "display-receive"]
     #endif
+
+    /// Saves a new display name and returns the updated identity.
+    @discardableResult
+    public func rename(_ identity: DeviceIdentity, to name: String) -> DeviceIdentity {
+        let renamed = identity.renamed(DeviceNames.sanitize(name))
+        persist(renamed)
+        return renamed
+    }
 
     private func persist(_ identity: DeviceIdentity) {
         do {

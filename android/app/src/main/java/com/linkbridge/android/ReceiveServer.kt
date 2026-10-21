@@ -23,11 +23,16 @@ class ReceiveServer(
     private val port: Int,
     private val onStatus: (String) -> Unit,
     private val onTransferCompleted: (ReceivedTransfer) -> Unit = {},
-    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true }
+    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true },
+    /** Free bytes where Downloads lives, or -1 if unknown. */
+    private val availableBytes: () -> Long = {
+        @Suppress("DEPRECATION")
+        runCatching { Environment.getExternalStorageDirectory().usableSpace }.getOrDefault(-1L)
+    }
 ) {
     private val running = AtomicBoolean(false)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val clientExecutor: ExecutorService = Executors.newFixedThreadPool(MAX_CLIENTS)
+    private val gate = ConnectionGate()
     private val replayCache = ConcurrentHashMap<String, Long>()
     private var serverSocket: ServerSocket? = null
 
@@ -41,9 +46,9 @@ class ReceiveServer(
                     onStatus("Ready to receive files (encrypted) on port $port.")
                     while (running.get()) {
                         val client = socket.accept()
-                        clientExecutor.execute {
-                            runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
-                            client.use { handleClient(it) }
+                        runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
+                        if (!gate.submit(client, ::handleClient)) {
+                            Log.w(TAG, "Refused connection: receiver busy")
                         }
                     }
                 }
@@ -60,18 +65,30 @@ class ReceiveServer(
         running.set(false)
         runCatching { serverSocket?.close() }
         executor.shutdownNow()
-        clientExecutor.shutdownNow()
+        gate.shutdown()
     }
 
-    /** Every connection must complete a TLS-PSK handshake with a paired device's key. */
-    private fun handleClient(socket: Socket) {
+    /**
+     * Stage 1 (see [ConnectionGate]): every connection must complete a TLS-PSK handshake with a
+     * paired device's key and send a signed upload header. Returns the upload to run in stage 2.
+     */
+    private fun handleClient(socket: Socket): (() -> Unit)? {
         val connection = try {
             SecureTransport.accept(socket) { identity -> pskFor(identity) }
         } catch (error: Exception) {
             Log.w(TAG, "Rejected connection: TLS handshake failed (${error.javaClass.simpleName})")
-            return
+            return null
         }
-        connection.use { handleRequest(it) }
+        val upload = try {
+            handleRequest(connection)
+        } catch (error: Exception) {
+            null
+        }
+        if (upload == null) {
+            connection.close()
+            return null
+        }
+        return { connection.use { upload() } }
     }
 
     private fun pskFor(identity: String): ByteArray? =
@@ -80,7 +97,8 @@ class ReceiveServer(
             ?.authToken
             ?.let(SecureTransport::psk)
 
-    private fun handleRequest(connection: SecureTransport.Connection) {
+    /** Checks the header. Returns the body handling, or null after replying with an error. */
+    private fun handleRequest(connection: SecureTransport.Connection): (() -> Unit)? {
         val reply = connection.output
         val input = BufferedInputStream(connection.input)
         val headerBytes = readHeaderBytes(input)
@@ -89,17 +107,17 @@ class ReceiveServer(
 
         if (!request.startLine.startsWith("POST /transfer/upload")) {
             reply.writeJsonResponse(404, """{"error":"not_found"}""")
-            return
+            return null
         }
 
         val contentLength = request.headers["content-length"]?.toLongOrNull()
         if (contentLength == null || contentLength < 0) {
             reply.writeJsonResponse(400, """{"error":"missing_content_length"}""")
-            return
+            return null
         }
         if (contentLength > MAX_TRANSFER_BYTES) {
             reply.writeJsonResponse(413, """{"error":"transfer_too_large"}""")
-            return
+            return null
         }
         val senderId = request.headers["x-linkbridge-device-id"]
         val timestamp = request.headers["x-linkbridge-timestamp"]
@@ -111,22 +129,22 @@ class ReceiveServer(
 
         if (senderId == null || timestamp == null || transferId == null || suppliedSignature == null || authToken == null) {
             reply.writeJsonResponse(401, """{"error":"unpaired_or_unsigned"}""")
-            return
+            return null
         }
         // The device that completed the TLS handshake must be the one the upload claims to be from.
         if (SecureTransport.identity(senderId) != connection.peerIdentity) {
             reply.writeJsonResponse(401, """{"error":"identity_mismatch"}""")
-            return
+            return null
         }
         val timestampMillis = timestamp.toLongOrNull()
         val transferUUID = runCatching { UUID.fromString(transferId) }.getOrNull()
         if (timestampMillis == null || transferUUID == null || kotlin.math.abs(System.currentTimeMillis() - timestampMillis) > TIMESTAMP_WINDOW_MS) {
             reply.writeJsonResponse(401, """{"error":"stale_transfer"}""")
-            return
+            return null
         }
-        if (encryption != Security.ENCRYPTION_SCHEME) {
+        if (encryption == null || encryption !in Security.SUPPORTED_SCHEMES) {
             reply.writeJsonResponse(400, """{"error":"encryption_required"}""")
-            return
+            return null
         }
 
         val signaturePayload = listOf(
@@ -135,22 +153,37 @@ class ReceiveServer(
             senderId,
             timestamp,
             transferId,
-            Security.ENCRYPTION_SCHEME,
+            encryption,
             contentLength.toString()
         ).joinToString("\n")
-        val expectedSignature = Security.hmacSha256Base64(authToken, signaturePayload)
+        // The scheme is in the signed payload, so it can't be downgraded without the secret.
+        val expectedSignature = Security.uploadSignature(authToken, encryption, signaturePayload)
         if (!Security.timingSafeEquals(expectedSignature, suppliedSignature)) {
             reply.writeJsonResponse(401, """{"error":"invalid_signature"}""")
-            return
+            return null
         }
         val replayKey = "$senderId:$transferId"
         val now = System.currentTimeMillis()
         replayCache.entries.removeIf { it.value < now }
         if (replayCache.putIfAbsent(replayKey, now + REPLAY_WINDOW_MS) != null) {
             reply.writeJsonResponse(409, """{"error":"replayed_transfer"}""")
-            return
+            return null
         }
 
+        return { receiveUpload(reply, input, contentLength, authToken, encryption, transferId, senderId, trustedPeer.deviceName) }
+    }
+
+    /** Stage 2: decrypts the body, asks the user, and saves the file. */
+    private fun receiveUpload(
+        reply: OutputStream,
+        input: BufferedInputStream,
+        contentLength: Long,
+        authToken: String,
+        scheme: String,
+        transferId: String,
+        senderId: String,
+        senderName: String
+    ) {
         var savedUri: android.net.Uri? = null
         runCatching {
             val resolver = context.contentResolver
@@ -160,13 +193,16 @@ class ReceiveServer(
             var received = 0L
 
             try {
-                Security.decryptChunkedRecords(authToken, input, contentLength) { plain ->
+                Security.decryptChunkedRecords(authToken, input, contentLength, scheme, transferId) { plain ->
                     val currentMetadata = metadata
                     if (currentMetadata == null) {
                         val parsed = IncomingFileMetadata.fromEncryptedJson(plain)
                         if (parsed.transferId != transferId) error("Transfer ID mismatch")
+                        if (!ReceiveLimits.sizeIsPlausible(parsed.bytes, contentLength)) error("Declared size exceeds the body")
+                        // Refuse before asking the user, so an accepted file can't fill the storage.
+                        if (!ReceiveLimits.hasRoom(parsed.bytes, availableBytes())) throw InsufficientStorageException()
                         val approval = IncomingTransferRequest(
-                            senderName = trustedPeer.deviceName,
+                            senderName = senderName,
                             senderId = senderId,
                             fileName = parsed.fileName,
                             bytes = parsed.bytes
@@ -216,12 +252,17 @@ class ReceiveServer(
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             savedUri?.let { resolver.update(it, values, null, null) }
             onStatus("Received ${finalMetadata.fileName}\nSaved to Downloads/LinkBridge.")
-            onTransferCompleted(ReceivedTransfer(finalMetadata.fileName, received, trustedPeer.deviceName))
+            onTransferCompleted(ReceivedTransfer(finalMetadata.fileName, received, senderName))
             reply.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
             savedUri?.let { context.contentResolver.delete(it, null, null) }
             if (error is TransferDeclinedException) {
                 reply.writeJsonResponse(403, """{"error":"transfer_declined"}""")
+                return
+            }
+            if (error is InsufficientStorageException) {
+                onStatus("Not enough free space to receive a file")
+                reply.writeJsonResponse(507, """{"error":"insufficient_storage"}""")
                 return
             }
             Log.e(TAG, "Receive failed", error)
@@ -255,13 +296,6 @@ class ReceiveServer(
         flush()
     }
 
-    private fun sanitizeFileName(fileName: String): String {
-        return fileName
-            .replace(Regex("""[/\\:]"""), "-")
-            .trim()
-            .ifBlank { "received-file" }
-    }
-
     private fun formatBytes(bytes: Long): String {
         if (bytes < 1024) return "$bytes B"
         val units = arrayOf("KB", "MB", "GB")
@@ -276,7 +310,6 @@ class ReceiveServer(
 
     companion object {
         private const val TAG = "LinkBridgeReceive"
-        private const val MAX_CLIENTS = 4
         private const val MAX_HEADER_BYTES = 64 * 1024
         private const val MAX_TRANSFER_BYTES = Long.MAX_VALUE - 1024
         private const val TIMESTAMP_WINDOW_MS = 5 * 60 * 1000L
@@ -305,22 +338,17 @@ private data class IncomingFileMetadata(
             val json = org.json.JSONObject(bytes.toString(Charsets.UTF_8))
             return IncomingFileMetadata(
                 transferId = json.getString("transferId"),
-                fileName = sanitizeMetadataFileName(json.getString("fileName")),
+                fileName = FileNames.sanitize(json.getString("fileName")),
                 bytes = json.getLong("bytes"),
                 sha256 = json.getString("sha256")
             )
-        }
-
-        private fun sanitizeMetadataFileName(fileName: String): String {
-            return fileName
-                .replace(Regex("""[/\\:]"""), "-")
-                .trim()
-                .ifBlank { "received-file" }
         }
     }
 }
 
 private class TransferDeclinedException : RuntimeException("Transfer declined")
+
+private class InsufficientStorageException : RuntimeException("Not enough free space")
 
 private data class HttpRequestHeader(
     val startLine: String,

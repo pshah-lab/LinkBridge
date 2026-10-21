@@ -14,7 +14,8 @@ public enum FileSender {
         let fileSize = try fileSize(at: fileURL)
         let sha256 = try sha256Hex(of: fileURL)
         let identity = IdentityStore().loadOrCreate()
-        let transferId = UUID().uuidString
+        let transferUUID = UUID()
+        let transferId = transferUUID.uuidString
         let metadata = try JSONSerialization.data(withJSONObject: [
             "transferId": transferId,
             "fileName": fileName,
@@ -27,7 +28,8 @@ public enum FileSender {
             inputURL: fileURL,
             outputURL: encryptedURL,
             secret: secret,
-            metadata: metadata
+            metadata: metadata,
+            transferId: transferUUID
         )
         defer { try? FileManager.default.removeItem(at: encryptedURL) }
 
@@ -41,7 +43,7 @@ public enum FileSender {
             Security.encryptionScheme,
             String(encryptedSize)
         ].joined(separator: "\n")
-        guard let signature = Security.hmacSHA256Base64(secret: secret, message: signaturePayload) else {
+        guard let signature = Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: signaturePayload) else {
             throw SenderError.signatureFailed
         }
 

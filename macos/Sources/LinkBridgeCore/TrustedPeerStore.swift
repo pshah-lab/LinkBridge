@@ -22,6 +22,13 @@ public struct TrustedPeer: Codable {
 }
 
 public final class TrustedPeerStore {
+    /// Posted after a device is paired or unpaired, on the thread that changed the store.
+    public static let didChange = Notification.Name("LinkBridgeTrustedPeersDidChange")
+
+    public static func notifyChanged() {
+        NotificationCenter.default.post(name: didChange, object: nil)
+    }
+
     private let fileURL: URL
     private let credentials = CredentialStore()
 
@@ -49,6 +56,7 @@ public final class TrustedPeerStore {
             let data = try JSONEncoder().encode(peers.map(PersistedTrustedPeer.init))
             try data.write(to: fileURL, options: [.atomic])
             print("Paired peer: \(peer.deviceName) (\(peer.deviceId.uuidString))")
+            Self.notifyChanged()
         } catch {
             print("Warning: could not persist trusted peer: \(error.localizedDescription)")
         }
@@ -82,6 +90,7 @@ public final class TrustedPeerStore {
             let data = try JSONEncoder().encode(peers.map(PersistedTrustedPeer.init))
             try data.write(to: fileURL, options: [.atomic])
             credentials.delete(account: "peer.\(deviceId.uuidString)")
+            Self.notifyChanged()
         } catch {
             print("Warning: could not remove trusted peer: \(error.localizedDescription)")
         }

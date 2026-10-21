@@ -63,6 +63,72 @@ section("Pairing code matches the independently computed vector") {
     check(PairingCode.randomNonce().count == 32, "nonce length")
 }
 
+section("Pairing v3 code and secret match the independently computed vectors") {
+    // Python hashlib/hmac; the same vectors are in Android's PairingCodeTest.
+    let initiatorKey = Data([4] + Array(1...64))
+    let responderKey = Data([4] + Array(101...164))
+    let initiatorNonce = Data(repeating: 0xAA, count: 32)
+    let responderNonce = Data(repeating: 0x55, count: 32)
+    let initiatorId = UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!
+    let responderId = UUID(uuidString: "FFEEDDCC-BBAA-9988-7766-554433221100")!
+    check(initiatorId.bytes.map { String(format: "%02x", $0) }.joined() == "00112233445566778899aabbccddeeff", "UUID byte order")
+    let code = PairingCode.code(initiatorKey: initiatorKey, responderKey: responderKey, initiatorNonce: initiatorNonce,
+                                responderNonce: responderNonce, initiatorId: initiatorId, responderId: responderId)
+    check(code == "169226", "v3 code vector, got \(code)")
+    let secret = PairingCode.secret(sharedSecret: Data((1...32).map { UInt8($0) }), initiatorNonce: initiatorNonce,
+                                    responderNonce: responderNonce, initiatorId: initiatorId, responderId: responderId)
+    check(secret == "OZz4QmGDcBBB5/OUZlU/RFzGim/W7N18MKq9UM1A5Ow=", "v3 secret vector, got \(secret)")
+}
+
+section("Discovery tags: only a paired device can recognize the advertiser") {
+    let secret = Data((1...32).map { UInt8($0) }).base64EncodedString()
+    // Python hashlib/hmac; the same vector is in Android's DiscoveryTagsTest.
+    check(DiscoveryTags.tag(secret: secret, rid: "000102030405060708090a0b0c0d0e0f") == "e715ba5b9a4483e8", "tag vector")
+    let rid = DiscoveryTags.randomRid()
+    check(rid.count == 32 && rid != DiscoveryTags.randomRid(), "rid is random 16 bytes")
+    let mine = TrustedPeer(deviceId: UUID(), deviceName: "Mine", platform: "android", protocolVersion: 3, features: [],
+                           pairedAt: Date(), authToken: secret)
+    let stranger = TrustedPeer(deviceId: UUID(), deviceName: "Other", platform: "android", protocolVersion: 3, features: [],
+                               pairedAt: Date(), authToken: Security.generateToken())
+    let tags = DiscoveryTags.tags(secrets: [Security.generateToken(), secret], rid: rid)
+    check(DiscoveryTags.match(rid: rid, tags: tags, peers: [stranger, mine])?.deviceId == mine.deviceId, "paired device matched")
+    check(DiscoveryTags.match(rid: rid, tags: tags, peers: [stranger]) == nil, "unpaired device not matched")
+    check(DiscoveryTags.match(rid: DiscoveryTags.randomRid(), tags: tags, peers: [mine]) == nil, "tags don't carry over to another rid")
+    let many = DiscoveryTags.tags(secrets: (0..<30).map { _ in Security.generateToken() }, rid: rid)
+    check(many.split(separator: ",").count == 14 && ("tags=" + many).utf8.count <= 255, "fits one TXT value")
+}
+
+section("Discovery: a device seen before pairing is recognized once paired") {
+    let secret = Security.generateToken()
+    let rid = DiscoveryTags.randomRid()
+    let phone = TrustedPeer(deviceId: UUID(), deviceName: "Phone", platform: "android", protocolVersion: 3, features: [],
+                            pairedAt: Date(), authToken: secret)
+    var trusted: [TrustedPeer] = []
+    var published: [ResolvedPeer] = []
+    let browser = PeerBrowser(localDeviceId: UUID(), localRid: nil, trustedPeers: { trusted })
+    browser.onChange = { published = $0 }
+    let txt: [String: Data] = ["rid": Data(rid.utf8), "tags": Data(DiscoveryTags.tags(secrets: [secret], rid: rid).utf8),
+                               "deviceName": Data("Phone".utf8), "platform": Data("android".utf8), "tlsPort": Data("49162".utf8)]
+    browser.ingest(name: "Phone", host: "10.0.0.9", port: 49152, txt: txt)
+    check(published.first?.deviceId == nil, "unknown before pairing")
+    trusted = [phone]
+    TrustedPeerStore.notifyChanged()
+    check(published.first?.deviceId == nil, "the browser itself doesn't listen; the app calls refresh()")
+    browser.refresh()
+    check(published.first?.deviceId == phone.deviceId, "matched after refresh, got \(String(describing: published.first?.deviceId))")
+}
+
+section("Trusted peer changes are announced") {
+    var heard = 0
+    let token = NotificationCenter.default.addObserver(forName: TrustedPeerStore.didChange, object: nil, queue: nil) { _ in heard += 1 }
+    defer { NotificationCenter.default.removeObserver(token) }
+    let id = UUID()
+    TrustedPeerStore().save(TrustedPeer(deviceId: id, deviceName: "N", platform: "android", protocolVersion: 3,
+                                        features: [], pairedAt: Date(), authToken: Security.generateToken()))
+    TrustedPeerStore().remove(deviceId: id)
+    check(heard == 2, "save and remove each post didChange, heard \(heard)")
+}
+
 section("Public key parsing accepts X9.63 and legacy raw, rejects others") {
     let key = P256.KeyAgreement.PrivateKey().publicKey
     check((try? PairingKeyStore.parsePublicKey(key.x963Representation.base64EncodedString())) != nil, "65-byte X9.63")
@@ -79,10 +145,11 @@ func roundTrip(_ plaintext: Data, secret: String, metadata: Data?) throws -> [Da
     let output = dir.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: input); try? FileManager.default.removeItem(at: output) }
     try plaintext.write(to: input)
-    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret, metadata: metadata)
+    let transferId = UUID()
+    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret, metadata: metadata, transferId: transferId)
     let ciphertext = try Data(contentsOf: output)
     var records: [Data] = []
-    let decryptor = try ChunkedDecryptor(secret: secret)
+    let decryptor = try ChunkedDecryptor(secret: secret, transferId: transferId)
     // Feed in odd-sized pieces to exercise record reassembly.
     var offset = 0
     while offset < ciphertext.count {
@@ -102,7 +169,7 @@ section("Chunked AES-GCM round-trips across record boundaries") {
     check(records.count == 4, "metadata + 3 data records, got \(records.count)")
     check(records.first == Data("{\"m\":1}".utf8), "metadata first")
     check(Data(records.dropFirst().joined()) == plaintext, "plaintext restored")
-    check(try roundTrip(Data(), secret: secret, metadata: nil).isEmpty, "empty file")
+    check(try roundTrip(Data(), secret: secret, metadata: nil) == [Data()], "empty file is one empty last record")
 }
 
 section("Decryption rejects tampering, truncation and the wrong key") {
@@ -112,21 +179,207 @@ section("Decryption rejects tampering, truncation and the wrong key") {
     let output = dir.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: input); try? FileManager.default.removeItem(at: output) }
     try Data(repeating: 7, count: 5000).write(to: input)
-    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret)
+    let id = UUID()
+    _ = try Security.encryptChunkedFile(inputURL: input, outputURL: output, secret: secret, transferId: id)
     let good = try Data(contentsOf: output)
 
     var flipped = good
     flipped[flipped.count - 1] ^= 0x01
-    check((try? ChunkedDecryptor(secret: secret).consume(flipped) { _ in }) == nil, "bit flip rejected")
+    check((try? ChunkedDecryptor(secret: secret, transferId: id).consume(flipped) { _ in }) == nil, "bit flip rejected")
 
-    let truncated = try ChunkedDecryptor(secret: secret)
+    let truncated = try ChunkedDecryptor(secret: secret, transferId: id)
     try truncated.consume(good.prefix(good.count - 10)) { _ in }
     check((try? truncated.finalize()) == nil, "truncation rejected")
 
-    check((try? ChunkedDecryptor(secret: Security.generateToken()).consume(good) { _ in }) == nil, "wrong key rejected")
+    check((try? ChunkedDecryptor(secret: Security.generateToken(), transferId: id).consume(good) { _ in }) == nil, "wrong key rejected")
+    check((try? ChunkedDecryptor(secret: secret, transferId: UUID()).consume(good) { _ in }) == nil, "record from another transfer rejected")
+}
+
+section("Chunk v2: keys, record vector, order, drops and the last-record marker") {
+    let secret = Data((1...32).map { UInt8($0) }).base64EncodedString()
+    let keys = Security.keys(secret: secret, scheme: Security.encryptionScheme)!
+    let hex: (SymmetricKey) -> String = { $0.withUnsafeBytes { Data($0) }.map { String(format: "%02x", $0) }.joined() }
+    // HKDF vectors from Python hashlib/hmac; the same are in Android's SecurityTest.
+    check(hex(keys.encryption) == "6c287fccda61344df05fcd9bd3fabecb95ec350bfae04148f8ed849ef48ac1a7", "enc key vector")
+    check(hex(keys.mac) == "7e38b8fd173a295c5acf146530b517087bf70f64f50b04dc9c8e8534da4d4c3d", "mac key vector")
+    // Fixed-nonce record, checked byte for byte by Android's SecurityTest.
+    let id = UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!
+    let vector = try Security.record(Data("hello".utf8), key: keys.encryption, nonce: AES.GCM.Nonce(data: Data(repeating: 9, count: 12)),
+                                     transferId: id, index: 1, last: true)
+    check(vector.map { String(format: "%02x", $0) }.joined()
+          == "0909090909090909090909098000001574bb34452aad018c207bab7ab1c62197bce9d0cad6", "record vector")
+
+    func records(_ items: [(Data, Bool)], transfer: UUID = id) throws -> [Data] {
+        try items.enumerated().map { index, item in
+            try Security.record(item.0, key: keys.encryption, nonce: AES.GCM.Nonce(), transferId: transfer, index: UInt64(index), last: item.1)
+        }
+    }
+    func decrypts(_ parts: [Data]) -> Bool {
+        guard let decryptor = try? ChunkedDecryptor(secret: secret, transferId: id) else { return false }
+        do {
+            try decryptor.consume(parts.reduce(Data(), +)) { _ in }
+            try decryptor.finalize()
+            return true
+        } catch { return false }
+    }
+    let r = try records([(Data("meta".utf8), false), (Data("a".utf8), false), (Data("b".utf8), true)])
+    check(decrypts(r), "in order with a last record: accepted")
+    check(!decrypts([r[0], r[2], r[1]]), "reordered: rejected")
+    check(!decrypts([r[0], r[2]]), "a record dropped: rejected")
+    check(!decrypts([r[0], r[1]]), "cut off before the last record: rejected")
+    check(!decrypts(r + [r[2]]), "anything after the last record: rejected")
+    let other = try records([(Data("x".utf8), false), (Data("y".utf8), false)], transfer: UUID())
+    check(!decrypts([r[0], other[1], r[2]]), "spliced from another transfer: rejected")
+
+    // v1 records from older senders still decrypt.
+    let raw = SymmetricKey(data: Data(base64Encoded: secret)!)
+    let sealed = try AES.GCM.seal(Data("old".utf8), using: raw)
+    var v1 = sealed.nonce.withUnsafeBytes { Data($0) }
+    var length = UInt32(sealed.ciphertext.count + 16).bigEndian
+    v1.append(Data(bytes: &length, count: 4))
+    v1.append(sealed.ciphertext + sealed.tag)
+    let legacy = try ChunkedDecryptor(secret: secret, scheme: Security.legacyEncryptionScheme, transferId: id)
+    var got: [Data] = []
+    try legacy.consume(v1) { got.append($0) }
+    try legacy.finalize()
+    check(got == [Data("old".utf8)], "v1 record accepted")
+    check(Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: "m")
+          != Security.uploadSignature(secret: secret, scheme: Security.legacyEncryptionScheme, message: "m"), "v2 signs with its own key")
 }
 
 // MARK: - Presentation (PresentationChecks.swift)
+
+section("A record shorter than its tag is refused, not a crash") {
+    for length in [1, 15] {
+        let decryptor = try ChunkedDecryptor(secret: Security.generateToken(), transferId: UUID())
+        var record = Data(repeating: 0, count: 12)
+        record.append(contentsOf: [0, 0, 0, UInt8(length)])
+        record.append(Data(repeating: 7, count: length))
+        var threw = false
+        do { try decryptor.consume(record) { _ in } } catch { threw = true }
+        check(threw, "\(length)-byte record rejected")
+    }
+}
+
+section("File names can't hide their extension, be hidden, or run long") {
+    // Same cases as Android's FileNamesTest.
+    let cases: [(String, String)] = [
+        ("report\u{202E}fdp.command", "reportfdp.command"),
+        ("a\u{2066}b\u{2069}c\u{200B}.txt", "abc.txt"),
+        ("nul\u{0}and\ttab\n.txt", "nulandtab.txt"),
+        (".hidden", "hidden"),
+        ("...env", "env"),
+        ("../../etc/passwd", "-..-etc-passwd"),
+        ("a:b\\c", "a-b-c"),
+        ("  .  ", "received-file"),
+        ("\u{202E}", "received-file"),
+        ("photo.jpg", "photo.jpg"),
+        ("café ☕️.png", "café ☕️.png"),
+    ]
+    for (input, expected) in cases {
+        let got = ControlServer.sanitizeFileName(input)
+        check(got == expected, "\(input.debugDescription) -> \(expected.debugDescription), got \(got.debugDescription)")
+    }
+    let long = ControlServer.sanitizeFileName(String(repeating: "é", count: 300) + ".pdf")
+    check(long.utf8.count <= 200 && long.hasSuffix(".pdf"), "long name capped at 200 bytes keeping .pdf, got \(long.utf8.count)")
+}
+
+section("Device names are one short line with no hidden characters") {
+    let cases: [(String, String)] = [
+        ("Pixel 8\nwants to send you \"Q3 report.pdf\" (2 MB)\n", "Pixel 8 wants to send you \"Q3 report.pdf"),
+        ("Pixel\u{202E}8", "Pixel 8"),
+        ("  Pixel\t\t8  ", "Pixel 8"),
+        ("A\u{200B}B", "A B"),
+        ("\n\n\u{202E}", DeviceNames.fallback),
+        ("Priya’s Mac 🍎", "Priya’s Mac 🍎"),
+    ]
+    for (input, expected) in cases {
+        check(DeviceNames.sanitize(input) == expected, "\(input.debugDescription) -> \(DeviceNames.sanitize(input).debugDescription)")
+    }
+    check(DeviceNames.sanitize(String(repeating: "x", count: 500)).count == DeviceNames.maxLength, "capped at \(DeviceNames.maxLength)")
+    check(DeviceNames.withoutOwner("Priya’s MacBook Pro") == "MacBook Pro", "curly possessive dropped")
+    check(DeviceNames.withoutOwner("Sam's Mac mini") == "Mac mini", "straight possessive dropped")
+    check(DeviceNames.withoutOwner("James’ iMac") == "iMac", "plural-style possessive dropped")
+    check(DeviceNames.withoutOwner("Studio Mac") == "Studio Mac", "names without an owner kept")
+}
+
+// MARK: - Credential storage
+
+final class MemorySecrets: SecretBackend {
+    var items: [String: String] = [:]
+    var failWrites = false
+    var unavailable = false
+    func lookup(account: String) -> SecretLookup {
+        if unavailable { return .unavailable }
+        return items[account].map(SecretLookup.found) ?? .notFound
+    }
+    func write(_ value: String, account: String) -> Bool {
+        guard !failWrites else { return false }
+        items[account] = value
+        return true
+    }
+    func delete(account: String) { items[account] = nil }
+}
+
+section("Credentials: ad-hoc builds use the file, signed builds migrate it to the Keychain") {
+    // This binary is ad-hoc signed, so it must not touch the Keychain (that prompts for a password).
+    check(!CredentialStore.hasTeamIdentifier(), "checks binary has no Team ID")
+    check(CredentialStore.defaultBackend is FileSecretBackend, "ad-hoc build uses the file store")
+
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("creds-\(UUID().uuidString)/credentials.json")
+    let file = FileSecretBackend(fileURL: url)
+    file.write("private-key", account: "identity.pairingPrivateKey")
+    file.write("peer-secret", account: "peer.ABC")
+    let perms = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? -1
+    check(perms == 0o600, "file is 0600, got \(String(perms, radix: 8))")
+
+    let failing = MemorySecrets()
+    failing.failWrites = true
+    check(!CredentialStore.migrate(from: file, to: failing), "failed migration reports failure")
+    check(FileManager.default.fileExists(atPath: url.path), "failed migration keeps the file")
+
+    let keychain = MemorySecrets()
+    check(CredentialStore.migrate(from: file, to: keychain), "migration succeeds")
+    check(keychain.items == ["identity.pairingPrivateKey": "private-key", "peer.ABC": "peer-secret"], "every item moved")
+    check(!FileManager.default.fileExists(atPath: url.path), "plaintext file deleted after migration")
+    check(CredentialStore.migrate(from: file, to: keychain), "nothing to migrate is a success")
+    check(CredentialStore(backend: keychain).read(account: "peer.ABC") == "peer-secret", "store reads through its backend")
+}
+
+section("Credentials: an unreadable store is never overwritten or re-keyed") {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("creds-\(UUID().uuidString)/credentials.json")
+    let file = FileSecretBackend(fileURL: url)
+    check(file.lookup(account: "x") == .notFound, "no file: not found")
+    file.write("one", account: "peer.A")
+
+    // A file restored with loose permissions is rewritten as 0600, never written in place.
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+    file.write("two", account: "peer.B")
+    let perms = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? -1
+    check(perms == 0o600, "rewritten file is 0600, got \(String(perms, radix: 8))")
+    check(file.read(account: "peer.A") == "one" && file.read(account: "peer.B") == "two", "both secrets kept")
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+    check(leftovers == ["credentials.json"], "no temporary files left, got \(leftovers)")
+
+    try Data("{not json".utf8).write(to: url)
+    check(file.lookup(account: "peer.A") == .unavailable, "corrupt file: unavailable, not missing")
+    check(!file.write("three", account: "identity.pairingPrivateKey"), "refuses to write over a corrupt file")
+    check((try? String(contentsOf: url, encoding: .utf8)) == "{not json", "corrupt file left untouched")
+
+    let locked = MemorySecrets()
+    locked.unavailable = true
+    let lockedKeys = PairingKeyStore(credentials: CredentialStore(backend: locked))
+    let peer = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
+    check((try? lockedKeys.deriveSecret(peerPublicKeyBase64: peer)) == nil, "unreadable store: no secret derived")
+    check(lockedKeys.publicKeyBase64.isEmpty, "unreadable store: no public key")
+    check(locked.items.isEmpty, "unreadable store: no new key written")
+
+    let empty = MemorySecrets()
+    let keys = PairingKeyStore(credentials: CredentialStore(backend: empty))
+    let first = keys.publicKeyBase64
+    check(!first.isEmpty && empty.items.count == 1, "missing key: one is created")
+    check(keys.publicKeyBase64 == first, "and reused afterwards")
+}
 
 runPresentationChecks()
 runApprovalChecks()
@@ -150,8 +403,8 @@ func startServer(preferredPort: UInt16, approve: @escaping () -> Bool, lastReque
     return (server, bound ?? 0)
 }
 
-func post(_ port: UInt16, _ path: String, _ json: [String: Any]) -> (Int, [String: Any]) {
-    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+func post(_ port: UInt16, _ path: String, _ json: [String: Any], host: String = "127.0.0.1") -> (Int, [String: Any]) {
+    var request = URLRequest(url: URL(string: "http://\(host):\(port)\(path)")!)
     request.httpMethod = "POST"
     request.httpBody = try! JSONSerialization.data(withJSONObject: json)
     request.timeoutInterval = 10
@@ -209,6 +462,83 @@ func rawRequest(port: UInt16, _ text: String) -> String {
     return reply
 }
 
+/// Sends `text`, then half-closes the sending side. Returns the reply, or "" on timeout.
+func halfClosedRequest(port: UInt16, _ text: String, timeout: TimeInterval = 3) -> String {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+    let done = DispatchSemaphore(value: 0)
+    var reply = ""
+    connection.start(queue: .global())
+    connection.send(content: Data(text.utf8), contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in })
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+        reply = String(decoding: data ?? Data(), as: UTF8.self)
+        done.signal()
+    }
+    _ = done.wait(timeout: .now() + timeout)
+    connection.cancel()
+    return reply
+}
+
+/// Opens a connection, sends `text` (if any) and waits for the server to close it.
+/// Returns true if the server closed it within `timeout`, false if it was still open.
+func serverCloses(port: UInt16, parameters: NWParameters = .tcp, _ text: String = "", timeout: TimeInterval = 3) -> Bool {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: parameters)
+    let done = DispatchSemaphore(value: 0)
+    connection.stateUpdateHandler = { state in
+        if case .ready = state {
+            if !text.isEmpty { connection.send(content: Data(text.utf8), completion: .contentProcessed { _ in }) }
+            func read() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, isComplete, error in
+                    if isComplete || error != nil { done.signal() } else if data != nil { read() }
+                }
+            }
+            read()
+        } else if case .failed = state {
+            done.signal()
+        }
+    }
+    connection.start(queue: .global())
+    let closed = done.wait(timeout: .now() + timeout) == .success
+    connection.cancel()
+    return closed
+}
+
+/// Sends `text` over a connection with `parameters` and returns the first reply, or "".
+func request(port: UInt16, parameters: NWParameters, _ text: String) -> String {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: parameters)
+    let done = DispatchSemaphore(value: 0)
+    var reply = ""
+    connection.stateUpdateHandler = { state in
+        switch state {
+        case .ready:
+            connection.send(content: Data(text.utf8), completion: .contentProcessed { _ in })
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+                reply = String(decoding: data ?? Data(), as: UTF8.self)
+                done.signal()
+            }
+        case .failed:
+            done.signal()
+        default:
+            break
+        }
+    }
+    connection.start(queue: .global())
+    _ = done.wait(timeout: .now() + 5)
+    connection.cancel()
+    return reply
+}
+
+/// A signed upload head for `deviceId`, with no body.
+func signedUploadHead(deviceId: UUID, secret: String, contentLength: Int = 1000) -> String {
+    let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
+    let transferId = UUID().uuidString
+    let signature = Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: ["POST", "/transfer/upload", deviceId.uuidString, timestamp,
+                                                                       transferId, Security.encryptionScheme, String(contentLength)].joined(separator: "\n"))!
+    return ["POST /transfer/upload HTTP/1.1", "Content-Length: \(contentLength)",
+            "X-LinkBridge-Device-Id: \(deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
+            "X-LinkBridge-Transfer-Id: \(transferId)", "X-LinkBridge-Encryption: \(Security.encryptionScheme)",
+            "X-LinkBridge-Signature: \(signature)", "", ""].joined(separator: "\r\n")
+}
+
 /// Starts a server on the completion-based initializer. `pair` / `transfer` decide how each request is answered.
 func startDecisionServer(
     pair: @escaping (IncomingPairRequest, @escaping (Bool) -> Void) -> Void,
@@ -227,20 +557,32 @@ func startDecisionServer(
 }
 
 /// Plays the phone's side of the three-step pairing protocol.
-func pairAsPhone(port: UInt16, id: UUID = UUID()) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
+/// `pairingVersion` nil plays an older phone (v1); 3 plays a current one.
+func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = nil) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
     let phone = P256.KeyAgreement.PrivateKey()
     let phoneKey = phone.publicKey.x963Representation
-    let (_, r1) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Check Phone", "platform": "android",
-                                               "protocolVersion": 1, "features": [], "publicKey": phoneKey.base64EncodedString()])
+    var requestBody: [String: Any] = ["deviceId": id.uuidString, "deviceName": "Check Phone", "platform": "android",
+                                      "protocolVersion": 1, "features": [], "publicKey": phoneKey.base64EncodedString()]
+    if let pairingVersion { requestBody["pairingVersion"] = pairingVersion }
+    let (_, r1) = post(port, "/pair/request", requestBody)
+    let v3 = (r1["pairingVersion"] as? Int ?? 1) >= 3
+    check(v3 == ((pairingVersion ?? 1) >= 3), "Mac agrees on pairing version \(pairingVersion ?? 1)")
     let macKey = Data(base64Encoded: r1["publicKey"] as? String ?? "") ?? Data()
     let commitment = Data(base64Encoded: r1["commitment"] as? String ?? "") ?? Data()
     let shared = try! phone.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: macKey))
-    let phoneSecret = Data(SHA256.hash(data: shared.withUnsafeBytes { Data($0) })).base64EncodedString()
+    let rawShared = shared.withUnsafeBytes { Data($0) }
     let nonce = PairingCode.randomNonce()
     let (_, r2) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce.base64EncodedString()])
     let macNonce = Data(base64Encoded: r2["nonce"] as? String ?? "") ?? Data()
     check(PairingCode.commitment(publicKey: macKey, nonce: macNonce) == commitment, "Mac nonce matches its commitment")
-    let code = PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce)
+    let macId = IdentityStore().loadOrCreate().deviceId
+    let code = v3
+        ? PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce,
+                           initiatorId: id, responderId: macId)
+        : PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce)
+    let phoneSecret = v3
+        ? PairingCode.secret(sharedSecret: rawShared, initiatorNonce: nonce, responderNonce: macNonce, initiatorId: id, responderId: macId)
+        : Data(SHA256.hash(data: rawShared)).base64EncodedString()
     let (retry, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce.base64EncodedString()])
     let (status, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString])
     return (status, code, phoneSecret, id, retry)
@@ -298,6 +640,15 @@ DispatchQueue.global().async {
         let again = pairAsPhone(port: port, id: result.deviceId)
         check(again.finalizeStatus == 200, "re-pairing the same device succeeds when approved")
         check(lastRequest?.replacesExisting == true, "re-pairing is flagged as replacing the existing device")
+
+        // Pairing v3: same code on both sides, and re-pairing gives a new secret.
+        let v3 = pairAsPhone(port: port, pairingVersion: 3)
+        check(v3.finalizeStatus == 200 && v3.phoneCode == macCode, "v3 pairing: same code on both sides")
+        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3.phoneSecret, "v3 pairing: Mac stored the same secret")
+        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.protocolVersion == 3, "v3 peer recorded as protocol 3")
+        let v3again = pairAsPhone(port: port, id: v3.deviceId, pairingVersion: 3)
+        check(v3again.finalizeStatus == 200 && v3again.phoneSecret != v3.phoneSecret, "v3 re-pairing rotates the secret")
+        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3again.phoneSecret, "Mac keeps only the new secret")
     }
 
     section("Pairing: decline path") {
@@ -307,6 +658,86 @@ DispatchQueue.global().async {
         check(TrustedPeerStore().find(deviceId: result.deviceId) == nil, "declined phone not trusted")
         let (status, _) = post(port, "/pair/confirm", ["deviceId": UUID().uuidString, "nonce": PairingCode.randomNonce().base64EncodedString()])
         check(status == 409, "confirm without request refused")
+    }
+
+    section("A half-closed short body is refused instead of spinning") {
+        let reply = halfClosedRequest(port: port, "POST /pair/request HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n0123456789")
+        check(reply.hasPrefix("HTTP/1.1 400"), "truncated body gets 400, got \(reply.prefix(40))")
+        // If the main queue were spinning, this would never be answered.
+        let main = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { main.signal() }
+        check(main.wait(timeout: .now() + 2) == .success, "main queue still responsive")
+        check(rawRequest(port: port, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n").hasPrefix("HTTP/1.1 200"), "server still answers")
+    }
+
+    section("Another LAN host can't cancel or hijack a pairing in progress") {
+        let id = UUID()
+        let phone = P256.KeyAgreement.PrivateKey()
+        let (status, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Phone", "platform": "android",
+                                                       "protocolVersion": 2, "features": [],
+                                                       "publicKey": phone.publicKey.x963Representation.base64EncodedString()])
+        check(status == 200, "request accepted")
+        let nonce = PairingCode.randomNonce().base64EncodedString()
+        let (other, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce], host: "[::1]")
+        check(other == 409, "confirm from another address refused, got \(other)")
+        let (own, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce])
+        check(own == 200, "phone's own confirm still works, got \(own)")
+        let (replace, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Evil", "platform": "android",
+                                                        "protocolVersion": 2, "features": [],
+                                                        "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()],
+                                host: "[::1]")
+        check(replace == 429, "confirmed pairing can't be replaced, got \(replace)")
+        let (finalizeOther, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString], host: "[::1]")
+        check(finalizeOther == 409, "finalize from another address refused, got \(finalizeOther)")
+        let (finalize, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString])
+        check(finalize == 200 || finalize == 403, "phone's own finalize gets the decision, got \(finalize)")
+    }
+
+    section("Pairing spam can't grow pending pairings without bound") {
+        func request(_ host: String = "127.0.0.1", name: String = "Spam", features: [String] = []) -> Int {
+            var request = URLRequest(url: URL(string: "http://\(host):\(port)/pair/request")!)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 10
+            request.httpBody = try! JSONSerialization.data(withJSONObject: [
+                "deviceId": UUID().uuidString, "deviceName": name, "platform": "android", "protocolVersion": 2,
+                "features": features, "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()])
+            let done = DispatchSemaphore(value: 0)
+            var status = 0
+            URLSession.shared.dataTask(with: request) { _, response, _ in
+                status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                done.signal()
+            }.resume()
+            done.wait()
+            return status
+        }
+        let longName = String(repeating: "x", count: 30_000)
+        let statuses = (0..<20).map { _ in request(name: longName) }
+        check(statuses.allSatisfy { $0 == 200 }, "requests from one address are answered, got \(Set(statuses))")
+        check(DispatchQueue.main.sync { ControlServer.pendingPairingCount } == 1, "one address holds one unconfirmed pairing")
+        check(request(features: Array(repeating: "f", count: 17)) == 400, "too many features refused")
+        check(request(features: [String(repeating: "f", count: 33)]) == 400, "over-long feature refused")
+
+        // A second address can't add one once the total cap is reached.
+        let limit = ControlServer.maxPendingPairings
+        ControlServer.maxPendingPairings = 1
+        defer { ControlServer.maxPendingPairings = limit }
+        check(request("[::1]") == 429, "cap reached: a new address gets 429")
+        check(request() == 200, "the same address can still replace its own request")
+    }
+
+    section("Renaming this Mac updates what pairing shows") {
+        let before = IdentityStore().loadOrCreate()
+        let renamed = IdentityStore().rename(before, to: "Desk\nMac")
+        DispatchQueue.main.sync { server.updateIdentity(renamed) }
+        var name: String?
+        for _ in 0..<20 where name != "Desk Mac" {
+            Thread.sleep(forTimeInterval: 0.15)
+            let reply = rawRequest(port: server.port, "GET /device HTTP/1.1\r\nHost: x\r\n\r\n")
+            let body = reply.components(separatedBy: "\r\n\r\n").last.flatMap { $0.data(using: .utf8) }
+            name = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["deviceName"] as? String
+        }
+        check(name == "Desk Mac", "renamed and sanitized name served, got \(name ?? "nil")")
+        check(IdentityStore().loadOrCreate().deviceName == "Desk Mac", "new name persisted")
     }
 
     section("Busy preferred port falls back to another port") {
@@ -353,11 +784,68 @@ DispatchQueue.global().async {
         } catch {
             check("\(error)".contains("Secure connection failed"), "upload with the wrong key fails the TLS handshake")
         }
+        // A paired device's TLS key can't carry an upload claiming to be another paired device.
+        if let other = TrustedPeerStore().load().first(where: { $0.deviceId != identity.deviceId && $0.authToken != nil }) {
+            let otherTLS = SecureTransport.clientParameters(identity: SecureTransport.identity(for: other.deviceId.uuidString),
+                                                            psk: SecureTransport.psk(fromSecret: other.authToken!)!)
+            let reply = request(port: server.securePort, parameters: otherTLS, signedUploadHead(deviceId: identity.deviceId, secret: secret))
+            check(reply.contains("identity_mismatch"), "upload claiming another device's ID refused, got \(reply.prefix(60))")
+        } else {
+            check(false, "needs a second paired device")
+        }
         try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(server.securePort)", secret: secret)
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)
         check((try? Data(contentsOf: downloads)) == payload, "saved file matches")
         check(downloads.path.hasPrefix(ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? "/nonexistent"), "wrote inside the throwaway home")
+        let quarantine = (try? downloads.resourceValues(forKeys: [.quarantinePropertiesKey]))?.quarantineProperties
+        check(quarantine?[kLSQuarantineAgentNameKey as String] as? String == "LinkBridge", "received file is quarantined")
+    }
+
+    section("Slow or silent connections are closed and capped") {
+        let requestTimeout = ControlServer.requestTimeout
+        let idleTimeout = ControlServer.uploadIdleTimeout
+        let perSource = ControlServer.maxConnectionsPerSource
+        ControlServer.requestTimeout = 0.5
+        ControlServer.uploadIdleTimeout = 0.5
+        defer {
+            ControlServer.requestTimeout = requestTimeout
+            ControlServer.uploadIdleTimeout = idleTimeout
+            ControlServer.maxConnectionsPerSource = perSource
+        }
+
+        check(serverCloses(port: port), "silent plain connection is closed")
+        check(serverCloses(port: port, "GET /dev"), "half a header is closed")
+        check(serverCloses(port: port, "POST /pair/request HTTP/1.1\r\nContent-Length: 100\r\n\r\n{"), "unfinished body is closed")
+
+        // A signed upload head that never sends its body is dropped by the idle timer.
+        let identity = IdentityStore().loadOrCreate()
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        let psk = SecureTransport.psk(fromSecret: secret)!
+        let tls = SecureTransport.clientParameters(identity: SecureTransport.identity(for: identity.deviceId.uuidString), psk: psk)
+        let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
+        let transferId = UUID().uuidString
+        let signature = Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: ["POST", "/transfer/upload", identity.deviceId.uuidString,
+                                                                           timestamp, transferId, Security.encryptionScheme, "1000"].joined(separator: "\n"))!
+        let head = ["POST /transfer/upload HTTP/1.1", "Content-Length: 1000",
+                    "X-LinkBridge-Device-Id: \(identity.deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
+                    "X-LinkBridge-Transfer-Id: \(transferId)", "X-LinkBridge-Encryption: \(Security.encryptionScheme)",
+                    "X-LinkBridge-Signature: \(signature)", "", ""].joined(separator: "\r\n")
+        check(serverCloses(port: server.securePort, parameters: tls, head), "stalled upload is closed")
+        check(serverCloses(port: server.securePort, parameters: tls), "silent TLS connection is closed")
+
+        // Over the per-source cap, a new connection is refused at once.
+        ControlServer.requestTimeout = 3
+        ControlServer.maxConnectionsPerSource = 2
+        let held = (0..<2).map { _ in NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp) }
+        held.forEach { $0.start(queue: .global()) }
+        Thread.sleep(forTimeInterval: 0.3)
+        check(DispatchQueue.main.sync { server.openConnectionCounts.plain } == 2, "two connections held open")
+        check(serverCloses(port: port, timeout: 1), "third connection from the same address refused")
+        held.forEach { $0.cancel() }
+        Thread.sleep(forTimeInterval: 0.3)
+        check(DispatchQueue.main.sync { server.openConnectionCounts.plain } == 0, "closed connections are no longer counted")
+        check(rawRequest(port: port, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n").hasPrefix("HTTP/1.1 200"), "server still answers")
     }
 
     section("Async approvals: pairing") {
@@ -405,6 +893,10 @@ DispatchQueue.global().async {
         var requests: [IncomingTransferRequest] = []
         var savedTo: URL?
         var withdrawnIds: [UUID] = []
+        // A partial file left by a crash is removed when the server starts.
+        let received = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].appendingPathComponent("LinkBridge")
+        let leftover = received.appendingPathComponent(".linkbridge-\(UUID().uuidString).part")
+        try Data("half".utf8).write(to: leftover)
         let (asyncServer, _) = startDecisionServer(pair: { _, done in done(false) },
                                                    transfer: { request, done in requests.append(request); answer(request, done) },
                                                    received: { _, url in savedTo = url },
@@ -415,9 +907,31 @@ DispatchQueue.global().async {
         answer = { _, done in DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) { done(true) } }
         try FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)
         check(savedTo.flatMap { try? Data(contentsOf: $0) } == payload, "accepted after a delay: file saved and URL reported")
+        check(!FileManager.default.fileExists(atPath: leftover.path), "leftover partial file removed at start")
+        check(savedTo?.lastPathComponent == file.lastPathComponent, "saved under its real name, got \(savedTo?.lastPathComponent ?? "nil")")
+        let parts = ((try? FileManager.default.contentsOfDirectory(atPath: received.path)) ?? []).filter { $0.hasSuffix(".part") }
+        check(parts.isEmpty, "no partial files after a finished transfer, got \(parts)")
 
         answer = { _, done in done(false) }
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "declined transfer fails")
+
+        // A decline holds off that sender's next prompt.
+        let askedBefore = requests.count
+        answer = { _, done in done(true) }
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "upload right after a decline is refused")
+        check(requests.count == askedBefore, "user not asked again right after declining")
+        DispatchQueue.main.sync { ControlServer.resetTransferApprovalLimits() }
+
+        // Not enough free space: refused before the user is asked.
+        let capacity = ControlServer.availableCapacity
+        ControlServer.availableCapacity = { _ in ControlServer.freeSpaceMargin + 10 }
+        let asked = requests.count
+        answer = { _, done in done(true) }
+        // The server replies 507 and closes while the sender is still writing, so the sender
+        // may see that as a broken pipe; either way the send fails.
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "transfer bigger than the free space fails")
+        check(requests.count == asked, "user not asked about a file that can't fit")
+        ControlServer.availableCapacity = capacity
 
         // Senders stop waiting after 120 s, so the Mac must give up first and clear the row.
         let timeout = ControlServer.transferApprovalTimeout
@@ -428,6 +942,22 @@ DispatchQueue.global().async {
         check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "unanswered transfer fails")
         Thread.sleep(forTimeInterval: 0.2)
         check(withdrawnIds == [requests.last!.id], "timeout withdraws the waiting request")
+
+        // One prompt per sender at a time: a second upload while one waits is refused unasked.
+        ControlServer.transferApprovalTimeout = 1.5
+        answer = { _, _ in }
+        let firstDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)
+            firstDone.signal()
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+        let waiting = requests.count
+        let started = Date()
+        check((try? FileSender.send(filePath: file.path, endpoint: endpoint, secret: secret)) == nil, "second upload while one waits is refused")
+        check(Date().timeIntervalSince(started) < 1, "refused at once, not after the approval timeout")
+        check(requests.count == waiting, "no second prompt from the same sender")
+        firstDone.wait()
     }
 
     section("Unpair removes a trusted peer") {

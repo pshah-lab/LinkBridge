@@ -6,11 +6,15 @@ struct SettingsView: View {
     @Environment(MacModel.self) private var model
     @AppStorage(MacModel.notifyKey) private var notifyIncoming = true
     @State private var unpairing: TrustedPeer?
+    @State private var name = ""
 
     var body: some View {
         Form {
             Section("This Mac") {
-                LabeledContent("Name", value: model.identity.deviceName)
+                TextField("Name", text: $name, prompt: Text(model.identity.deviceName))
+                    .onSubmit { if !name.isEmpty { model.rename(to: name); name = model.identity.deviceName } }
+                    .onAppear { name = model.identity.deviceName }
+                    .help("Nearby devices on the same network see this name.")
                 LabeledContent("Device ID") {
                     HStack {
                         Text(model.identity.deviceId.uuidString)

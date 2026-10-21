@@ -228,8 +228,20 @@ class LinkBridgeService : Service() {
             Intent(this, LinkBridgeService::class.java).setAction(action).putExtra(EXTRA_REQUEST_ID, id),
             PendingIntent.FLAG_IMMUTABLE
         )
+        // What the lock screen shows: no sender, file name or size.
+        val lockScreenVersion = NotificationCompat.Builder(this, CHANNEL_REQUESTS)
+            .setSmallIcon(R.drawable.ic_stat_linkbridge)
+            .setContentTitle("Incoming file")
+            .setContentText("Unlock to see it")
+            .build()
+        // Accepting needs an unlocked phone, so someone holding it locked can't take a file in.
+        val accept = NotificationCompat.Action.Builder(0, "Accept", action(ACTION_ACCEPT))
+            .setAuthenticationRequired(true)
+            .build()
         val notification = NotificationCompat.Builder(this, CHANNEL_REQUESTS)
             .setSmallIcon(R.drawable.ic_stat_linkbridge)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(lockScreenVersion)
             .setContentTitle("Accept file from ${request.senderName}?")
             .setContentText("${request.fileName} (${formatBytes(request.bytes)})")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -237,7 +249,7 @@ class LinkBridgeService : Service() {
             .setContentIntent(openAppIntent())
             .setTimeoutAfter(APPROVAL_TIMEOUT_SECONDS * 1000)
             .setAutoCancel(true)
-            .addAction(0, "Accept", action(ACTION_ACCEPT))
+            .addAction(accept)
             .addAction(0, "Decline", action(ACTION_DECLINE))
             .build()
         NotificationManagerCompat.from(this).notify(APPROVAL_NOTIFICATION_BASE + id, notification)

@@ -2,17 +2,27 @@ import CryptoKit
 import Foundation
 
 final class PairingKeyStore {
-    private let credentials = CredentialStore()
+    private let credentials: CredentialStore
     private let account = "identity.pairingPrivateKey"
 
-    /// Uncompressed X9.63 point (0x04 || X || Y), matching what Android sends.
-    var publicKeyBase64: String { privateKey.publicKey.x963Representation.base64EncodedString() }
+    init(credentials: CredentialStore = CredentialStore()) {
+        self.credentials = credentials
+    }
 
+    /// Uncompressed X9.63 point (0x04 || X || Y), matching what Android sends. Empty if the
+    /// key store can't be read right now, so pairing fails instead of using a new key.
+    var publicKeyBase64: String { (try? privateKey())?.publicKey.x963Representation.base64EncodedString() ?? "" }
+
+    /// Pairing v1 secret: SHA-256 of the ECDH output. Kept for peers that don't speak v3.
     func deriveSecret(peerPublicKeyBase64: String) throws -> String {
+        Data(SHA256.hash(data: try sharedSecret(peerPublicKeyBase64: peerPublicKeyBase64))).base64EncodedString()
+    }
+
+    /// The raw ECDH output (the x-coordinate), the input to the v3 HKDF.
+    func sharedSecret(peerPublicKeyBase64: String) throws -> Data {
         let peer = try PairingKeyStore.parsePublicKey(peerPublicKeyBase64)
-        let shared = try privateKey.sharedSecretFromKeyAgreement(with: peer)
-        let digest = SHA256.hash(data: shared.withUnsafeBytes { Data($0) })
-        return Data(digest).base64EncodedString()
+        let shared = try privateKey().sharedSecretFromKeyAgreement(with: peer)
+        return shared.withUnsafeBytes { Data($0) }
     }
 
     /// Accepts both the 65-byte X9.63 form and the legacy 64-byte raw form.
@@ -25,14 +35,30 @@ final class PairingKeyStore {
         }
     }
 
-    private var privateKey: P256.KeyAgreement.PrivateKey {
-        if let stored = credentials.read(account: account),
-           let data = Data(base64Encoded: stored),
-           let key = try? P256.KeyAgreement.PrivateKey(rawRepresentation: data) { return key }
-        let key = P256.KeyAgreement.PrivateKey()
-        credentials.write(key.rawRepresentation.base64EncodedString(), account: account)
-        return key
+    /// Creates a key only when none is stored. A store that can't be read (locked device,
+    /// corrupt file) or a stored key that doesn't parse is an error, not a reason to replace
+    /// the key and silently break every pairing.
+    private func privateKey() throws -> P256.KeyAgreement.PrivateKey {
+        switch credentials.lookup(account: account) {
+        case let .found(stored):
+            guard let data = Data(base64Encoded: stored),
+                  let key = try? P256.KeyAgreement.PrivateKey(rawRepresentation: data) else {
+                throw PairingKeyError.keyUnavailable
+            }
+            return key
+        case .notFound:
+            let key = P256.KeyAgreement.PrivateKey()
+            guard credentials.write(key.rawRepresentation.base64EncodedString(), account: account) else {
+                throw PairingKeyError.keyUnavailable
+            }
+            return key
+        case .unavailable:
+            throw PairingKeyError.keyUnavailable
+        }
     }
 }
 
-enum PairingKeyError: Error { case invalidPublicKey }
+enum PairingKeyError: Error {
+    case invalidPublicKey
+    case keyUnavailable
+}

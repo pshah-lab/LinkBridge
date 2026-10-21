@@ -22,6 +22,17 @@ class PairingCodeTest {
         )
     }
 
+    private val initiatorId = "00112233-4455-6677-8899-aabbccddeeff"
+    private val responderId = "FFEEDDCC-BBAA-9988-7766-554433221100"
+
+    @Test
+    fun v3CodeAndSecretMatchSharedVectors() {
+        assertEquals("00112233445566778899aabbccddeeff", PairingCode.uuidBytes(initiatorId).joinToString("") { "%02x".format(it) })
+        assertEquals("169226", PairingCode.code(initiatorKey, responderKey, initiatorNonce, responderNonce, initiatorId, responderId))
+        val secret = PairingCode.secret(ByteArray(32) { (it + 1).toByte() }, initiatorNonce, responderNonce, initiatorId, responderId)
+        assertEquals("OZz4QmGDcBBB5/OUZlU/RFzGim/W7N18MKq9UM1A5Ow=", java.util.Base64.getEncoder().encodeToString(secret))
+    }
+
     @Test
     fun codeMatchesSharedVector() {
         assertEquals("894940", PairingCode.code(initiatorKey, responderKey, initiatorNonce, responderNonce))

@@ -27,9 +27,13 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         center.delegate = self
         center.setNotificationCategories([
             UNNotificationCategory(identifier: Self.fileCategory, actions: [
-                UNNotificationAction(identifier: Self.acceptAction, title: "Accept"),
+                // Accepting from a locked Mac's notification needs the user to unlock first.
+                UNNotificationAction(identifier: Self.acceptAction, title: "Accept", options: .authenticationRequired),
                 UNNotificationAction(identifier: Self.declineAction, title: "Decline", options: .destructive)
-            ], intentIdentifiers: []),
+            ], intentIdentifiers: [],
+            // Shown instead of the sender and file name when previews are hidden (the macOS
+            // default while locked).
+            hiddenPreviewsBodyPlaceholder: "Incoming file", options: []),
             UNNotificationCategory(identifier: Self.pairCategory, actions: [
                 UNNotificationAction(identifier: Self.reviewAction, title: "Review", options: .foreground)
             ], intentIdentifiers: [])
@@ -48,9 +52,9 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
     func post(_ item: PendingApproval) {
         let content = UNMutableNotificationContent()
         switch item.kind {
-        case let .pair(name, _, _, _):
+        case let .pair(name, _, _, _, _):
             content.title = "Pairing request"
-            content.body = "\(name) wants to pair. Compare the code in LinkBridge."
+            content.body = "\(name) wants to pair. Type the code from that device in LinkBridge."
             content.categoryIdentifier = Self.pairCategory
         case let .file(sender, fileName, bytes):
             content.title = "Incoming file"

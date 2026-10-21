@@ -527,7 +527,7 @@ class MainActivity : ComponentActivity() {
         connectionStatusText.background = Ui.rounded(Ui.WARNING_BG, radiusDp = 14f, strokeColor = Ui.WARNING)
 
         networkExecutor.execute {
-            val result = controlClient.beginPairing(peer, identity)
+            val result = controlClient.beginPairing(peer, identity, device.deviceId)
             runOnUiThread {
                 result
                     .onSuccess { session -> confirmPairingCode(peer, device, session) }
@@ -538,12 +538,12 @@ class MainActivity : ComponentActivity() {
 
     private fun confirmPairingCode(peer: DiscoveredPeer, device: DeviceIdentity, session: PairingSession) {
         val code = PairingCode.display(session.code)
-        connectionStatusText.text = "Pairing code: $code\nCheck that ${device.deviceName} shows the same code."
+        connectionStatusText.text = "Pairing code: $code\nType this code on ${device.deviceName}."
         AlertDialog.Builder(this)
             .setTitle("Pairing code  $code")
-            .setMessage("${device.deviceName} should now show this same code. If it matches, tap \"Codes match\" here and Accept on the Mac.\n\nIf the codes differ, cancel: someone may be intercepting the connection.")
+            .setMessage("Type this code on ${device.deviceName}, then tap \"Continue\" here and Pair on the Mac.\n\nIf the Mac won't accept the code, cancel: someone may be intercepting the connection.")
             .setCancelable(false)
-            .setPositiveButton("Codes match") { _, _ -> finishPairing(peer, device, session) }
+            .setPositiveButton("Continue") { _, _ -> finishPairing(peer, device, session) }
             .setNegativeButton("Cancel") { _, _ ->
                 pairButton.isEnabled = true
                 connectionStatusText.text = "Pairing cancelled"
@@ -569,6 +569,8 @@ class MainActivity : ComponentActivity() {
                                 authToken = session.authToken
                             )
                         )
+                        // Re-advertise so the new peer's discovery tag is published.
+                        LinkBridgeHub.rescan()
                         pairButton.visibility = View.GONE
                         pairButton.isEnabled = true
                         sendFileButton.visibility = View.VISIBLE

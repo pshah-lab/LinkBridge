@@ -12,6 +12,8 @@ struct MainWindow: View {
     @Environment(MacModel.self) private var model
     @Environment(\.controlActiveState) private var activeState
     @State private var selection: SidebarItem?
+    /// The request the sheet is showing; see `ApprovalQueue.sheetItem` for when it changes.
+    @State private var sheetApproval: PendingApproval?
 
     var body: some View {
         NavigationSplitView {
@@ -41,12 +43,15 @@ struct MainWindow: View {
                 }
             }
         }
-        .sheet(item: sheetItem) { item in
+        .sheet(item: $sheetApproval) { item in
             ApprovalSheet(item: item) { model.resolve(item.id, approved: $0) }
         }
+        .onChange(of: model.approvals.queue.oldest) { syncSheet() }
+        .onChange(of: activeState) { syncSheet() }
         .onAppear {
             takeSidebarRequest()
             if selection == nil, let id = model.selectedItem?.id { selection = .device(id) }
+            syncSheet()
         }
         .onChange(of: model.sidebarRequest) { takeSidebarRequest() }
         .onChange(of: selection) { _, new in
@@ -87,9 +92,10 @@ struct MainWindow: View {
         EmptyState(symbol: "wifi", message: "No devices yet — open LinkBridge on your phone on the same Wi-Fi.")
     }
 
-    /// The oldest waiting request, shown as a sheet only while this window is key.
-    private var sheetItem: Binding<PendingApproval?> {
-        Binding(get: { activeState == .key ? model.approvals.queue.oldest : nil }, set: { _ in })
+    private func syncSheet() {
+        let next = ApprovalQueue.sheetItem(showing: sheetApproval, oldest: model.approvals.queue.oldest,
+                                           windowIsKey: activeState == .key)
+        if next != sheetApproval { sheetApproval = next }
     }
 
     @ViewBuilder

@@ -32,10 +32,22 @@ public enum SecureTransport {
     }
 
     /// Server options accepting any of the given peers, selected by the client's identity.
+    /// The identity each client used is recorded for `negotiatedIdentity(of:)`.
     static func serverParameters(keys: [(identity: String, psk: Data)]) -> NWParameters {
         let tls = NWProtocolTLS.Options()
         let options = tls.securityProtocolOptions
         configure(options)
+        // Network.framework has no getter for the PSK a server negotiated, but this block is
+        // given the client's identity during the handshake. Answering with that identity picks
+        // its key as usual (a wrong key still fails); remembering it lets the upload handler
+        // check the device ID it claims. Runs on the main queue, like request handling.
+        sec_protocol_options_set_pre_shared_key_selection_block(options, { metadata, identity, complete in
+            if let identity {
+                let name = String(decoding: Data(identity as DispatchData), as: UTF8.self)
+                negotiatedIdentities.setObject(name as NSString, forKey: metadata as AnyObject)
+            }
+            complete(identity)
+        }, .main)
         // With no paired devices, still install one random key so the listener is valid;
         // nobody can complete a handshake with it.
         let entries = keys.isEmpty ? [(identity: UUID().uuidString, psk: SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) })] : keys
@@ -43,6 +55,16 @@ public enum SecureTransport {
             sec_protocol_options_add_pre_shared_key(options, dispatchData(entry.psk), dispatchData(Data(entry.identity.utf8)))
         }
         return NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+    }
+
+    /// Metadata object -> PSK identity, dropped with the connection. Main queue only.
+    private static let negotiatedIdentities = NSMapTable<AnyObject, NSString>(keyOptions: .weakMemory, valueOptions: .strongMemory)
+
+    /// The PSK identity the client of a server connection authenticated with, or nil.
+    /// Main queue only.
+    static func negotiatedIdentity(of connection: NWConnection) -> String? {
+        guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata else { return nil }
+        return negotiatedIdentities.object(forKey: metadata.securityProtocolMetadata as AnyObject) as String?
     }
 
     static func clientParameters(identity: String, psk: Data) -> NWParameters {

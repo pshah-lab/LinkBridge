@@ -14,7 +14,7 @@ class ControlClient {
     private val pairingKeys = PairingKeyStore()
     fun fetchDevice(peer: DiscoveredPeer): Result<DeviceIdentity> {
         return runCatching {
-            val url = URL("http://${peer.endpoint}/device")
+            val url = URL("http://${localEndpoint(peer)}/device")
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 3000
@@ -29,7 +29,8 @@ class ControlClient {
     }
 
     /** Steps 1-2: exchange keys and nonces. Returns the code to show and the derived secret. */
-    fun beginPairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<PairingSession> {
+    /** [responderId] is the Mac's device ID from [fetchDevice]; v3 puts it in the code. */
+    fun beginPairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity, responderId: String): Result<PairingSession> {
         return runCatching {
             val localKeyBase64 = localIdentity.publicKey ?: pairingKeys.publicKeyBase64()
             val request = postJson(
@@ -41,12 +42,14 @@ class ControlClient {
                     .put("protocolVersion", localIdentity.protocolVersion)
                     .put("features", JSONArray(localIdentity.features))
                     .put("publicKey", localKeyBase64)
+                    .put("pairingVersion", PairingCode.PAIRING_VERSION)
             )
+            val v3 = request.optInt("pairingVersion", 1) >= 3
             val macKeyBase64 = request.optString("publicKey").ifBlank { error("Mac did not provide a public key") }
             val commitment = Base64.decode(request.optString("commitment").ifBlank { error("Mac is running an older LinkBridge; update it to pair") }, Base64.NO_WRAP)
             val macKey = pairingKeys.normalizePublicKey(macKeyBase64)
             val localKey = pairingKeys.normalizePublicKey(localKeyBase64)
-            val secret = pairingKeys.deriveSecret(macKeyBase64)
+            val shared = pairingKeys.sharedSecret(macKeyBase64)
 
             val localNonce = PairingCode.randomNonce()
             val confirm = postJson(
@@ -60,10 +63,19 @@ class ControlClient {
                 error("Pairing check failed: the Mac's reply doesn't match its commitment. Someone may be intercepting this connection.")
             }
 
-            PairingSession(
-                code = PairingCode.code(localKey, macKey, localNonce, macNonce),
-                authToken = secret
-            )
+            if (v3) {
+                PairingSession(
+                    code = PairingCode.code(localKey, macKey, localNonce, macNonce, localIdentity.deviceId, responderId),
+                    authToken = android.util.Base64.encodeToString(
+                        PairingCode.secret(shared, localNonce, macNonce, localIdentity.deviceId, responderId), Base64.NO_WRAP
+                    )
+                )
+            } else {
+                PairingSession(
+                    code = PairingCode.code(localKey, macKey, localNonce, macNonce),
+                    authToken = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(shared), Base64.NO_WRAP)
+                )
+            }
         }
     }
 
@@ -75,9 +87,15 @@ class ControlClient {
         }
     }
 
+    /** Cleartext is allowed app-wide, so refuse anything that isn't on the local network. */
+    private fun localEndpoint(peer: DiscoveredPeer): String {
+        require(LanAddress.isLocal(peer.host)) { "Refusing plain HTTP to a non-local address" }
+        return peer.endpoint
+    }
+
     private fun postJson(peer: DiscoveredPeer, path: String, json: JSONObject, readTimeoutMs: Int = 5000): JSONObject {
         val body = json.toString().toByteArray()
-        val connection = (URL("http://${peer.endpoint}$path").openConnection() as HttpURLConnection).apply {
+        val connection = (URL("http://${localEndpoint(peer)}$path").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 3000
             readTimeout = readTimeoutMs
@@ -125,8 +143,9 @@ class ControlClient {
             }
 
             val encryptedFile = File.createTempFile("linkbridge-upload-", ".enc")
+            val transferId = UUID.randomUUID().toString()
             val encryptedMetadata = JSONObject()
-                .put("transferId", UUID.randomUUID().toString())
+                .put("transferId", transferId)
                 .put("fileName", fileName)
                 .put("bytes", size)
                 .put("sha256", sha256)
@@ -134,13 +153,12 @@ class ControlClient {
                 .toByteArray(Charsets.UTF_8)
             val contentLength = encryptedFile.outputStream().use { output ->
                 (openInputStream() ?: error("Could not reopen selected file for encryption")).use { input ->
-                    Security.encryptChunked(localToken, input, output, metadata = encryptedMetadata) { read ->
+                    Security.encryptChunked(localToken, input, output, metadata = encryptedMetadata, transferId = transferId) { read ->
                         onProgress(read, size)
                     }
                 }
             }
             val timestamp = System.currentTimeMillis().toString()
-            val transferId = JSONObject(String(encryptedMetadata, Charsets.UTF_8)).getString("transferId")
             val signaturePayload = listOf(
                 "POST",
                 "/transfer/upload",
@@ -150,7 +168,7 @@ class ControlClient {
                 Security.ENCRYPTION_SCHEME,
                 contentLength.toString()
             ).joinToString("\n")
-            val signature = Security.hmacSha256Base64(localToken, signaturePayload)
+            val signature = Security.uploadSignature(localToken, Security.ENCRYPTION_SCHEME, signaturePayload)
 
             val tlsPort = peer.tlsPort
                 ?: run { encryptedFile.delete(); error("Update LinkBridge on ${peer.deviceName} to the secure transfer version.") }
