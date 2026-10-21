@@ -8,6 +8,7 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class ApprovalCenterTest {
     private val request = IncomingTransferRequest("Mac", "mac-1", "photo.jpg", 1024L)
@@ -93,5 +94,56 @@ class ApprovalCenterTest {
     @Test
     fun idsAreUnique() {
         assertTrue(center.register(request) != center.register(request))
+    }
+
+    @Test
+    fun awaitResultAlwaysMatchesTheWinningResolve() {
+        repeat(500) { iteration ->
+            val id = center.register(request)
+            val start = CountDownLatch(1)
+            val finished = CountDownLatch(5)
+            val acceptWins = AtomicInteger()
+            val awaited = AtomicBoolean()
+            repeat(4) {
+                Thread {
+                    start.await()
+                    if (center.resolve(id, true)) acceptWins.incrementAndGet()
+                    finished.countDown()
+                }.start()
+            }
+            Thread {
+                start.await()
+                // A zero timeout makes the timeout path race the resolvers.
+                awaited.set(center.await(id, 0))
+                finished.countDown()
+            }.start()
+            start.countDown()
+            assertTrue(finished.await(5, TimeUnit.SECONDS))
+
+            assertTrue("iteration $iteration: more than one winner", acceptWins.get() <= 1)
+            assertEquals("iteration $iteration", acceptWins.get() == 1, awaited.get())
+            assertEquals("iteration $iteration", 1, withdrawn.count { it == id })
+        }
+        assertTrue(center.pending.value.isEmpty())
+    }
+
+    @Test
+    fun interruptedAwaitDeclinesWithdrawsAndKeepsTheInterrupt() {
+        val id = center.register(request)
+        val result = AtomicBoolean(true)
+        val stillInterrupted = AtomicBoolean()
+        val waiter = Thread {
+            result.set(center.await(id, 30))
+            stillInterrupted.set(Thread.currentThread().isInterrupted)
+        }
+        waiter.start()
+        waiter.interrupt()
+        waiter.join(5_000)
+
+        assertFalse(waiter.isAlive)
+        assertFalse(result.get())
+        assertTrue(stillInterrupted.get())
+        assertTrue(center.pending.value.isEmpty())
+        assertEquals(listOf(id), withdrawn.toList())
     }
 }

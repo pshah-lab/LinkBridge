@@ -38,13 +38,24 @@ class ApprovalCenter(
         id
     }
 
-    /** Blocks until [id] is answered. No answer within [timeoutSeconds] declines it. */
+    /**
+     * Blocks until [id] is answered. No answer within [timeoutSeconds] declines it, and so
+     * does an interrupt (the receive server shutting down), which is then re-asserted.
+     * The result always equals the answer of the [resolve] call that won.
+     */
     fun await(id: Int, timeoutSeconds: Long): Boolean {
         val slot = synchronized(lock) { answers[id] } ?: return false
         try {
-            slot.poll(timeoutSeconds, TimeUnit.SECONDS)?.let { return it }
-            // Timed out. If another caller answered in the meantime, its answer stands.
+            val answer = try {
+                slot.poll(timeoutSeconds, TimeUnit.SECONDS)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                null
+            }
+            if (answer != null) return answer
+            // Timed out or interrupted: decline, unless another caller has already won.
             resolve(id, false)
+            // The winner offered its answer while holding the lock, so it is in the slot now.
             return slot.poll() ?: false
         } finally {
             synchronized(lock) { answers.remove(id) }
@@ -53,13 +64,13 @@ class ApprovalCenter(
 
     /** Answers [id]. Returns false if it was already answered, timed out or never existed. */
     fun resolve(id: Int, accept: Boolean): Boolean {
-        val slot = synchronized(lock) {
+        synchronized(lock) {
             if (queue.items.none { it.id == id }) return false
             queue = queue.resolve(id)
             _pending.value = queue.items
-            answers[id]
+            // Offer under the lock so the decision and the answer are one atomic step.
+            answers[id]?.offer(accept)
         }
-        slot?.offer(accept)
         onWithdrawn(id)
         return true
     }
