@@ -276,4 +276,30 @@ class MainViewModelStateTest {
 
         assertEquals(ConnectionState.Error("Port in use"), vm.state.value.connection)
     }
+
+    @Test
+    fun restartReceivingStartsOnlyAfterTheServiceStopped() = runTest(dispatcher) {
+        hub.receiveState.value = ReceiveState.Failed("Port in use")
+        val vm = viewModel()
+
+        vm.restartReceiving()
+        runCurrent()
+        assertEquals(false, hub.serviceRunning)
+
+        hub.receiveState.value = ReceiveState.Stopped
+        runCurrent()
+        assertEquals(true, hub.serviceRunning)
+    }
+
+    @Test
+    fun restartReceivingStartsAnywayAfterTheWait() = runTest(dispatcher) {
+        hub.receiveState.value = ReceiveState.Failed("Port in use")
+        val vm = viewModel()
+
+        vm.restartReceiving()
+        advanceTimeBy(4_999)
+        assertEquals(false, hub.serviceRunning)
+        advanceTimeBy(2)
+        assertEquals(true, hub.serviceRunning)
+    }
 }

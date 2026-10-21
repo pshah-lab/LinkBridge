@@ -23,9 +23,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.ZoneId
 
 /**
@@ -279,6 +281,26 @@ class MainViewModel(
 
     fun setReceiving(on: Boolean) = if (on) hub.startService() else hub.stopService()
 
+    /**
+     * Retry after a receive failure: a running service keeps its failed server, so stop it,
+     * wait until it reports Stopped (or [RESTART_WAIT_MS] passes), then start a fresh one.
+     */
+    fun restartReceiving() {
+        if (restarting) return
+        restarting = true
+        hub.stopService()
+        viewModelScope.launch {
+            try {
+                withTimeoutOrNull(RESTART_WAIT_MS) { hub.receiveState.first { it is ReceiveState.Stopped } }
+                hub.startService()
+            } finally {
+                restarting = false
+            }
+        }
+    }
+
+    private var restarting = false
+
     fun notificationsChanged(allowed: Boolean) {
         notificationsAllowed.value = allowed
     }
@@ -356,6 +378,7 @@ class MainViewModel(
 
     private companion object {
         const val SENT_RESET_MS = 2_000L
+        const val RESTART_WAIT_MS = 5_000L
 
         /** Process-wide; never cancelled. */
         val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
