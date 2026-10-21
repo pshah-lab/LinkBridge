@@ -6,7 +6,9 @@ import com.linkbridge.android.presentation.ConnectionState
 import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
 import com.linkbridge.android.presentation.SendPhase
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -44,7 +46,7 @@ class MainViewModelStateTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun TestScope.viewModel(): MainViewModel =
-        MainViewModel(hub, stores, FakePairing(), prefs, dispatcher, clock = { now }, zone = ZoneOffset.UTC)
+        MainViewModel(hub, stores, FakePairing(), prefs, CoroutineScope(SupervisorJob() + dispatcher), dispatcher, clock = { now }, zone = ZoneOffset.UTC)
             .also { advanceUntilIdle() }
 
     private fun TestScope.pairedViewModel(): MainViewModel {
@@ -173,18 +175,46 @@ class MainViewModelStateTest {
         assertNull(vm.state.value.selectedId)
     }
 
-    @Test
-    fun retryStagesTheStoredUriAndSends() = runTest(dispatcher) {
-        val vm = pairedViewModel()
-        val failed = TransferHistoryEntry(
-            fileName = "a.txt", bytes = 100, peerName = "Studio", isOutgoing = true, completedAt = now,
-            succeeded = false, detail = "refused", contentUri = "content://docs/a.txt"
-        )
+    private val failedSend = TransferHistoryEntry(
+        fileName = "a.txt", bytes = 100, peerName = "Studio", isOutgoing = true, completedAt = now,
+        succeeded = false, detail = "refused", contentUri = "content://docs/a.txt"
+    )
 
-        vm.retry(failed)
+    @Test
+    fun retrySendsToThePeerItFailedOn() = runTest(dispatcher) {
+        val air = TrustedPeer("7f9619ff-8b86-d011-b42d-00cf4fc964ff", "Air", "macos", "192.168.1.6", 52000, "t")
+        val airPeer = pairedMac.copy(serviceName = "LinkBridge-Air", deviceId = air.deviceId, deviceName = "Air")
+        stores.trustedPeers = listOf(macTrust, air)
+        hub.peers.value = listOf(pairedMac, airPeer)
+        prefs.selectedId = air.deviceId
+        val vm = viewModel()
+        assertEquals(air.deviceId, vm.state.value.selectedId)
+
+        vm.retry(failedSend)
         advanceUntilIdle()
 
-        assertEquals(file, hub.sends.single().third)
+        assertEquals(listOf(Triple(pairedMac, macTrust, file)), hub.sends)
+        assertEquals(MAC_ID, vm.state.value.selectedId)
+    }
+
+    @Test
+    fun retryRefusedWhenThatPeerIsNotSendable() = runTest(dispatcher) {
+        val air = TrustedPeer("7f9619ff-8b86-d011-b42d-00cf4fc964ff", "Air", "macos", "192.168.1.6", 52000, "t")
+        stores.trustedPeers = listOf(macTrust, air)
+        // Studio is paired but away; only Air is nearby and sendable.
+        hub.peers.value = listOf(pairedMac.copy(serviceName = "LinkBridge-Air", deviceId = air.deviceId, deviceName = "Air"))
+        val vm = viewModel()
+
+        vm.retry(failedSend)
+        advanceUntilIdle()
+
+        assertTrue(hub.sends.isEmpty())
+        assertNull(vm.state.value.stagedFile)
+        assertEquals("Studio isn't available — pair it or bring it nearby, then retry.", vm.state.value.notice)
+
+        vm.clearNotice()
+        runCurrent()
+        assertNull(vm.state.value.notice)
     }
 
     @Test

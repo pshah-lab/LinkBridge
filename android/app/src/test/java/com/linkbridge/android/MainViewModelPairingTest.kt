@@ -1,6 +1,11 @@
 package com.linkbridge.android
 
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -21,6 +26,7 @@ class MainViewModelPairingTest {
     private val dispatcher = StandardTestDispatcher()
     /** Its own scheduler: network and store calls run only when [settle] drains it. */
     private val io = StandardTestDispatcher()
+    private val appScope = CoroutineScope(SupervisorJob() + io)
     private val hub = FakeHub()
     private val stores = FakeStores()
     private val pairing = FakePairing()
@@ -38,7 +44,7 @@ class MainViewModelPairingTest {
     fun tearDown() = Dispatchers.resetMain()
 
     private fun TestScope.viewModel(): MainViewModel =
-        MainViewModel(hub, stores, pairing, prefs, io, clock = { 1_000L }).also { settle() }
+        MainViewModel(hub, stores, pairing, prefs, appScope, io, clock = { 1_000L }).also { settle() }
 
     /** Runs main and io work until both are idle. */
     private fun TestScope.settle() {
@@ -121,6 +127,28 @@ class MainViewModelPairingTest {
 
         settle()
         assertNull(vm.state.value.pairing)
+        assertEquals(listOf(macTrust.copy(authToken = "session-token", pairedAt = 1_000L)), stores.trustedPeers)
+        assertEquals(1, hub.rescans)
+    }
+
+    @Test
+    fun lateSuccessAfterViewModelClearedStillSavesTrust() = runTest(dispatcher) {
+        val store = ViewModelStore()
+        val built = MainViewModel(hub, stores, pairing, prefs, appScope, io, clock = { 1_000L })
+        val vm = ViewModelProvider(store, object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = built as T
+        })[MainViewModel::class.java]
+        settle()
+        vm.pair(unpairedMac.serviceName)
+        settle()
+        vm.continuePairing()
+        runCurrent()
+
+        vm.cancelPairing()
+        store.clear()
+        settle()
+
         assertEquals(listOf(macTrust.copy(authToken = "session-token", pairedAt = 1_000L)), stores.trustedPeers)
         assertEquals(1, hub.rescans)
     }

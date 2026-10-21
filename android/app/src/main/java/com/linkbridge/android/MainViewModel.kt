@@ -14,6 +14,8 @@ import com.linkbridge.android.presentation.ReceiveState
 import com.linkbridge.android.presentation.SendPhase
 import com.linkbridge.android.presentation.bannerFor
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -35,6 +37,8 @@ class MainViewModel(
     private val stores: Stores,
     private val pairingClient: PairingClient,
     private val prefs: SelectionPrefs,
+    /** Outlives the view model, so a finalize that succeeds after the screen closes is still saved. */
+    private val appScope: CoroutineScope,
     private val io: CoroutineDispatcher,
     private val clock: () -> Long,
     private val zone: ZoneId = ZoneId.systemDefault()
@@ -48,6 +52,7 @@ class MainViewModel(
     private val staged = MutableStateFlow<StagedFile?>(null)
     private val pairing = MutableStateFlow<PairingStep?>(null)
     private val notificationsAllowed = MutableStateFlow(true)
+    private val notice = MutableStateFlow<String?>(null)
 
     private val devices: StateFlow<List<DeviceListItem>> =
         combine(hub.peers, trusted) { nearby, paired -> DeviceListItem.merge(nearby, paired) }
@@ -56,8 +61,9 @@ class MainViewModel(
     val state: StateFlow<UiState> = combine(
         combine(devices, selection, sendPhase, staged, trusted, ::SendInputs),
         combine(hub.receiveState, hub.pendingApprovals, history, notificationsAllowed, pairing, ::OtherInputs),
-        thisDevice
-    ) { send, other, identity -> buildState(send, other, identity) }
+        thisDevice,
+        notice
+    ) { send, other, identity, message -> buildState(send, other, identity, message) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, UiState())
 
     /** Bumped by every cancel or new pair, so a stale network result knows it was abandoned. */
@@ -148,12 +154,12 @@ class MainViewModel(
         val generation = pairingGeneration
         val device = pending.device
         pairing.value = PairingStep.Waiting(device.deviceName)
-        viewModelScope.launch {
-            val result = withContext(io) { pairingClient.finalizePairing(pending.peer) }
-            result
-                .onSuccess {
-                    // The Mac has paired, so trust it even if the user cancelled meanwhile.
-                    val peer = TrustedPeer(
+        // The finalize and the save run in appScope: if the Mac pairs, the phone must trust it
+        // even when the user cancelled or left the screen meanwhile.
+        appScope.launch(io) {
+            val saved = pairingClient.finalizePairing(pending.peer).mapCatching {
+                stores.saveTrusted(
+                    TrustedPeer(
                         deviceId = device.deviceId,
                         deviceName = device.deviceName,
                         platform = device.platform,
@@ -162,22 +168,21 @@ class MainViewModel(
                         authToken = pending.session.authToken,
                         pairedAt = clock()
                     )
-                    trusted.value = withContext(io) {
-                        stores.saveTrusted(peer)
-                        stores.trusted()
-                    }
-                    if (generation == pairingGeneration) {
-                        prefs.selectedId = device.deviceId
+                )
+                trusted.value = stores.trusted()
+                // Re-advertise so the new peer's discovery tag is published.
+                hub.rescan()
+            }
+            // UI updates only; dropped if the view model is gone.
+            viewModelScope.launch {
+                if (generation != pairingGeneration) return@launch
+                saved
+                    .onSuccess {
+                        select(device.deviceId)
                         pairing.value = PairingStep.Paired(device.deviceName)
                     }
-                    // Re-advertise so the new peer's discovery tag is published.
-                    hub.rescan()
-                }
-                .onFailure {
-                    if (generation == pairingGeneration) {
-                        pairing.value = PairingStep.Failed(device.deviceName, it.reason(), pending.peer.idOf())
-                    }
-                }
+                    .onFailure { pairing.value = PairingStep.Failed(device.deviceName, it.reason(), pending.peer.idOf()) }
+            }
         }
     }
 
@@ -226,12 +231,27 @@ class MainViewModel(
         }
     }
 
-    /** Re-sends a failed outgoing transfer whose URI is still readable. */
+    /**
+     * Re-sends a failed outgoing transfer to the device it failed on: the sendable device named
+     * [TransferHistoryEntry.peerName]. If none is sendable, nothing is sent and [UiState.notice] says why.
+     */
     fun retry(entry: TransferHistoryEntry) {
         if (!entry.isOutgoing || entry.succeeded) return
         val uri = entry.contentUri ?: return
+        if (sendPhase.value is SendPhase.Sending) return
+        val target = devices.value.firstOrNull { it.isSendable && it.name == entry.peerName }
+        if (target == null) {
+            notice.value = "${entry.peerName} isn't available — pair it or bring it nearby, then retry."
+            return
+        }
+        select(target.id)
         stage(StagedFile(uri, entry.fileName, entry.bytes, persistable = true))
         send()
+    }
+
+    /** The UI showed [UiState.notice]. */
+    fun clearNotice() {
+        notice.value = null
     }
 
     private fun onSendState(state: SendState) {
@@ -281,7 +301,7 @@ class MainViewModel(
         val pairing: PairingStep?
     )
 
-    private fun buildState(send: SendInputs, other: OtherInputs, identity: DeviceIdentity?): UiState {
+    private fun buildState(send: SendInputs, other: OtherInputs, identity: DeviceIdentity?, notice: String?): UiState {
         val selected = send.devices.firstOrNull { it.id == send.selectedId }
         val live = buildList {
             (send.sendPhase as? SendPhase.Sending)?.let { add(LiveRow.Sending(it.fileName, it.progress, selected?.name.orEmpty())) }
@@ -312,7 +332,8 @@ class MainViewModel(
             pairing = other.pairing,
             thisDevice = identity,
             trusted = send.trusted,
-            receivingOn = other.receive !is ReceiveState.Stopped
+            receivingOn = other.receive !is ReceiveState.Stopped,
+            notice = notice
         )
     }
 
@@ -326,6 +347,7 @@ class MainViewModel(
                 stores = stores,
                 pairingClient = ControlPairingClient(ControlClient()) { stores.identity() },
                 prefs = SharedPrefsSelection(application),
+                appScope = appScope,
                 io = Dispatchers.IO,
                 clock = System::currentTimeMillis
             ) as T
@@ -334,5 +356,8 @@ class MainViewModel(
 
     private companion object {
         const val SENT_RESET_MS = 2_000L
+
+        /** Process-wide; never cancelled. */
+        val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }

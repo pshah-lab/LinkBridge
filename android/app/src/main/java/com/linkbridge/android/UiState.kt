@@ -51,5 +51,7 @@ data class UiState(
     /** Null until the identity store has loaded off the main thread. */
     val thisDevice: DeviceIdentity? = null,
     val trusted: List<TrustedPeer> = emptyList(),
-    val receivingOn: Boolean = true
+    val receivingOn: Boolean = true,
+    /** A one-off message for a snackbar; the UI calls `clearNotice()` once shown. */
+    val notice: String? = null
 )
