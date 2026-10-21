@@ -21,10 +21,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ConcurrentHashMap
+import com.linkbridge.android.presentation.ReceiveState
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -38,8 +36,11 @@ class LinkBridgeService : Service() {
     private val sendExecutor = Executors.newSingleThreadExecutor()
     private val controlClient = ControlClient()
     private val activeSends = AtomicInteger(0)
-    private val nextRequestId = AtomicInteger(1)
-    private val pendingApprovals = ConcurrentHashMap<Int, ArrayBlockingQueue<Boolean>>()
+    private val center get() = LinkBridgeHub.approvals
+    /** The file being sent, so a stop can report it as failed. */
+    @Volatile private var currentSendName: String? = null
+    /** Set in onDestroy; a send thread finishing after that publishes nothing. */
+    @Volatile private var stopped = false
 
     private lateinit var identity: DeviceIdentity
     private lateinit var discovery: DiscoveryService
@@ -49,32 +50,19 @@ class LinkBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannels()
+        LinkBridgeHub.publishReceiveState(ReceiveState.Starting)
         identity = IdentityStore(this).loadOrCreate()
         discovery = newDiscovery().also { it.start() }
         receiveServer = ReceiveServer(
             context = this,
             port = CONTROL_PORT,
-            // Task 7 maps these to ReceiveState; until then they keep today's status text.
-            onListening = {
-                LinkBridgeHub.publishReceiveStatus("Ready to receive files (encrypted) on port $CONTROL_PORT.")
-            },
+            onListening = { onReceiveEvent(ReceiveEvent.Listening) },
             onProgress = { fileName, received, total ->
-                LinkBridgeHub.publishReceiveStatus("Receiving $fileName\n${formatBytes(received)} / ${formatBytes(total)}")
+                onReceiveEvent(ReceiveEvent.Progress(fileName, received, total))
             },
-            onFailed = { reason -> LinkBridgeHub.publishReceiveStatus("Receive server failed: $reason") },
-            onTransferFailed = { _, reason ->
-                LinkBridgeHub.publishReceiveStatus(
-                    if (reason == ReceiveServer.INSUFFICIENT_STORAGE_REASON) reason else "Receive failed\n$reason"
-                )
-            },
-            onTransferCompleted = { transfer ->
-                LinkBridgeHub.publishReceiveStatus("Received ${transfer.fileName}\nSaved to Downloads/LinkBridge.")
-                LinkBridgeHub.publishActivity("Received ${transfer.fileName}", isOutgoing = false)
-                TransferHistoryStore(this).add(
-                    TransferHistoryEntry(transfer.fileName, transfer.bytes, transfer.senderName, isOutgoing = false)
-                )
-                LinkBridgeHub.publishActivity("Received ${transfer.fileName} (${formatBytes(transfer.bytes)}) from ${transfer.senderName}", isOutgoing = false)
-            },
+            onFailed = { reason -> onReceiveEvent(ReceiveEvent.ServerFailed(reason)) },
+            onTransferFailed = { fileName, reason -> onReceiveEvent(ReceiveEvent.TransferFailed(fileName, reason)) },
+            onTransferCompleted = { transfer -> onReceiveEvent(ReceiveEvent.Completed(transfer)) },
             onApprovalRequested = ::requestApproval
         ).also { it.start() }
         LinkBridgeHub.service = this
@@ -88,7 +76,7 @@ class LinkBridgeService : Service() {
             }
             ACTION_ACCEPT, ACTION_DECLINE -> {
                 val id = intent.getIntExtra(EXTRA_REQUEST_ID, -1)
-                pendingApprovals[id]?.offer(intent.action == ACTION_ACCEPT)
+                LinkBridgeHub.resolveApproval(id, intent.action == ACTION_ACCEPT)
             }
         }
         ensureForeground()
@@ -99,19 +87,40 @@ class LinkBridgeService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // Swiping the app away stops LinkBridge unless a transfer is still running.
-        if (activeSends.get() == 0 && pendingApprovals.isEmpty()) stopEverything()
+        if (activeSends.get() == 0 && center.pending.value.isEmpty()) stopEverything()
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        stopped = true
+        // Decline while the hub still points here, so each request's notification is cancelled.
+        center.declineAll()
         if (LinkBridgeHub.service === this) LinkBridgeHub.service = null
         runCatching { discovery.stop() }
         runCatching { receiveServer.stop() }
         sendExecutor.shutdownNow()
-        pendingApprovals.values.forEach { it.offer(false) }
+        currentSendName?.let { name ->
+            LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(name, "LinkBridge stopped"))
+        }
         LinkBridgeHub.publishPeers(emptyList())
-        LinkBridgeHub.publishReceiveStatus("LinkBridge is stopped. Open the app to receive files.")
+        LinkBridgeHub.publishReceiveState(ReceiveState.Stopped)
         super.onDestroy()
+    }
+
+    /** Stops the service from the UI, as the notification's Stop action does. */
+    fun stop() {
+        main.post { stopEverything() }
+    }
+
+    fun cancelApprovalNotification(id: Int) {
+        NotificationManagerCompat.from(this).cancel(APPROVAL_NOTIFICATION_BASE + id)
+    }
+
+    private fun onReceiveEvent(event: ReceiveEvent) {
+        if (stopped) return
+        val update = TransferRecords.onReceiveEvent(event, System.currentTimeMillis())
+        update.history?.let { LinkBridgeHub.recordHistory(this, it) }
+        LinkBridgeHub.publishReceiveState(update.state)
     }
 
     fun rescan() {
@@ -121,10 +130,11 @@ class LinkBridgeService : Service() {
         }
     }
 
-    fun send(peer: DiscoveredPeer, trustedPeer: TrustedPeer, uri: Uri) {
+    fun send(peer: DiscoveredPeer, trustedPeer: TrustedPeer, uri: Uri, persistable: Boolean) {
         activeSends.incrementAndGet()
         sendExecutor.execute {
             val info = runCatching { contentResolver.fileInfo(uri) }.getOrElse { SelectedFileInfo("file", -1) }
+            currentSendName = info.name
             try {
                 updateNotification("Sending ${info.name} to ${peer.deviceName}", progress = 0)
                 LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Progress(info.name, 0, info.size))
@@ -136,19 +146,28 @@ class LinkBridgeService : Service() {
                     trustedPeer = trustedPeer,
                     openInputStream = { contentResolver.openInputStream(uri) }
                 ) { sent, total ->
+                    if (stopped) return@uploadFile
                     LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Progress(info.name, sent, total))
                     if (total > 0) updateNotification("Sending ${info.name} to ${peer.deviceName}", progress = (sent * 100 / total).toInt())
                 }.onSuccess {
-                    TransferHistoryStore(this).add(
-                        TransferHistoryEntry(info.name, info.size, peer.deviceName, isOutgoing = true)
+                    LinkBridgeHub.recordHistory(
+                        this, TransferHistoryEntry(info.name, info.size, peer.deviceName, isOutgoing = true)
                     )
-                    LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
-                    LinkBridgeHub.publishActivity("Sent ${info.name} (${formatBytes(info.size)}) to ${peer.deviceName}", isOutgoing = true)
+                    if (!stopped) LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
                 }.onFailure { error ->
                     Log.e(TAG, "Send failed", error)
-                    LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(info.name, error.localizedMessage ?: "Unknown error"))
+                    val message = error.localizedMessage ?: "Unknown error"
+                    LinkBridgeHub.recordHistory(
+                        this,
+                        TransferRecords.failedSend(
+                            info.name, info.size, peer.deviceName, message, uri.toString(), persistable,
+                            System.currentTimeMillis()
+                        )
+                    )
+                    if (!stopped) LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(info.name, message))
                 }
             } finally {
+                currentSendName = null
                 activeSends.decrementAndGet()
                 updateNotification(READY_TEXT, progress = null)
             }
@@ -157,26 +176,20 @@ class LinkBridgeService : Service() {
 
     /** Called on a receive-server thread; blocks until the user answers or 60 s pass. */
     private fun requestApproval(request: IncomingTransferRequest): Boolean {
-        val id = nextRequestId.getAndIncrement()
-        val answer = ArrayBlockingQueue<Boolean>(1)
-        pendingApprovals[id] = answer
-        try {
-            val approver = LinkBridgeHub.foregroundApprover
-            when {
-                approver != null -> main.post { approver.approve(request) { answer.offer(it) } }
-                canPostNotifications() -> showApprovalNotification(id, request)
-                else -> {
-                    LinkBridgeHub.publishReceiveStatus(
-                        "Declined ${request.fileName} from ${request.senderName}: turn on notifications to accept files while LinkBridge is in the background."
-                    )
-                    return false
-                }
+        val id = center.register(request)
+        if (!LinkBridgeHub.uiVisible) {
+            if (canPostNotifications()) {
+                showApprovalNotification(id, request)
+            } else {
+                center.resolve(id, false)
+                LinkBridgeHub.publishActivity(
+                    "Declined ${request.fileName} from ${request.senderName}: turn on notifications to accept files while LinkBridge is in the background.",
+                    isOutgoing = false
+                )
+                return false
             }
-            return answer.poll(Timeouts.APPROVAL_TIMEOUT_SECONDS, TimeUnit.SECONDS) ?: false
-        } finally {
-            pendingApprovals.remove(id)
-            NotificationManagerCompat.from(this).cancel(APPROVAL_NOTIFICATION_BASE + id)
         }
+        return center.await(id, Timeouts.APPROVAL_TIMEOUT_SECONDS)
     }
 
     private fun ensureForeground() {

@@ -230,6 +230,7 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         // The service owns discovery, receiving and sending so they survive leaving the app.
         LinkBridgeService.start(this)
+        LinkBridgeHub.uiVisible = true
         LinkBridgeHub.addListener(hubListener)
         renderHistory()
         updateNotificationPermission(requestIfNeeded = true)
@@ -246,6 +247,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        LinkBridgeHub.uiVisible = false
         LinkBridgeHub.removeListener(hubListener)
         super.onStop()
     }
@@ -602,7 +604,7 @@ class MainActivity : ComponentActivity() {
         }
 
         // The send runs in LinkBridgeService, so it keeps going if you leave the app.
-        if (!LinkBridgeHub.send(peer, trustedPeer, uri)) {
+        if (!LinkBridgeHub.send(peer, trustedPeer, uri, persistable = false)) {
             connectionStatusText.text = "LinkBridge is not running. Reopen the app and try again."
             connectionStatusText.background = Ui.rounded(Ui.DANGER_BG, radiusDp = 14f, strokeColor = Ui.DANGER)
             return

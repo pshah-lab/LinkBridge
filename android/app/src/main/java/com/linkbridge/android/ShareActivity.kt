@@ -127,7 +127,7 @@ class ShareActivity : ComponentActivity() {
         hideButton.text = "Hide"
         statusText.text = "Preparing ${uris.size} file(s) for ${peer.deviceName}…"
         uris.forEach { uri ->
-            if (!LinkBridgeHub.send(peer, trustedPeer, uri)) {
+            if (!LinkBridgeHub.send(peer, trustedPeer, uri, persistable = false)) {
                 failedCount += 1
             }
         }
