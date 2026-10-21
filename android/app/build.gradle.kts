@@ -101,4 +101,6 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     // Real org.json for JVM tests (the android.jar copy is a stub that throws).
     testImplementation("org.json:json:20240303")
+    // Virtual time and Dispatchers.setMain for MainViewModel tests; matches coroutines-core.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }
