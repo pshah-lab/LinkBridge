@@ -106,4 +106,16 @@ class DeviceListItemTest {
         assertEquals(DevicePlatform.UNKNOWN, DevicePlatform.from("windows"))
         assertEquals(DevicePlatform.UNKNOWN, DevicePlatform.from(null))
     }
+
+    @Test
+    fun mergeDedupesSameIdentity() {
+        val first = peer("Mac", "a")
+        val items = DeviceListItem.merge(
+            nearby = listOf(first, peer("Mac again", "a"), peer("New"), peer("New")),
+            trusted = listOf(trusted("Mac", "a"), trusted("Away", "b"), trusted("Aardvark dup", "b"))
+        )
+        assertEquals(listOf("a", "svc-New", "b"), items.map { it.id })
+        assertSame(first, items[0].peer)
+        assertEquals("Away", items[2].name)
+    }
 }

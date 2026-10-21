@@ -39,8 +39,14 @@ data class DeviceListItem(
     companion object {
         private val byName = compareBy(String.CASE_INSENSITIVE_ORDER, DeviceListItem::name)
 
-        /** Nearby paired devices, then nearby unpaired, then paired devices that are away; A→Z in each. */
+        /**
+         * Nearby paired devices, then nearby unpaired, then paired devices that are away; A→Z in each.
+         * Duplicate identities (`deviceId ?: serviceName` nearby, `deviceId` trusted) keep the first,
+         * so every row [id] is unique.
+         */
         fun merge(nearby: List<DiscoveredPeer>, trusted: List<TrustedPeer>): List<DeviceListItem> {
+            @Suppress("NAME_SHADOWING") val nearby = nearby.distinctBy { it.deviceId ?: it.serviceName }
+            @Suppress("NAME_SHADOWING") val trusted = trusted.distinctBy { it.deviceId }
             val trustedIds = trusted.mapTo(HashSet()) { it.deviceId }
             val nearbyIds = nearby.mapNotNullTo(HashSet()) { it.deviceId }
 
