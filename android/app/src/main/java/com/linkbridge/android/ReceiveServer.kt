@@ -21,9 +21,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ReceiveServer(
     private val context: Context,
     private val port: Int,
-    private val onStatus: (String) -> Unit,
-    private val onTransferCompleted: (ReceivedTransfer) -> Unit = {},
-    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true },
+    private val onListening: () -> Unit,
+    private val onProgress: (fileName: String, received: Long, total: Long) -> Unit,
+    /** A failure reason without a prefix: the server stopped, or one transfer failed. */
+    private val onFailed: (String) -> Unit,
+    private val onTransferCompleted: (ReceivedTransfer) -> Unit,
+    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean,
     /** Free bytes where Downloads lives, or -1 if unknown. */
     private val availableBytes: () -> Long = {
         @Suppress("DEPRECATION")
@@ -43,7 +46,7 @@ class ReceiveServer(
             runCatching {
                 ServerSocket(port).use { socket ->
                     serverSocket = socket
-                    onStatus("Ready to receive files (encrypted) on port $port.")
+                    onListening()
                     while (running.get()) {
                         val client = socket.accept()
                         runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
@@ -55,7 +58,7 @@ class ReceiveServer(
             }.onFailure { error ->
                 if (running.get()) {
                     Log.e(TAG, "Receive server failed", error)
-                    onStatus("Receive server failed: ${error.localizedMessage}")
+                    onFailed(error.localizedMessage ?: "Unknown error")
                 }
             }
         }
@@ -229,7 +232,7 @@ class ReceiveServer(
                     output?.write(plain) ?: error("Output stream was not opened")
                     digest.update(plain, 0, plain.size)
                     received += plain.size
-                    onStatus("Receiving ${currentMetadata.fileName}\n${formatBytes(received)} / ${formatBytes(currentMetadata.bytes)}")
+                    onProgress(currentMetadata.fileName, received, currentMetadata.bytes)
                 }
             } finally {
                 output?.close()
@@ -251,8 +254,9 @@ class ReceiveServer(
             val values = ContentValues()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             savedUri?.let { resolver.update(it, values, null, null) }
-            onStatus("Received ${finalMetadata.fileName}\nSaved to Downloads/LinkBridge.")
-            onTransferCompleted(ReceivedTransfer(finalMetadata.fileName, received, senderName))
+            onTransferCompleted(
+                ReceivedTransfer(finalMetadata.fileName, received, senderName, savedUri?.toString())
+            )
             reply.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
             savedUri?.let { context.contentResolver.delete(it, null, null) }
@@ -261,12 +265,12 @@ class ReceiveServer(
                 return
             }
             if (error is InsufficientStorageException) {
-                onStatus("Not enough free space to receive a file")
+                onFailed("Not enough free space to receive a file")
                 reply.writeJsonResponse(507, """{"error":"insufficient_storage"}""")
                 return
             }
             Log.e(TAG, "Receive failed", error)
-            onStatus("Receive failed\n${error.localizedMessage}")
+            onFailed(error.localizedMessage ?: "Unknown error")
             reply.writeJsonResponse(500, """{"error":"save_failed"}""")
         }
     }
@@ -296,18 +300,6 @@ class ReceiveServer(
         flush()
     }
 
-    private fun formatBytes(bytes: Long): String {
-        if (bytes < 1024) return "$bytes B"
-        val units = arrayOf("KB", "MB", "GB")
-        var value = bytes.toDouble() / 1024.0
-        var unitIndex = 0
-        while (value >= 1024.0 && unitIndex < units.lastIndex) {
-            value /= 1024.0
-            unitIndex += 1
-        }
-        return "%.1f %s".format(value, units[unitIndex])
-    }
-
     companion object {
         private const val TAG = "LinkBridgeReceive"
         private const val MAX_HEADER_BYTES = 64 * 1024
@@ -318,7 +310,13 @@ class ReceiveServer(
     }
 }
 
-data class ReceivedTransfer(val fileName: String, val bytes: Long, val senderName: String)
+data class ReceivedTransfer(
+    val fileName: String,
+    val bytes: Long,
+    val senderName: String,
+    /** The saved MediaStore item, so history can open it. */
+    val contentUri: String?
+)
 
 data class IncomingTransferRequest(
     val senderName: String,

@@ -54,11 +54,17 @@ class LinkBridgeService : Service() {
         receiveServer = ReceiveServer(
             context = this,
             port = CONTROL_PORT,
-            onStatus = { status ->
-                LinkBridgeHub.publishReceiveStatus(status)
-                if (status.startsWith("Received")) LinkBridgeHub.publishActivity(status.substringBefore('\n'), isOutgoing = false)
+            // Task 7 maps these to ReceiveState; until then they keep today's status text.
+            onListening = {
+                LinkBridgeHub.publishReceiveStatus("Ready to receive files (encrypted) on port $CONTROL_PORT.")
             },
+            onProgress = { fileName, received, total ->
+                LinkBridgeHub.publishReceiveStatus("Receiving $fileName\n${formatBytes(received)} / ${formatBytes(total)}")
+            },
+            onFailed = { reason -> LinkBridgeHub.publishReceiveStatus("Receive failed\n$reason") },
             onTransferCompleted = { transfer ->
+                LinkBridgeHub.publishReceiveStatus("Received ${transfer.fileName}\nSaved to Downloads/LinkBridge.")
+                LinkBridgeHub.publishActivity("Received ${transfer.fileName}", isOutgoing = false)
                 TransferHistoryStore(this).add(
                     TransferHistoryEntry(transfer.fileName, transfer.bytes, transfer.senderName, isOutgoing = false)
                 )
