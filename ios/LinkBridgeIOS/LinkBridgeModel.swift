@@ -101,6 +101,8 @@ final class LinkBridgeModel: ObservableObject {
             do {
                 let peer = try await client.finish()
                 trusted = trustedStore.load()
+                // The Mac was discovered before it was paired; its tags only match now.
+                browser.refresh()
                 selectedPeerId = peer.deviceId
                 preferredPeerId = peer.deviceId
                 pairingFinished(error: nil)

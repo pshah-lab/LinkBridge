@@ -65,6 +65,7 @@ final class MacModel {
     @ObservationIgnored private var stagedFile: (url: URL, bookmark: Data?, bytes: Int64)?
     @ObservationIgnored private var preferredPeerId: UUID?
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var trustedObserver: NSObjectProtocol?
     /// File approvals by request ID, so an accepted file can show as "receiving".
     @ObservationIgnored private var fileRequests: [UUID: IncomingTransferRequest] = [:]
 
@@ -170,6 +171,16 @@ final class MacModel {
             MainActor.assumeIsolated { self?.discovered(peers) }
         }
         browser.start()
+
+        // A device discovered before it was paired is only recognised once its secret is stored.
+        trustedObserver = NotificationCenter.default.addObserver(forName: TrustedPeerStore.didChange, object: nil,
+                                                                 queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.trusted = self.trustedStore.load()
+                self.browser.refresh()
+            }
+        }
 
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }

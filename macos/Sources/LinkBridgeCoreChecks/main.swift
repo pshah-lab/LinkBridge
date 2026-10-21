@@ -98,6 +98,37 @@ section("Discovery tags: only a paired device can recognize the advertiser") {
     check(many.split(separator: ",").count == 14 && ("tags=" + many).utf8.count <= 255, "fits one TXT value")
 }
 
+section("Discovery: a device seen before pairing is recognized once paired") {
+    let secret = Security.generateToken()
+    let rid = DiscoveryTags.randomRid()
+    let phone = TrustedPeer(deviceId: UUID(), deviceName: "Phone", platform: "android", protocolVersion: 3, features: [],
+                            pairedAt: Date(), authToken: secret)
+    var trusted: [TrustedPeer] = []
+    var published: [ResolvedPeer] = []
+    let browser = PeerBrowser(localDeviceId: UUID(), localRid: nil, trustedPeers: { trusted })
+    browser.onChange = { published = $0 }
+    let txt: [String: Data] = ["rid": Data(rid.utf8), "tags": Data(DiscoveryTags.tags(secrets: [secret], rid: rid).utf8),
+                               "deviceName": Data("Phone".utf8), "platform": Data("android".utf8), "tlsPort": Data("49162".utf8)]
+    browser.ingest(name: "Phone", host: "10.0.0.9", port: 49152, txt: txt)
+    check(published.first?.deviceId == nil, "unknown before pairing")
+    trusted = [phone]
+    TrustedPeerStore.notifyChanged()
+    check(published.first?.deviceId == nil, "the browser itself doesn't listen; the app calls refresh()")
+    browser.refresh()
+    check(published.first?.deviceId == phone.deviceId, "matched after refresh, got \(String(describing: published.first?.deviceId))")
+}
+
+section("Trusted peer changes are announced") {
+    var heard = 0
+    let token = NotificationCenter.default.addObserver(forName: TrustedPeerStore.didChange, object: nil, queue: nil) { _ in heard += 1 }
+    defer { NotificationCenter.default.removeObserver(token) }
+    let id = UUID()
+    TrustedPeerStore().save(TrustedPeer(deviceId: id, deviceName: "N", platform: "android", protocolVersion: 3,
+                                        features: [], pairedAt: Date(), authToken: Security.generateToken()))
+    TrustedPeerStore().remove(deviceId: id)
+    check(heard == 2, "save and remove each post didChange, heard \(heard)")
+}
+
 section("Public key parsing accepts X9.63 and legacy raw, rejects others") {
     let key = P256.KeyAgreement.PrivateKey().publicKey
     check((try? PairingKeyStore.parsePublicKey(key.x963Representation.base64EncodedString())) != nil, "65-byte X9.63")
