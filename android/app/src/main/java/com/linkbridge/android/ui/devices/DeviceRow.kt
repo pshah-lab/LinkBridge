@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -80,7 +81,11 @@ fun DeviceRow(
         supportingContent = { Text(item.subtitle) },
         trailingContent = when {
             item.canPair -> {
-                { Button(onClick = onPair) { Text("Pair") } }
+                {
+                    // The row already exposes "Pair with <name>"; hide the button from
+                    // accessibility so TalkBack offers the action once.
+                    Button(onClick = onPair, modifier = Modifier.clearAndSetSemantics {}) { Text("Pair") }
+                }
             }
             item.isPaired -> {
                 { PairedBadge() }

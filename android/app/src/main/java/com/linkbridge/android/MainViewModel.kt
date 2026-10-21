@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Turns the hub, the stores and the pairing flow into one [UiState]. All mutable state is
@@ -286,20 +287,20 @@ class MainViewModel(
      * wait until it reports Stopped (or [RESTART_WAIT_MS] passes), then start a fresh one.
      */
     fun restartReceiving() {
-        if (restarting) return
-        restarting = true
+        if (!restarting.compareAndSet(false, true)) return
         hub.stopService()
-        viewModelScope.launch {
+        // appScope: the restart must finish even if the screen closes during the wait.
+        appScope.launch {
             try {
                 withTimeoutOrNull(RESTART_WAIT_MS) { hub.receiveState.first { it is ReceiveState.Stopped } }
                 hub.startService()
             } finally {
-                restarting = false
+                restarting.set(false)
             }
         }
     }
 
-    private var restarting = false
+    private val restarting = AtomicBoolean(false)
 
     fun notificationsChanged(allowed: Boolean) {
         notificationsAllowed.value = allowed

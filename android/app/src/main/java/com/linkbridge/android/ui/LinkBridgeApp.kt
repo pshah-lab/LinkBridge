@@ -158,7 +158,7 @@ fun AppFrame(state: UiState, actions: AppActions) {
 
     // Sheet scrim: blur the app behind the sheet when blur is available.
     val blurBehind = pairing != null && LocalBlurEnabled.current
-    Box(Modifier.fillMaxSize().blur(if (blurBehind) 16.dp else 0.dp)) {
+    Box(Modifier.fillMaxSize().then(if (blurBehind) Modifier.blur(16.dp) else Modifier)) {
         AnimatedContent(
             targetState = inSettings,
             transitionSpec = { fadeIn() togetherWith fadeOut() },
@@ -256,7 +256,9 @@ private fun TopBar(
     onChip: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    val scrolled = scrollBehavior.state.overlappedFraction > 0.01f
+    // contentOffset tracks how far content has scrolled up under the bar (pinned behaviour);
+    // overlappedFraction needs a TopAppBar to set heightOffsetLimit, which this custom bar is not.
+    val scrolled = scrollBehavior.state.contentOffset < -1f
     Row(
         Modifier
             .fillMaxWidth()
