@@ -71,6 +71,7 @@ kotlin {
 dependencies {
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     // TLS-PSK between paired devices (Android's built-in TLS has no usable PSK support).
     implementation("org.bouncycastle:bctls-jdk18on:1.86.2")
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")
