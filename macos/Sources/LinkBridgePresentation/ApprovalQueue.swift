@@ -46,6 +46,15 @@ public struct ApprovalQueue: Equatable {
 
     public var oldest: PendingApproval? { items.first }
 
+    /// What the window's approval sheet should show next. A sheet opens only while its window is
+    /// key, but once open it stays until its request is answered: presenting a sheet takes key
+    /// status from the window, so closing on "not key" would make the sheet flicker in a loop.
+    public static func sheetItem(showing: PendingApproval?, oldest: PendingApproval?,
+                                 windowIsKey: Bool) -> PendingApproval? {
+        if showing != nil { return oldest }
+        return windowIsKey ? oldest : nil
+    }
+
     public mutating func add(_ item: PendingApproval) {
         items.append(item)
     }

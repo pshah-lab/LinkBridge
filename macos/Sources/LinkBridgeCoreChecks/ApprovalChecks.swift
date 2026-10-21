@@ -39,6 +39,16 @@ func runApprovalChecks() {
         check(queue.notices.isEmpty, "notice gone after 5 seconds")
     }
 
+    section("Approval sheet: presentation rule") {
+        let a = fileItem(), b = pairItem()
+        check(ApprovalQueue.sheetItem(showing: nil, oldest: a, windowIsKey: true) == a, "opens for the oldest when the window is key")
+        check(ApprovalQueue.sheetItem(showing: nil, oldest: a, windowIsKey: false) == nil, "doesn't open in a background window")
+        // Showing a sheet takes key status from its window; that must not close the sheet.
+        check(ApprovalQueue.sheetItem(showing: a, oldest: a, windowIsKey: false) == a, "stays open when the window loses key")
+        check(ApprovalQueue.sheetItem(showing: a, oldest: b, windowIsKey: false) == b, "moves on to the next request")
+        check(ApprovalQueue.sheetItem(showing: a, oldest: nil, windowIsKey: true) == nil, "closes when nothing is waiting")
+    }
+
     MainActor.assumeIsolated {
         section("Approval center: resolve once") {
             var clock = t0
