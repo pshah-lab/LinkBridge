@@ -117,6 +117,16 @@ class LinkBridgeService : Service() {
         main.post { stopEverything() }
     }
 
+    /**
+     * Posts a notification for each pending request that has none, when the app leaves
+     * the screen with its sheet still asking. Without the permission they stay in the
+     * sheet and time out as usual.
+     */
+    fun notifyPendingApprovals() {
+        if (!canPostNotifications()) return
+        center.claimUnnotified().forEach { showApprovalNotification(it.id, it.request, it.expiresAt) }
+    }
+
     fun cancelApprovalNotification(id: Int) {
         NotificationManagerCompat.from(this).cancel(APPROVAL_NOTIFICATION_BASE + id)
     }
@@ -188,7 +198,10 @@ class LinkBridgeService : Service() {
         val id = center.register(request)
         if (!LinkBridgeHub.uiVisible) {
             if (canPostNotifications()) {
-                showApprovalNotification(id, request)
+                // notifyPendingApprovals() may have claimed it already, if the app just left.
+                if (center.claimNotification(id)) {
+                    showApprovalNotification(id, request, System.currentTimeMillis() + Timeouts.APPROVAL_TIMEOUT_SECONDS * 1000)
+                }
             } else {
                 center.declineUnasked(id)
                 // No way to ask: the Devices banner already offers to turn notifications on.
@@ -253,7 +266,7 @@ class LinkBridgeService : Service() {
     }
 
     @Suppress("MissingPermission") // Checked by canPostNotifications() before calling.
-    private fun showApprovalNotification(id: Int, request: IncomingTransferRequest) {
+    private fun showApprovalNotification(id: Int, request: IncomingTransferRequest, expiresAt: Long) {
         fun action(action: String) = PendingIntent.getService(
             this, id * 2 + if (action == ACTION_ACCEPT) 0 else 1,
             Intent(this, LinkBridgeService::class.java).setAction(action).putExtra(EXTRA_REQUEST_ID, id),
@@ -278,12 +291,14 @@ class LinkBridgeService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentIntent(openAppIntent())
-            .setTimeoutAfter(Timeouts.APPROVAL_TIMEOUT_SECONDS * 1000)
+            .setTimeoutAfter((expiresAt - System.currentTimeMillis()).coerceAtLeast(1))
             .setAutoCancel(true)
             .addAction(accept)
             .addAction(0, "Decline", action(ACTION_DECLINE))
             .build()
         NotificationManagerCompat.from(this).notify(APPROVAL_NOTIFICATION_BASE + id, notification)
+        // Answered while we built it: onWithdrawn's cancel ran first, so cancel again.
+        if (!center.isPending(id)) cancelApprovalNotification(id)
     }
 
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(

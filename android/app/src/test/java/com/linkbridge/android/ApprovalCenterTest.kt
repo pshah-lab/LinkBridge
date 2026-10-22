@@ -165,4 +165,38 @@ class ApprovalCenterTest {
         assertTrue(done.await(5, TimeUnit.SECONDS))
         assertEquals(0, center.openSlots())
     }
+
+    @Test
+    fun claimUnnotifiedReturnsEachPendingRequestOnce() {
+        val first = center.register(request)
+        val second = center.register(request)
+        assertEquals(listOf(first, second), center.claimUnnotified().map { it.id })
+        assertTrue(center.claimUnnotified().isEmpty())
+    }
+
+    @Test
+    fun claimNotificationAndClaimUnnotifiedNeverBothWin() {
+        val claimedInBackground = center.register(request)
+        assertTrue(center.claimNotification(claimedInBackground))
+        assertFalse(center.claimNotification(claimedInBackground))
+        val shownInSheet = center.register(request)
+        assertEquals(listOf(shownInSheet), center.claimUnnotified().map { it.id })
+        assertFalse(center.claimNotification(shownInSheet))
+    }
+
+    @Test
+    fun answeredRequestsAreNotClaimed() {
+        val id = center.register(request)
+        center.resolve(id, true)
+        assertFalse(center.claimNotification(id))
+        assertTrue(center.claimUnnotified().isEmpty())
+        assertFalse(center.isPending(id))
+    }
+
+    @Test
+    fun claimedRequestKeepsItsExpiry() {
+        center.register(request)
+        val claimed = center.claimUnnotified().single()
+        assertEquals(1_000L + Timeouts.APPROVAL_TIMEOUT_SECONDS * 1000, claimed.expiresAt)
+    }
 }
