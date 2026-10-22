@@ -75,6 +75,18 @@ class ApprovalCenter(
         return true
     }
 
+    /**
+     * Declines [id] when nobody will [await] it (no way to ask the user), and drops its
+     * answer slot, which otherwise only [await] removes.
+     */
+    fun declineUnasked(id: Int) {
+        resolve(id, false)
+        synchronized(lock) { answers.remove(id) }
+    }
+
+    /** Answer slots still held; for tests. */
+    internal fun openSlots(): Int = synchronized(lock) { answers.size }
+
     /** Declines everything pending, e.g. when the service stops. */
     fun declineAll() {
         val ids = synchronized(lock) { queue.items.map { it.id } }

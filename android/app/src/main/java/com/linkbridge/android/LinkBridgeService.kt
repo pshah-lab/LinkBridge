@@ -39,7 +39,7 @@ class LinkBridgeService : Service() {
     private val center get() = LinkBridgeHub.approvals
     /** The file being sent, so a stop can report it as failed. */
     @Volatile private var currentSendName: String? = null
-    /** Set in onDestroy; a send thread finishing after that publishes nothing. */
+    /** Set in onDestroy; a transfer finishing after that records history but publishes no live state. */
     @Volatile private var stopped = false
 
     private lateinit var identity: DeviceIdentity
@@ -98,9 +98,16 @@ class LinkBridgeService : Service() {
         if (LinkBridgeHub.service === this) LinkBridgeHub.service = null
         runCatching { discovery.stop() }
         runCatching { receiveServer.stop() }
-        sendExecutor.shutdownNow()
+        val dropped = sendExecutor.shutdownNow()
         currentSendName?.let { name ->
-            LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(name, "LinkBridge stopped"))
+            LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(name, STOPPED_MESSAGE))
+        }
+        // Report each queued send too, so the share sheet's tally can complete.
+        dropped.forEach { task ->
+            val name = (task as? QueuedSend)?.let { queued ->
+                runCatching { contentResolver.fileInfo(queued.uri).name }.getOrNull()
+            } ?: "file"
+            LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(name, STOPPED_MESSAGE))
         }
         LinkBridgeHub.publishPeers(emptyList())
         LinkBridgeHub.publishReceiveState(ReceiveState.Stopped)
@@ -117,10 +124,11 @@ class LinkBridgeService : Service() {
     }
 
     private fun onReceiveEvent(event: ReceiveEvent) {
-        if (stopped) return
         val update = TransferRecords.onReceiveEvent(event, System.currentTimeMillis())
+        // An upload can finish after Stop (its I/O isn't interruptible): the file is saved
+        // and the Mac got 200, so keep its history entry. Only the live state goes quiet.
         update.history?.let { LinkBridgeHub.recordHistory(this, it) }
-        LinkBridgeHub.publishReceiveState(update.state)
+        if (!stopped) LinkBridgeHub.publishReceiveState(update.state)
     }
 
     fun rescan() {
@@ -132,7 +140,7 @@ class LinkBridgeService : Service() {
 
     fun send(peer: DiscoveredPeer, trustedPeer: TrustedPeer, uri: Uri, persistable: Boolean) {
         activeSends.incrementAndGet()
-        sendExecutor.execute {
+        sendExecutor.execute(QueuedSend(uri) {
             val info = runCatching { contentResolver.fileInfo(uri) }.getOrElse { SelectedFileInfo("file", -1) }
             currentSendName = info.name
             try {
@@ -171,7 +179,12 @@ class LinkBridgeService : Service() {
                 activeSends.decrementAndGet()
                 updateNotification(READY_TEXT, progress = null)
             }
-        }
+        })
+    }
+
+    /** A queued send that knows its file, so a stop can report it if it never ran. */
+    private class QueuedSend(val uri: Uri, private val body: () -> Unit) : Runnable {
+        override fun run() = body()
     }
 
     /** Called on a receive-server thread; blocks until the user answers or 60 s pass. */
@@ -181,7 +194,7 @@ class LinkBridgeService : Service() {
             if (canPostNotifications()) {
                 showApprovalNotification(id, request)
             } else {
-                center.resolve(id, false)
+                center.declineUnasked(id)
                 // No way to ask: the Devices banner already offers to turn notifications on.
                 Log.w(TAG, "Declined a background file request: notifications are off")
                 return false
@@ -301,6 +314,7 @@ class LinkBridgeService : Service() {
         const val CONTROL_PORT = 49153
         private const val TAG = "LinkBridgeService"
         private const val READY_TEXT = "Ready to send and receive on this Wi-Fi"
+        private const val STOPPED_MESSAGE = "LinkBridge stopped"
         private const val CHANNEL_STATUS = "status"
         private const val CHANNEL_REQUESTS = "requests"
         private const val STATUS_NOTIFICATION_ID = 1

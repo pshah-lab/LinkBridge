@@ -1,6 +1,7 @@
 package com.linkbridge.android
 
 import android.content.Context
+import android.content.SharedPreferences
 
 data class TransferHistoryEntry(
     val fileName: String,
@@ -15,20 +16,38 @@ data class TransferHistoryEntry(
     val contentUri: String? = null
 )
 
-class TransferHistoryStore(context: Context) {
-    private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+/** Where the encoded history lives; SharedPreferences in the app, a plain field in tests. */
+interface HistoryBacking {
+    fun read(): String?
+    fun write(encoded: String)
+}
 
-    @Synchronized
+class TransferHistoryStore internal constructor(private val backing: HistoryBacking) {
+    constructor(context: Context) : this(PreferencesBacking(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)))
+
+    /**
+     * Prepends [entry]. Sends and receives finish on different threads and each caller may
+     * build its own store, so the read-modify-write holds one process-wide lock.
+     */
     fun add(entry: TransferHistoryEntry) {
-        val history = listOf(entry) + load()
-        preferences.edit().putString(KEY_HISTORY, TransferHistoryCodec.encode(history.take(MAX_ENTRIES))).apply()
+        synchronized(LOCK) {
+            val history = listOf(entry) + load()
+            backing.write(TransferHistoryCodec.encode(history.take(MAX_ENTRIES)))
+        }
     }
 
-    fun load(): List<TransferHistoryEntry> = TransferHistoryCodec.decode(preferences.getString(KEY_HISTORY, null))
+    fun load(): List<TransferHistoryEntry> = TransferHistoryCodec.decode(backing.read())
 
-    private companion object {
-        const val PREFERENCES = "linkbridge_transfer_history"
-        const val KEY_HISTORY = "entries"
+    private class PreferencesBacking(private val preferences: SharedPreferences) : HistoryBacking {
+        override fun read(): String? = preferences.getString(KEY_HISTORY, null)
+        // apply() updates the in-memory map before returning, so the next read sees it.
+        override fun write(encoded: String) = preferences.edit().putString(KEY_HISTORY, encoded).apply()
+    }
+
+    internal companion object {
+        private val LOCK = Any()
+        private const val PREFERENCES = "linkbridge_transfer_history"
+        private const val KEY_HISTORY = "entries"
         const val MAX_ENTRIES = 50
     }
 }

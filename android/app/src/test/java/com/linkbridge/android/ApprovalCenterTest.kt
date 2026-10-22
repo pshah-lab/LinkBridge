@@ -146,4 +146,23 @@ class ApprovalCenterTest {
         assertTrue(center.pending.value.isEmpty())
         assertEquals(listOf(id), withdrawn.toList())
     }
+
+    @Test
+    fun declineUnaskedAnswersAndDropsTheSlot() {
+        val id = center.register(request)
+        center.declineUnasked(id)
+        assertTrue(center.pending.value.isEmpty())
+        assertEquals(listOf(id), withdrawn.toList())
+        assertEquals(0, center.openSlots())
+        assertFalse(center.await(id, timeoutSeconds = 0))
+    }
+
+    @Test
+    fun awaitDropsItsSlot() {
+        val id = center.register(request)
+        val (done, _) = awaitInBackground(id)
+        center.resolve(id, true)
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(0, center.openSlots())
+    }
 }
