@@ -25,3 +25,4 @@ Everything else uses system colours.
 - Respect Reduce Motion, Reduce Transparency, Dynamic Type and native touch/keyboard behaviour.
 
 iOS screenshots of the current design: `docs/screenshots/ios/`.
+Android screenshots (Devices and Send in light, dark, battery saver with blur off, and font scale 2.0): `docs/screenshots/android/`.
