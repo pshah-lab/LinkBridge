@@ -38,7 +38,6 @@ class LinkBridgeService : Service() {
     private val activeSends = AtomicInteger(0)
     private val center get() = LinkBridgeHub.approvals
     /** The file being sent, so a stop can report it as failed. */
-    @Volatile private var currentSendName: String? = null
     /** Set in onDestroy; a transfer finishing after that records history but publishes no live state. */
     @Volatile private var stopped = false
 
@@ -98,11 +97,10 @@ class LinkBridgeService : Service() {
         if (LinkBridgeHub.service === this) LinkBridgeHub.service = null
         runCatching { discovery.stop() }
         runCatching { receiveServer.stop() }
+        // The send in flight keeps running (its socket I/O isn't interruptible) and reports its
+        // real outcome when it ends, so it isn't marked failed here. Queued sends never start:
+        // report each one, so the share sheet's tally can complete.
         val dropped = sendExecutor.shutdownNow()
-        currentSendName?.let { name ->
-            LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(name, STOPPED_MESSAGE))
-        }
-        // Report each queued send too, so the share sheet's tally can complete.
         dropped.forEach { task ->
             val name = (task as? QueuedSend)?.let { queued ->
                 runCatching { contentResolver.fileInfo(queued.uri).name }.getOrNull()
@@ -142,7 +140,6 @@ class LinkBridgeService : Service() {
         activeSends.incrementAndGet()
         sendExecutor.execute(QueuedSend(uri) {
             val info = runCatching { contentResolver.fileInfo(uri) }.getOrElse { SelectedFileInfo("file", -1) }
-            currentSendName = info.name
             try {
                 updateNotification("Sending ${info.name} to ${peer.deviceName}", progress = 0)
                 LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Progress(info.name, 0, info.size))
@@ -161,7 +158,7 @@ class LinkBridgeService : Service() {
                     LinkBridgeHub.recordHistory(
                         this, TransferHistoryEntry(info.name, info.size, peer.deviceName, isOutgoing = true)
                     )
-                    if (!stopped) LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
+                    LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
                 }.onFailure { error ->
                     Log.e(TAG, "Send failed", error)
                     val message = error.localizedMessage ?: "Unknown error"
@@ -172,10 +169,9 @@ class LinkBridgeService : Service() {
                             System.currentTimeMillis()
                         )
                     )
-                    if (!stopped) LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(info.name, message))
+                    LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(info.name, message))
                 }
             } finally {
-                currentSendName = null
                 activeSends.decrementAndGet()
                 updateNotification(READY_TEXT, progress = null)
             }
