@@ -10,7 +10,7 @@ sealed interface SendPhase {
 
     val actionTitle: String
         get() = when (this) {
-            Idle -> "Choose a file"
+            Idle -> "Choose files"
             is Ready -> "Send"
             is Sending -> "Sending…"
             is Sent -> "Sent"

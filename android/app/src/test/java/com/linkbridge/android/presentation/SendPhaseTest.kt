@@ -9,7 +9,7 @@ import org.junit.Test
 class SendPhaseTest {
     @Test
     fun idleAsksForAFile() {
-        assertEquals("Choose a file", SendPhase.Idle.actionTitle)
+        assertEquals("Choose files", SendPhase.Idle.actionTitle)
         assertFalse(SendPhase.Idle.isEnabled(targetSendable = true))
     }
 

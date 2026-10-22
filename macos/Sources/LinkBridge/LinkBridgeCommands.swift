@@ -48,12 +48,12 @@ struct LinkBridgeCommands: Commands {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         NSApp.activate()
         panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
+            guard response == .OK, !panel.urls.isEmpty else { return }
             MainActor.assumeIsolated {
-                model.stage(url)
+                model.stage(panel.urls)
                 show(model.selectedItem.map { .device($0.id) })
             }
         }

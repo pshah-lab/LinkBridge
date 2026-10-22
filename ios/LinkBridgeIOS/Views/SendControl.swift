@@ -2,7 +2,7 @@ import LinkBridgePresentation
 import SwiftUI
 
 /// The one primary action on the Send tab. A single glass shape that morphs between
-/// "Choose a file", "Send", a progress pill, a check and "Retry".
+/// "Choose files", "Send", a progress pill, a check and "Retry".
 struct SendControl: View {
     let phase: SendPhase
     let enabled: Bool

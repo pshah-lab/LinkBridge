@@ -17,7 +17,7 @@ public enum SendPhase: Equatable {
 
     public var actionTitle: String {
         switch self {
-        case .idle: "Choose a file"
+        case .idle: "Choose files"
         case .ready: "Send"
         case .sending: "Sending…"
         case .sent: "Sent"

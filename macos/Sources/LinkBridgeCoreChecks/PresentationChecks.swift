@@ -96,7 +96,7 @@ func runPresentationChecks() {
     }
 
     section("Send phase") {
-        check(!SendPhase.idle.isActionEnabled(targetSendable: true) && SendPhase.idle.actionTitle == "Choose a file", "idle")
+        check(!SendPhase.idle.isActionEnabled(targetSendable: true) && SendPhase.idle.actionTitle == "Choose files", "idle")
         let ready = SendPhase.ready(fileName: "a.txt")
         check(ready.isActionEnabled(targetSendable: true) && !ready.isActionEnabled(targetSendable: false)
               && ready.actionTitle == "Send" && ready.actionSymbol == "paperplane.fill", "ready")
@@ -125,6 +125,19 @@ func runPresentationChecks() {
         check(DroppedFile.sendable(original) == original, "a dropped file is used in place")
         check(DroppedFile.sendable(FileManager.default.temporaryDirectory) == nil, "a dropped folder is rejected")
         check(DroppedFile.sendable(URL(string: "https://example.com")!) == nil, "a dropped web link is rejected")
+    }
+
+    section("Send batch") {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("batch-\(UUID()).txt")
+        try Data("x".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let many = Array(repeating: file, count: SendBatch.maxFiles + 5)
+        check(SendBatch.sendable(many).count == 50, "capped at 50")
+        check(SendBatch.sendable([URL(string: "https://example.com")!, FileManager.default.temporaryDirectory, file])
+              == [file], "links and folders skipped")
+        check(SendBatch.summary(["a.txt"]) == "a.txt" && SendBatch.summary(["a", "b", "c"]) == "3 files", "summary")
+        check(SendBatch.progressName("a.txt", index: 0, count: 1) == "a.txt"
+              && SendBatch.progressName("b.txt", index: 1, count: 3) == "b.txt (2 of 3)", "progress name")
     }
 
     section("History rows") {

@@ -42,7 +42,7 @@ data class UiState(
     val selectedId: String? = null,
     val connection: ConnectionState = ConnectionState.Searching,
     val sendPhase: SendPhase = SendPhase.Idle,
-    val stagedFile: StagedFile? = null,
+    val stagedFiles: List<StagedFile> = emptyList(),
     val live: List<LiveRow> = emptyList(),
     val history: List<HistorySection> = emptyList(),
     val approvals: List<PendingApproval> = emptyList(),

@@ -119,7 +119,7 @@ class MainViewModelStateTest {
         assertEquals(SendPhase.Sending("a.txt", 0.5f), vm.state.value.sendPhase)
         assertEquals(LiveRow.Sending("a.txt", 0.5f, "Studio"), vm.state.value.live.single())
 
-        hub.sendState.value = SendState.Done("a.txt", bytes = 100, peerName = "Studio")
+        hub.publish(SendState.Done("a.txt", bytes = 100, peerName = "Studio"))
         runCurrent()
         assertEquals(SendPhase.Sent("a.txt"), vm.state.value.sendPhase)
 
@@ -129,14 +129,51 @@ class MainViewModelStateTest {
         advanceTimeBy(2)
         runCurrent()
         assertEquals(SendPhase.Idle, vm.state.value.sendPhase)
-        assertNull(vm.state.value.stagedFile)
+        assertTrue(vm.state.value.stagedFiles.isEmpty())
 
         vm.stage(file)
         vm.send()
-        hub.sendState.value = SendState.Failed("a.txt", "Connection refused")
+        hub.publish(SendState.Failed("a.txt", "Connection refused"))
         runCurrent()
         assertEquals(SendPhase.Failed("a.txt", "Connection refused"), vm.state.value.sendPhase)
-        assertEquals(file, vm.state.value.stagedFile)
+        assertEquals(listOf(file), vm.state.value.stagedFiles)
+    }
+
+    @Test
+    fun severalFilesSendInTurnAndOnlyFailuresStayForRetry() = runTest(dispatcher) {
+        val b = file.copy(uri = "content://b", name = "b.txt")
+        val c = file.copy(uri = "content://c", name = "c.txt")
+        val vm = pairedViewModel()
+        vm.stage(listOf(file, b, c))
+        runCurrent()
+        assertEquals(SendPhase.Ready("3 files"), vm.state.value.sendPhase)
+
+        vm.send()
+        advanceUntilIdle()
+        assertEquals(listOf(file, b, c), hub.sends.map { it.third })
+        assertEquals(SendPhase.Sending("a.txt (1 of 3)", 0f), vm.state.value.sendPhase)
+
+        hub.publish(SendState.Progress("a.txt", sent = 50, total = 100))
+        runCurrent()
+        assertEquals(SendPhase.Sending("a.txt (1 of 3)", 0.5f), vm.state.value.sendPhase)
+        hub.publish(SendState.Done("a.txt", bytes = 100, peerName = "Studio"))
+        hub.publish(SendState.Failed("b.txt", "Connection refused"))
+        runCurrent()
+        assertEquals(SendPhase.Sending("c.txt (3 of 3)", 0f), vm.state.value.sendPhase)
+        hub.publish(SendState.Done("c.txt", bytes = 100, peerName = "Studio"))
+        runCurrent()
+
+        assertEquals(SendPhase.Failed("b.txt", "1 of 3 files didn't send"), vm.state.value.sendPhase)
+        assertEquals(listOf(b), vm.state.value.stagedFiles)
+    }
+
+    @Test
+    fun stagingCapsAtFiftyFiles() = runTest(dispatcher) {
+        val vm = pairedViewModel()
+        vm.stage(List(60) { file.copy(uri = "content://$it") })
+        runCurrent()
+        assertEquals(SendBatch.MAX_FILES, vm.state.value.stagedFiles.size)
+        assertEquals(SendPhase.Ready("50 files"), vm.state.value.sendPhase)
     }
 
     @Test
@@ -209,7 +246,7 @@ class MainViewModelStateTest {
         advanceUntilIdle()
 
         assertTrue(hub.sends.isEmpty())
-        assertNull(vm.state.value.stagedFile)
+        assertTrue(vm.state.value.stagedFiles.isEmpty())
         assertEquals("Studio isn't available — pair it or bring it nearby, then retry.", vm.state.value.notice)
 
         vm.clearNotice()

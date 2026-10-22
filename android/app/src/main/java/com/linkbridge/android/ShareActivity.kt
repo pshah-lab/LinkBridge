@@ -93,7 +93,7 @@ class ShareActivity : ComponentActivity() {
             val allowed = uri.scheme == ContentResolver.SCHEME_CONTENT && !isOwnAuthority(uri)
             if (!allowed) Log.w(TAG, "Rejected shared URI with scheme ${uri.scheme}")
             allowed
-        }.take(MAX_FILES)
+        }.take(SendBatch.MAX_FILES)
     }
 
     private fun isOwnAuthority(uri: Uri): Boolean {
@@ -104,6 +104,5 @@ class ShareActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "LinkBridgeShare"
-        private const val MAX_FILES = 50
     }
 }

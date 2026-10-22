@@ -47,6 +47,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.linkbridge.android.LiveRow
+import com.linkbridge.android.SendBatch
 import com.linkbridge.android.StagedFile
 import com.linkbridge.android.UiState
 import com.linkbridge.android.formatBytes
@@ -120,7 +121,8 @@ fun SendScreen(
             )
             PickZone(
                 text = pickZoneText(phase, macName),
-                staged = state.stagedFile.takeIf { phase is SendPhase.Ready || phase is SendPhase.Failed },
+                staged = state.stagedFiles.takeIf { it.isNotEmpty() && (phase is SendPhase.Ready || phase is SendPhase.Failed) }
+                    ?.let(SendBatch::summary),
                 enabled = phase !is SendPhase.Sending,
                 onClick = actions.onPick,
             )
@@ -195,20 +197,22 @@ private fun PickZone(text: String, staged: StagedFile?, enabled: Boolean, onClic
 }
 
 /**
- * The system file picker. A picked file gets a persistable read grant when the provider allows
- * it (so a failed send can be retried later), then its name and size are read and it is
- * handed to [onPicked].
+ * The system file picker, for up to [SendBatch.MAX_FILES] files. Each picked file gets a
+ * persistable read grant when the provider allows it (so a failed send can be retried later),
+ * then its name and size are read and the list is handed to [onPicked].
  */
 @Composable
-fun rememberFilePicker(onPicked: (StagedFile) -> Unit): () -> Unit {
+fun rememberFilePicker(onPicked: (List<StagedFile>) -> Unit): () -> Unit {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val latest by rememberUpdatedState(onPicked)
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
-            val file = withContext(Dispatchers.IO) { stagedFile(context, uri) }
-            latest(file)
+            val files = withContext(Dispatchers.IO) {
+                uris.take(SendBatch.MAX_FILES).map { stagedFile(context, it) }
+            }
+            latest(files)
         }
     }
     return remember(launcher) { { launcher.launch(arrayOf("*/*")) } }
@@ -265,12 +269,12 @@ private fun SendIdlePreview() = SendPreview(PreviewData.devices)
 @ScreenPreviews
 @Composable
 private fun SendReadyPreview() =
-    SendPreview(PreviewData.devices.copy(sendPhase = SendPhase.Ready("Report.pdf"), stagedFile = previewFile))
+    SendPreview(PreviewData.devices.copy(sendPhase = SendPhase.Ready("Report.pdf"), stagedFiles = listOf(previewFile)))
 
 @ScreenPreviews
 @Composable
 private fun SendSendingPreview() =
-    SendPreview(PreviewData.devices.copy(sendPhase = SendPhase.Sending("Report.pdf", 0.42f), stagedFile = previewFile))
+    SendPreview(PreviewData.devices.copy(sendPhase = SendPhase.Sending("Report.pdf", 0.42f), stagedFiles = listOf(previewFile)))
 
 @ScreenPreviews
 @Composable
@@ -279,5 +283,5 @@ private fun SendSentPreview() = SendPreview(PreviewData.devices.copy(sendPhase =
 @ScreenPreviews
 @Composable
 private fun SendFailedPreview() = SendPreview(
-    PreviewData.devices.copy(sendPhase = SendPhase.Failed("Report.pdf", "Connection refused"), stagedFile = previewFile),
+    PreviewData.devices.copy(sendPhase = SendPhase.Failed("Report.pdf", "Connection refused"), stagedFiles = listOf(previewFile)),
 )
