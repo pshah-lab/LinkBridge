@@ -51,8 +51,15 @@ object LinkBridgeHub {
     )
     val pendingApprovals: StateFlow<List<PendingApproval>> = approvals.pending
 
-    /** True while MainActivity is started; otherwise approvals go to a notification. */
+    /**
+     * True while MainActivity is started; otherwise approvals go to a notification.
+     * Going false also posts one for each request the in-app sheet was still showing.
+     */
     @Volatile var uiVisible: Boolean = false
+        set(value) {
+            field = value
+            if (!value) service?.notifyPendingApprovals()
+        }
 
     @Volatile internal var service: LinkBridgeService? = null
 

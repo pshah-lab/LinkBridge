@@ -24,6 +24,8 @@ class ApprovalCenter(
     private var queue = ApprovalQueue()
     /** One answer slot per registered id, kept until [await] has read it. */
     private val answers = HashMap<Int, ArrayBlockingQueue<Boolean>>()
+    /** Pending ids that already have a notification, so none is posted twice. */
+    private val notified = HashSet<Int>()
 
     private val _pending = MutableStateFlow<List<PendingApproval>>(emptyList())
     val pending: StateFlow<List<PendingApproval>> = _pending.asStateFlow()
@@ -67,6 +69,7 @@ class ApprovalCenter(
         synchronized(lock) {
             if (queue.items.none { it.id == id }) return false
             queue = queue.resolve(id)
+            notified.remove(id)
             _pending.value = queue.items
             // Offer under the lock so the decision and the answer are one atomic step.
             answers[id]?.offer(accept)
@@ -83,6 +86,24 @@ class ApprovalCenter(
         resolve(id, false)
         synchronized(lock) { answers.remove(id) }
     }
+
+    /**
+     * Claims the notification for [id]. Returns true once while [id] is pending, so the
+     * caller that gets true posts it; false if it is already posted or [id] is answered.
+     */
+    fun claimNotification(id: Int): Boolean = synchronized(lock) {
+        queue.items.any { it.id == id } && notified.add(id)
+    }
+
+    /**
+     * Claims the notification for every pending request that has none yet (the app is
+     * leaving the screen while its sheet still asks) and returns them, oldest first.
+     */
+    fun claimUnnotified(): List<PendingApproval> = synchronized(lock) {
+        queue.items.filter { notified.add(it.id) }
+    }
+
+    fun isPending(id: Int): Boolean = synchronized(lock) { queue.items.any { it.id == id } }
 
     /** Answer slots still held; for tests. */
     internal fun openSlots(): Int = synchronized(lock) { answers.size }
