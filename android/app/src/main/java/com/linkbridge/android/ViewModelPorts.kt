@@ -5,6 +5,7 @@ import android.net.Uri
 import com.linkbridge.android.LinkBridgeHub.SendState
 import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /** The parts of [LinkBridgeHub] that [MainViewModel] uses, so tests can fake them. */
@@ -12,6 +13,8 @@ interface HubPort {
     val peers: StateFlow<List<DiscoveredPeer>>
     val receiveState: StateFlow<ReceiveState>
     val sendState: StateFlow<SendState?>
+    /** Every finished send, one event each; see [LinkBridgeHub.sendResults]. */
+    val sendResults: SharedFlow<SendState>
     val pendingApprovals: StateFlow<List<PendingApproval>>
     val historyVersion: StateFlow<Int>
     fun resolveApproval(id: Int, accept: Boolean)
@@ -40,6 +43,7 @@ class LinkBridgeHubPort(private val context: Context) : HubPort {
     override val peers get() = LinkBridgeHub.peers
     override val receiveState get() = LinkBridgeHub.receiveState
     override val sendState get() = LinkBridgeHub.sendState
+    override val sendResults get() = LinkBridgeHub.sendResults
     override val pendingApprovals get() = LinkBridgeHub.pendingApprovals
     override val historyVersion get() = LinkBridgeHub.historyVersion
 

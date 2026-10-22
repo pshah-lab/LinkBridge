@@ -52,7 +52,7 @@ class MainViewModel(
     private val history = MutableStateFlow<List<TransferHistoryEntry>>(emptyList())
     private val selection = MutableStateFlow<String?>(null)
     private val sendPhase = MutableStateFlow<SendPhase>(SendPhase.Idle)
-    private val staged = MutableStateFlow<StagedFile?>(null)
+    private val staged = MutableStateFlow<List<StagedFile>>(emptyList())
     private val pairing = MutableStateFlow<PairingStep?>(null)
     private val notificationsAllowed = MutableStateFlow(true)
     private val notice = MutableStateFlow<String?>(null)
@@ -73,6 +73,8 @@ class MainViewModel(
     private var pairingGeneration = 0
     private var pendingPair: PendingPair? = null
     private var sentResetJob: Job? = null
+    /** The files this screen queued, until the service reports a result for each. */
+    private var batch: SendBatch? = null
 
     private class PendingPair(val peer: DiscoveredPeer, val device: DeviceIdentity, val session: PairingSession)
 
@@ -98,6 +100,7 @@ class MainViewModel(
                 if (!stale && sendState != null) onSendState(sendState)
             }
         }
+        viewModelScope.launch { hub.sendResults.collect(::onSendResult) }
     }
 
     // ---- Devices ----
@@ -211,27 +214,39 @@ class MainViewModel(
 
     // ---- Send ----
 
-    fun stage(file: StagedFile) {
+    fun stage(file: StagedFile) = stage(listOf(file))
+
+    /** Stages up to [SendBatch.MAX_FILES] files to send together. */
+    fun stage(files: List<StagedFile>) {
         if (sendPhase.value is SendPhase.Sending) return
+        val capped = files.take(SendBatch.MAX_FILES)
+        if (capped.isEmpty()) return
         sentResetJob?.cancel()
-        staged.value = file
-        sendPhase.value = SendPhase.Ready(file.name)
+        staged.value = capped
+        sendPhase.value = SendPhase.Ready(SendBatch.summary(capped).name)
     }
 
-    /** Sends the staged file to the selected device, which must be sendable and trusted. */
+    /**
+     * Queues every staged file in the service for the selected device, which must be sendable and
+     * trusted. The service sends them one after another; [onSendResult] counts the results.
+     */
     fun send() {
-        val file = staged.value ?: return
-        if (sendPhase.value is SendPhase.Sending) return
+        val files = staged.value
+        if (files.isEmpty() || sendPhase.value is SendPhase.Sending) return
         val item = devices.value.firstOrNull { it.id == selection.value } ?: return
         if (!item.isSendable) return
         val peer = item.peer ?: return
         val trust = trusted.value.firstOrNull { it.deviceId == item.deviceId } ?: return
         sentResetJob?.cancel()
-        sendPhase.value = if (hub.send(peer, trust, file)) {
-            SendPhase.Sending(file.name, 0f)
-        } else {
-            SendPhase.Failed(file.name, "LinkBridge isn't running.")
+        // hub.send only refuses when the service isn't running, so the first file decides for all.
+        if (!hub.send(peer, trust, files.first())) {
+            finishBatch(files.fold(SendBatch(files)) { queued, _ -> queued.record(NOT_RUNNING) })
+            return
         }
+        files.drop(1).forEach { hub.send(peer, trust, it) }
+        val queued = SendBatch(files)
+        batch = queued
+        sendPhase.value = SendPhase.Sending(queued.progressName(files.first().name), 0f)
     }
 
     /**
@@ -258,19 +273,55 @@ class MainViewModel(
     }
 
     private fun onSendState(state: SendState) {
-        when (state) {
-            is SendState.Progress -> {
+        val active = batch
+        when {
+            state is SendState.Progress -> {
                 val progress = if (state.total > 0) state.sent.toFloat() / state.total else 0f
-                sendPhase.value = SendPhase.Sending(state.fileName, progress.coerceIn(0f, 1f))
+                val name = active?.progressName(state.fileName) ?: state.fileName
+                sendPhase.value = SendPhase.Sending(name, progress.coerceIn(0f, 1f))
             }
+            // A batch is finished by onSendResult, which sees every result.
+            active != null -> Unit
+            else -> onSingleResult(state)
+        }
+    }
+
+    private fun onSendResult(result: SendState) {
+        val active = batch ?: return
+        val next = active.record((result as? SendState.Failed)?.message)
+        if (next.isComplete) {
+            batch = null
+            finishBatch(next)
+        } else {
+            batch = next
+            next.next?.let { sendPhase.value = SendPhase.Sending(next.progressName(it.name), 0f) }
+        }
+    }
+
+    private fun finishBatch(done: SendBatch) {
+        val outcome = done.outcome()
+        // Keep only the failures staged, so Retry resends just those.
+        staged.value = done.failed
+        sendPhase.value = outcome
+        if (outcome is SendPhase.Sent) scheduleIdle()
+    }
+
+    private fun scheduleIdle() {
+        sentResetJob?.cancel()
+        sentResetJob = viewModelScope.launch {
+            delay(SENT_RESET_MS)
+            if (sendPhase.value is SendPhase.Sent) sendPhase.value = SendPhase.Idle
+        }
+    }
+
+    /** A result for a send this view model didn't start, such as one from before it existed. */
+    private fun onSingleResult(state: SendState) {
+        when (state) {
+            is SendState.Progress -> Unit
             is SendState.Done -> {
                 sendPhase.value = SendPhase.Sent(state.fileName)
-                staged.value = null
-                sentResetJob?.cancel()
-                sentResetJob = viewModelScope.launch {
-                    delay(SENT_RESET_MS)
-                    if (sendPhase.value is SendPhase.Sent) sendPhase.value = SendPhase.Idle
-                }
+                staged.value = emptyList()
+                scheduleIdle()
             }
             is SendState.Failed -> sendPhase.value = SendPhase.Failed(state.fileName, state.message)
         }
@@ -312,7 +363,7 @@ class MainViewModel(
         val devices: List<DeviceListItem>,
         val selectedId: String?,
         val sendPhase: SendPhase,
-        val staged: StagedFile?,
+        val staged: List<StagedFile>,
         val trusted: List<TrustedPeer>
     )
 
@@ -347,7 +398,7 @@ class MainViewModel(
                 errorMessage = (other.receive as? ReceiveState.Failed)?.message
             ),
             sendPhase = send.sendPhase,
-            stagedFile = send.staged,
+            stagedFiles = send.staged,
             live = live,
             history = sections,
             approvals = other.approvals,
@@ -380,6 +431,7 @@ class MainViewModel(
 
     private companion object {
         const val SENT_RESET_MS = 2_000L
+        private const val NOT_RUNNING = "LinkBridge isn't running."
         const val RESTART_WAIT_MS = 5_000L
 
         /** Process-wide; never cancelled. */

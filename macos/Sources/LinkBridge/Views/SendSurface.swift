@@ -21,8 +21,8 @@ struct SendSurface: View {
                             action: primaryAction)
                     .padding(.bottom, 28)
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
-                if case .success(let url) = result { model.stage(url) }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result { model.stage(urls) }
             }
         } else {
             EmptyState(symbol: item.platform.symbol, message: Self.unavailableSentence(item))
@@ -35,7 +35,7 @@ struct SendSurface: View {
                 Image(systemName: "arrow.up.doc")
                     .font(.system(size: 40, weight: .light))
                     .foregroundStyle(targeted ? Accent.action.color : .secondary)
-                Text(stagedName.map { "Ready to send \($0)" } ?? "Drop a file to send to \(item.name)")
+                Text(stagedName.map { "Ready to send \($0)" } ?? "Drop files to send to \(item.name)")
                     .font(.title3.weight(.medium))
                     .multilineTextAlignment(.center)
                 Text("or click to choose")
@@ -54,11 +54,12 @@ struct SendSurface: View {
         .buttonStyle(.plain)
         .disabled(model.isSending)
         .dropDestination(for: URL.self) { urls, _ in
-            guard !model.isSending, let url = urls.first, let staged = DroppedFile.sendable(url) else { return false }
+            let staged = SendBatch.sendable(urls)
+            guard !model.isSending, !staged.isEmpty else { return false }
             model.stage(staged)
             return true
         } isTargeted: { targeted = $0 }
-        .accessibilityLabel("Choose a file to send to \(item.name)")
+        .accessibilityLabel("Choose files to send to \(item.name)")
     }
 
     private var stagedName: String? {

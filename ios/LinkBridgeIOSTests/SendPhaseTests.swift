@@ -4,7 +4,7 @@ import Testing
 
 @Test func idleIsNeverEnabled() {
     #expect(!SendPhase.idle.isActionEnabled(targetSendable: true))
-    #expect(SendPhase.idle.actionTitle == "Choose a file")
+    #expect(SendPhase.idle.actionTitle == "Choose files")
 }
 
 @Test func readyNeedsSendableTarget() {

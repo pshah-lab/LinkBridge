@@ -26,7 +26,8 @@ final class LinkBridgeModel: ObservableObject {
     private let browser: PeerBrowser
     private let trustedStore = TrustedPeerStore()
     private var pairingClient: PairingClient?
-    private var selectedFile: (url: URL, bookmark: Data?, bytes: Int64)?
+    /// Files chosen or dropped together, sent one after another. Failed ones stay for Retry.
+    private var selectedFiles: [SelectedFile] = []
     /// The device the user picked; survives backgrounding and brief drop-outs.
     private var preferredPeerId: UUID?
     private static let historyKey = "transferHistory"
@@ -123,47 +124,74 @@ final class LinkBridgeModel: ObservableObject {
         lastError = error
     }
 
-    func choose(fileAt url: URL) {
+    private struct SelectedFile {
+        let url: URL
+        let bookmark: Data?
+        let bytes: Int64
+    }
+
+    /// Picks files to send, up to `SendBatch.maxFiles`.
+    func choose(filesAt urls: [URL]) {
         guard !isSending else { return }
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-        selectedFile = (url, try? url.bookmarkData(), bytes)
+        let files = Array(urls.prefix(SendBatch.maxFiles)).map { url in
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+            return SelectedFile(url: url, bookmark: try? url.bookmarkData(), bytes: bytes)
+        }
+        guard !files.isEmpty else { return }
+        selectedFiles = files
         lastError = nil
-        sendPhase = .ready(fileName: url.lastPathComponent)
+        sendPhase = .ready(fileName: SendBatch.summary(files.map(\.url.lastPathComponent)))
     }
 
     func sendSelectedFile() {
-        guard let file = selectedFile, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
+        let files = selectedFiles
+        guard !files.isEmpty, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
               let peer = nearby.first(where: { $0.deviceId != nil && $0.deviceId == selectedPeerId }),
               let endpoint = peer.secureEndpoint, let id = peer.deviceId,
               let secret = trustedStore.find(deviceId: id)?.authToken else {
             lastError = "Pair with a nearby device first"
             return
         }
-        let url = file.url
-        let fileName = url.lastPathComponent
         lastError = nil
-        sendPhase = .sending(fileName: fileName, progress: 0)
+        sendPhase = .sending(fileName: SendBatch.progressName(files[0].url.lastPathComponent, index: 0, count: files.count),
+                             progress: 0)
 
         Task.detached { [weak self] in
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            var failure: String?
-            do {
-                try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
-                    let fraction = total > 0 ? Double(sent) / Double(total) : 0
-                    Task { @MainActor in
-                        guard let self, case .sending = self.sendPhase else { return }
-                        self.sendPhase = .sending(fileName: fileName, progress: fraction)
+            var failedFiles: [SelectedFile] = []
+            var lastFailure: String?
+            for (index, file) in files.enumerated() {
+                let url = file.url
+                let fileName = url.lastPathComponent
+                let shownName = SendBatch.progressName(fileName, index: index, count: files.count)
+                await self?.showProgress(shownName, 0)
+                let accessing = url.startAccessingSecurityScopedResource()
+                var failure: String?
+                do {
+                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
+                        let fraction = total > 0 ? Double(sent) / Double(total) : 0
+                        Task { @MainActor in self?.showProgress(shownName, fraction) }
                     }
+                } catch {
+                    failure = String(describing: error)
                 }
-            } catch {
-                failure = String(describing: error)
+                if accessing { url.stopAccessingSecurityScopedResource() }
+                if let failure {
+                    failedFiles.append(file)
+                    lastFailure = failure
+                }
+                await self?.recordTransfer(fileName: fileName, peerName: peer.deviceName, bytes: file.bytes,
+                                           bookmark: file.bookmark, failure: failure)
             }
-            await self?.finishTransfer(fileName: fileName, peerName: peer.deviceName, bytes: file.bytes,
-                                       bookmark: file.bookmark, failure: failure)
+            await self?.finishTransfer(names: files.map(\.url.lastPathComponent), failed: failedFiles,
+                                       failure: lastFailure)
         }
+    }
+
+    private func showProgress(_ shownName: String, _ fraction: Double) {
+        guard case .sending = sendPhase else { return }
+        sendPhase = .sending(fileName: shownName, progress: fraction)
     }
 
     /// Re-sends the file behind a failed history row to the selected device.
@@ -176,7 +204,7 @@ final class LinkBridgeModel: ObservableObject {
             lastError = "That file is no longer available"
             return
         }
-        choose(fileAt: url)
+        choose(filesAt: [url])
         sendSelectedFile()
     }
 
@@ -186,18 +214,26 @@ final class LinkBridgeModel: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
-    private func finishTransfer(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failure: String?) {
-        if let failure {
-            sendPhase = .failed(fileName: fileName, message: failure)
-            lastError = "Couldn't send \(fileName)"
+    private func finishTransfer(names: [String], failed: [SelectedFile], failure: String?) {
+        if let failure, !failed.isEmpty {
+            // Keep only the failures, so Retry resends just those.
+            selectedFiles = failed
+            let failedNames = failed.map(\.url.lastPathComponent)
+            let message = names.count == 1 ? failure : "\(failed.count) of \(names.count) files didn't send"
+            sendPhase = .failed(fileName: SendBatch.summary(failedNames), message: message)
+            lastError = "Couldn't send \(SendBatch.summary(failedNames))"
         } else {
-            sendPhase = .sent(fileName: fileName)
-            selectedFile = nil
+            let summary = SendBatch.summary(names)
+            sendPhase = .sent(fileName: summary)
+            selectedFiles = []
             Task {
                 try? await Task.sleep(for: .seconds(2.5))
-                if sendPhase == .sent(fileName: fileName) { sendPhase = .idle }
+                if sendPhase == .sent(fileName: summary) { sendPhase = .idle }
             }
         }
+    }
+
+    private func recordTransfer(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failure: String?) {
         history.insert(TransferRecord(fileName: fileName, peerName: peerName, bytes: bytes, date: Date(),
                                       succeeded: failure == nil, detail: failure, bookmark: bookmark), at: 0)
         history = Array(history.prefix(50))

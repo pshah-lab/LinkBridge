@@ -36,8 +36,8 @@ struct SendView: View {
                 }
             }
         }
-        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item]) { result in
-            if case .success(let url) = result { model.choose(fileAt: url) }
+        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { model.choose(filesAt: urls) }
         }
     }
 
@@ -58,13 +58,13 @@ struct SendView: View {
                 Image(systemName: chosenFileName == nil ? "tray.and.arrow.up" : "doc.fill")
                     .font(.system(size: 36))
                     .foregroundStyle(Accent.action.color)
-                Text(chosenFileName ?? "Choose or drop a file")
+                Text(chosenFileName ?? "Choose or drop files")
                     .font(.body.weight(.medium))
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .multilineTextAlignment(.center)
                 if chosenFileName != nil {
-                    Text("Tap to choose a different file")
+                    Text("Tap to choose different files")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -82,9 +82,10 @@ struct SendView: View {
         .buttonStyle(.plain)
         .disabled(model.isSending)
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first, !model.isSending,
-                  let staged = try? DroppedFile.stage(url) else { return false }
-            model.choose(fileAt: staged)
+            guard !model.isSending else { return false }
+            let staged = urls.prefix(SendBatch.maxFiles).compactMap { try? DroppedFile.stage($0) }
+            guard !staged.isEmpty else { return false }
+            model.choose(filesAt: staged)
             return true
         }
     }

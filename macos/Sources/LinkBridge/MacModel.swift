@@ -62,7 +62,8 @@ final class MacModel {
     @ObservationIgnored private let trustedStore = TrustedPeerStore()
     @ObservationIgnored private let historyStore = HistoryStore(key: "linkbridge.history.v2",
                                                                legacyMacKey: "linkbridge.transfer-history")
-    @ObservationIgnored private var stagedFile: (url: URL, bookmark: Data?, bytes: Int64)?
+    /// Files picked or dropped together, sent one after another. Failed ones stay for Retry.
+    @ObservationIgnored private var stagedFiles: [StagedFile] = []
     @ObservationIgnored private var preferredPeerId: UUID?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var trustedObserver: NSObjectProtocol?
@@ -253,74 +254,104 @@ final class MacModel {
 
     // MARK: - Sending
 
-    /// Picks a file for the window's Send control.
-    func stage(_ url: URL) {
+    private struct StagedFile {
+        let url: URL
+        let bookmark: Data?
+        let bytes: Int64
+    }
+
+    /// Picks files for the window's Send control, up to `SendBatch.maxFiles`.
+    func stage(_ urls: [URL]) {
         guard !isSending else { return }
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-        stagedFile = (url, try? url.bookmarkData(options: .withSecurityScope), bytes)
+        let files = Array(urls.prefix(SendBatch.maxFiles)).map { url in
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+            return StagedFile(url: url, bookmark: try? url.bookmarkData(options: .withSecurityScope), bytes: bytes)
+        }
+        guard !files.isEmpty else { return }
+        stagedFiles = files
         lastError = nil
-        sendPhase = .ready(fileName: url.lastPathComponent)
+        sendPhase = .ready(fileName: SendBatch.summary(files.map(\.url.lastPathComponent)))
     }
 
     /// The popover's quick path: stage and send at once.
-    func sendNow(_ url: URL) {
+    func sendNow(_ urls: [URL]) {
         guard !isSending else { return }
-        stage(url)
+        stage(urls)
         send()
     }
 
     func send() {
-        guard let file = stagedFile, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
+        let files = stagedFiles
+        guard !files.isEmpty, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
               let peer = nearby.first(where: { $0.deviceId != nil && $0.deviceId == selectedPeerId }),
               let endpoint = peer.secureEndpoint, let id = peer.deviceId,
               let secret = trustedStore.find(deviceId: id)?.authToken else {
             lastError = "Pair with a nearby device first"
             return
         }
-        let url = file.url
-        let fileName = url.lastPathComponent
         let peerName = peer.deviceName
         lastError = nil
         sendingTarget = peerName
-        sendPhase = .sending(fileName: fileName, progress: 0)
+        sendPhase = .sending(fileName: SendBatch.progressName(files[0].url.lastPathComponent, index: 0, count: files.count),
+                             progress: 0)
 
         Task.detached { [weak self] in
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            var failed = false
-            do {
-                try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
-                    let fraction = total > 0 ? Double(sent) / Double(total) : 0
-                    Task { @MainActor in
-                        guard let self, case .sending = self.sendPhase else { return }
-                        self.sendPhase = .sending(fileName: fileName, progress: fraction)
+            var failedFiles: [StagedFile] = []
+            for (index, file) in files.enumerated() {
+                let url = file.url
+                let fileName = url.lastPathComponent
+                let shownName = SendBatch.progressName(fileName, index: index, count: files.count)
+                await self?.showProgress(shownName, 0)
+                let accessing = url.startAccessingSecurityScopedResource()
+                var failed = false
+                do {
+                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
+                        let fraction = total > 0 ? Double(sent) / Double(total) : 0
+                        Task { @MainActor in self?.showProgress(shownName, fraction) }
                     }
+                } catch {
+                    failed = true
                 }
-            } catch {
-                failed = true
+                if accessing { url.stopAccessingSecurityScopedResource() }
+                if failed { failedFiles.append(file) }
+                await self?.recordSend(fileName: fileName, peerName: peerName, bytes: file.bytes,
+                                       bookmark: file.bookmark, failed: failed)
             }
-            await self?.finishSend(fileName: fileName, peerName: peerName, bytes: file.bytes,
-                                   bookmark: file.bookmark, failed: failed)
+            await self?.finishSend(names: files.map(\.url.lastPathComponent), failed: failedFiles, peerName: peerName)
         }
     }
 
-    private func finishSend(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failed: Bool) {
+    private func showProgress(_ shownName: String, _ fraction: Double) {
+        guard case .sending = sendPhase else { return }
+        sendPhase = .sending(fileName: shownName, progress: fraction)
+    }
+
+    private func recordSend(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failed: Bool) {
         let failure = failed ? "Couldn't reach \(peerName) — check it's on the same Wi-Fi, then retry." : nil
-        sendingTarget = nil
-        if let failure {
-            sendPhase = .failed(fileName: fileName, message: failure)
-        } else {
-            sendPhase = .sent(fileName: fileName)
-            stagedFile = nil
-            Task {
-                try? await Task.sleep(for: .seconds(2.5))
-                if sendPhase == .sent(fileName: fileName) { sendPhase = .idle }
-            }
-        }
         history = historyStore.add(TransferRecord(fileName: fileName, peerName: peerName, bytes: bytes, date: Date(),
                                                   succeeded: !failed, detail: failure, bookmark: bookmark))
+    }
+
+    private func finishSend(names: [String], failed: [StagedFile], peerName: String) {
+        sendingTarget = nil
+        if failed.isEmpty {
+            let summary = SendBatch.summary(names)
+            sendPhase = .sent(fileName: summary)
+            stagedFiles = []
+            Task {
+                try? await Task.sleep(for: .seconds(2.5))
+                if sendPhase == .sent(fileName: summary) { sendPhase = .idle }
+            }
+        } else {
+            // Keep only the failures, so Retry resends just those.
+            stagedFiles = failed
+            let message = names.count == 1
+                ? "Couldn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
+                : "\(failed.count) of \(names.count) files didn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
+            sendPhase = .failed(fileName: SendBatch.summary(failed.map(\.url.lastPathComponent)), message: message)
+        }
     }
 
     /// Re-sends the file behind a failed history row to the selected device.
@@ -333,7 +364,7 @@ final class MacModel {
             lastError = "That file is no longer available"
             return
         }
-        sendNow(url)
+        sendNow([url])
     }
 
     // MARK: - History and Finder

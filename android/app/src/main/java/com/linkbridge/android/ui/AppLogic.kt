@@ -55,7 +55,7 @@ const val NO_TARGET_ACTION = "Go to Devices"
 
 /** The pick zone's label: "Sending…" while a send runs, else who the file goes to. */
 fun pickZoneText(phase: SendPhase, macName: String): String =
-    if (phase is SendPhase.Sending) "Sending…" else "Choose a file to send to $macName"
+    if (phase is SendPhase.Sending) "Sending…" else "Choose files to send to $macName"
 
 /** Shown under the pick zone after a failed send. */
 fun sendFailureText(macName: String): String =

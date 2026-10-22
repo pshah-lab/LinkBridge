@@ -3,6 +3,7 @@ package com.linkbridge.android
 import com.linkbridge.android.LinkBridgeHub.SendState
 import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 
 internal const val MAC_ID = "6f9619ff-8b86-d011-b42d-00cf4fc964ff"
@@ -28,6 +29,7 @@ internal class FakeHub : HubPort {
     override val peers = MutableStateFlow<List<DiscoveredPeer>>(emptyList())
     override val receiveState = MutableStateFlow<ReceiveState>(ReceiveState.Listening)
     override val sendState = MutableStateFlow<SendState?>(null)
+    override val sendResults = MutableSharedFlow<SendState>(extraBufferCapacity = 64)
     override val pendingApprovals = MutableStateFlow<List<PendingApproval>>(emptyList())
     override val historyVersion = MutableStateFlow(0)
 
@@ -43,6 +45,12 @@ internal class FakeHub : HubPort {
         sends += Triple(peer, trustedPeer, file)
         return sendAccepted
     }
+    /** Like the service: every state goes to [sendState], finished ones to [sendResults] too. */
+    fun publish(state: SendState) {
+        sendState.value = state
+        if (state !is SendState.Progress) sendResults.tryEmit(state)
+    }
+
     override fun rescan() { rescans += 1; onRescan() }
     override fun startService() { serviceRunning = true }
     override fun stopService() { serviceRunning = false }

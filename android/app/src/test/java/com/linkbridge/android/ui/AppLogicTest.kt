@@ -68,8 +68,8 @@ class AppLogicTest {
     }
 
     @Test fun pickZoneCopy() {
-        assertEquals("Choose a file to send to Studio", pickZoneText(SendPhase.Idle, "Studio"))
-        assertEquals("Choose a file to send to Studio", pickZoneText(SendPhase.Ready("a"), "Studio"))
+        assertEquals("Choose files to send to Studio", pickZoneText(SendPhase.Idle, "Studio"))
+        assertEquals("Choose files to send to Studio", pickZoneText(SendPhase.Ready("a"), "Studio"))
         assertEquals("Sending…", pickZoneText(SendPhase.Sending("a", 0.1f), "Studio"))
     }
 

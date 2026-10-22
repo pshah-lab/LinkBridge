@@ -93,7 +93,8 @@ struct CompactDropTarget: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .dropDestination(for: URL.self) { urls, _ in
-            guard enabled, let url = urls.first, let staged = DroppedFile.sendable(url) else { return false }
+            let staged = SendBatch.sendable(urls)
+            guard enabled, !staged.isEmpty else { return false }
             model.sendNow(staged)
             return true
         } isTargeted: { targeted = $0 }
@@ -102,18 +103,18 @@ struct CompactDropTarget: View {
     private func label(target: DeviceListItem?) -> String {
         if model.isSending { return "Sending…" }
         guard let target, target.isSendable else { return "Pair a device to send files" }
-        return "Drop a file to send to \(target.name)"
+        return "Drop files to send to \(target.name)"
     }
 
     private func choose() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         NSApp.activate()
         panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            MainActor.assumeIsolated { model.sendNow(url) }
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            MainActor.assumeIsolated { model.sendNow(panel.urls) }
         }
     }
 }
