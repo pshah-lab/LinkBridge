@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import java.net.InetAddress
+import java.net.NetworkInterface
 
 class DiscoveryService(
     context: Context,
@@ -140,7 +141,7 @@ class DiscoveryService(
                 resolvingServices.remove(resolvedService.serviceName)
 
                 val peer = resolvedService.toPeer() ?: return
-                if (peer.isSelf()) return
+                if (peer.isSelf()) return forgetSelf(peer.serviceName)
 
                 peers[peer.serviceName] = peer
                 publishPeers()
@@ -164,7 +165,7 @@ class DiscoveryService(
 
             override fun onServiceUpdated(updated: NsdServiceInfo) {
                 val peer = updated.toPeer() ?: return
-                if (peer.isSelf()) return
+                if (peer.isSelf()) return forgetSelf(name)
                 peers[name] = peer
                 publishPeers()
             }
@@ -181,7 +182,20 @@ class DiscoveryService(
             .onFailure { infoCallbacks.remove(name); Log.e(TAG, "Could not watch $name", it) }
     }
 
-    private fun DiscoveredPeer.isSelf() = deviceId == identity.deviceId
+    /**
+     * Our own announcement. The rid check alone misses a cached copy from before a restart:
+     * it carries an old rid and our tags, so it would match a paired Mac. Its address is ours.
+     */
+    private fun DiscoveredPeer.isSelf() = deviceId == identity.deviceId || isLocalAddress(host)
+
+    private fun isLocalAddress(host: String): Boolean = runCatching {
+        NetworkInterface.getByInetAddress(InetAddress.getByName(host)) != null
+    }.getOrDefault(false)
+
+    /** Drops an entry that turned out to be our own announcement. */
+    private fun forgetSelf(name: String) {
+        if (peers.remove(name) != null) publishPeers()
+    }
 
     private fun NsdServiceInfo.toPeer(): DiscoveredPeer? {
         val hostAddress = hostAddress() ?: return null
