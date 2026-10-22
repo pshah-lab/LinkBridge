@@ -1,60 +1,53 @@
 package com.linkbridge.android
 
 import android.content.Context
-import org.json.JSONArray
-import org.json.JSONObject
+import android.content.SharedPreferences
 
 data class TransferHistoryEntry(
     val fileName: String,
     val bytes: Long,
     val peerName: String,
     val isOutgoing: Boolean,
-    val completedAt: Long = System.currentTimeMillis()
+    val completedAt: Long = System.currentTimeMillis(),
+    val succeeded: Boolean = true,
+    /** The error message on a failed transfer. */
+    val detail: String? = null,
+    /** A content URI the app can still read: the received file, or a send it can retry. */
+    val contentUri: String? = null
 )
 
-class TransferHistoryStore(context: Context) {
-    private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+/** Where the encoded history lives; SharedPreferences in the app, a plain field in tests. */
+interface HistoryBacking {
+    fun read(): String?
+    fun write(encoded: String)
+}
 
-    @Synchronized
+class TransferHistoryStore internal constructor(private val backing: HistoryBacking) {
+    constructor(context: Context) : this(PreferencesBacking(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)))
+
+    /**
+     * Prepends [entry]. Sends and receives finish on different threads and each caller may
+     * build its own store, so the read-modify-write holds one process-wide lock.
+     */
     fun add(entry: TransferHistoryEntry) {
-        val history = load().toMutableList()
-        history.add(0, entry)
-        preferences.edit().putString(KEY_HISTORY, JSONArray().apply {
-            history.take(MAX_ENTRIES).forEach { put(it.toJson()) }
-        }.toString()).apply()
+        synchronized(LOCK) {
+            val history = listOf(entry) + load()
+            backing.write(TransferHistoryCodec.encode(history.take(MAX_ENTRIES)))
+        }
     }
 
-    fun load(): List<TransferHistoryEntry> {
-        val raw = preferences.getString(KEY_HISTORY, null) ?: return emptyList()
-        return runCatching {
-            val json = JSONArray(raw)
-            buildList {
-                for (index in 0 until json.length()) {
-                    val item = json.getJSONObject(index)
-                    add(
-                        TransferHistoryEntry(
-                            fileName = item.getString("fileName"),
-                            bytes = item.getLong("bytes"),
-                            peerName = item.getString("peerName"),
-                            isOutgoing = item.getBoolean("isOutgoing"),
-                            completedAt = item.getLong("completedAt")
-                        )
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
+    fun load(): List<TransferHistoryEntry> = TransferHistoryCodec.decode(backing.read())
+
+    private class PreferencesBacking(private val preferences: SharedPreferences) : HistoryBacking {
+        override fun read(): String? = preferences.getString(KEY_HISTORY, null)
+        // apply() updates the in-memory map before returning, so the next read sees it.
+        override fun write(encoded: String) = preferences.edit().putString(KEY_HISTORY, encoded).apply()
     }
 
-    private fun TransferHistoryEntry.toJson() = JSONObject()
-        .put("fileName", fileName)
-        .put("bytes", bytes)
-        .put("peerName", peerName)
-        .put("isOutgoing", isOutgoing)
-        .put("completedAt", completedAt)
-
-    private companion object {
-        const val PREFERENCES = "linkbridge_transfer_history"
-        const val KEY_HISTORY = "entries"
+    internal companion object {
+        private val LOCK = Any()
+        private const val PREFERENCES = "linkbridge_transfer_history"
+        private const val KEY_HISTORY = "entries"
         const val MAX_ENTRIES = 50
     }
 }

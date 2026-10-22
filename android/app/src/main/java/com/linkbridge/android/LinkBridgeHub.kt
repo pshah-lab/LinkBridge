@@ -1,85 +1,105 @@
 package com.linkbridge.android
 
+import android.content.Context
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
-import java.util.concurrent.CopyOnWriteArraySet
+import com.linkbridge.android.presentation.PendingApproval
+import com.linkbridge.android.presentation.ReceiveState
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * In-process link between [LinkBridgeService] (which owns discovery, receiving and
- * sending) and whatever UI is visible. All listener callbacks run on the main thread.
+ * sending) and whatever UI is visible. State is published as [StateFlow]s.
  */
 object LinkBridgeHub {
-    interface Listener {
-        fun onPeersChanged(peers: List<DiscoveredPeer>) {}
-        fun onReceiveStatus(status: String) {}
-        fun onActivityLogged(message: String, isOutgoing: Boolean) {}
-        fun onSendStateChanged(state: SendState) {}
-    }
-
     sealed interface SendState {
         data class Progress(val fileName: String, val sent: Long, val total: Long) : SendState
         data class Done(val fileName: String, val bytes: Long, val peerName: String) : SendState
         data class Failed(val fileName: String, val message: String) : SendState
     }
 
-    /** Shows an approval prompt in the visible UI and reports the answer. */
-    fun interface Approver {
-        fun approve(request: IncomingTransferRequest, answer: (Boolean) -> Unit)
-    }
+    private val _peers = MutableStateFlow<List<DiscoveredPeer>>(emptyList())
+    val peers: StateFlow<List<DiscoveredPeer>> = _peers.asStateFlow()
 
-    private val main = Handler(Looper.getMainLooper())
-    private val listeners = CopyOnWriteArraySet<Listener>()
+    private val _receiveState = MutableStateFlow<ReceiveState>(ReceiveState.Starting)
+    val receiveState: StateFlow<ReceiveState> = _receiveState.asStateFlow()
 
-    @Volatile var peers: List<DiscoveredPeer> = emptyList()
-        private set
-    @Volatile var receiveStatus: String = "Starting LinkBridge…"
-        private set
+    private val _sendState = MutableStateFlow<SendState?>(null)
+    val sendState: StateFlow<SendState?> = _sendState.asStateFlow()
 
-    /** Set while an activity is in the foreground; incoming files are approved there. */
-    @Volatile var foregroundApprover: Approver? = null
+    private val _sendResults = MutableSharedFlow<SendState>(extraBufferCapacity = RESULT_BUFFER)
+    /**
+     * Every finished send (Done or Failed), one event each. Unlike [sendState] nothing is
+     * conflated, so a collector can count results. No replay: subscribe before sending.
+     */
+    val sendResults: SharedFlow<SendState> = _sendResults.asSharedFlow()
+
+    private const val RESULT_BUFFER = 64
+
+    private val _historyVersion = MutableStateFlow(0)
+    val historyVersion: StateFlow<Int> = _historyVersion.asStateFlow()
+
+    /** The one approval resolver: in-app prompt, notification actions and timeout. */
+    internal val approvals = ApprovalCenter(
+        clock = System::currentTimeMillis,
+        onWithdrawn = { id -> service?.cancelApprovalNotification(id) }
+    )
+    val pendingApprovals: StateFlow<List<PendingApproval>> = approvals.pending
+
+    /** True while MainActivity is started; otherwise approvals go to a notification. */
+    @Volatile var uiVisible: Boolean = false
 
     @Volatile internal var service: LinkBridgeService? = null
 
-    fun addListener(listener: Listener) {
-        listeners += listener
-        listener.onPeersChanged(peers)
-        listener.onReceiveStatus(receiveStatus)
-    }
-
-    fun removeListener(listener: Listener) {
-        listeners -= listener
+    fun resolveApproval(id: Int, accept: Boolean) {
+        approvals.resolve(id, accept)
     }
 
     fun rescan() {
         service?.rescan()
     }
 
-    fun history(context: android.content.Context): List<TransferHistoryEntry> =
+    fun history(context: Context): List<TransferHistoryEntry> =
         TransferHistoryStore(context.applicationContext).load()
 
-    /** Queues a send in the service. Returns false if the service is not running. */
-    fun send(peer: DiscoveredPeer, trustedPeer: TrustedPeer, uri: Uri): Boolean {
+    /**
+     * Queues a send in the service. Returns false if the service is not running.
+     * [persistable] says the caller took a persistable read grant on [uri], so a failed
+     * send can keep the URI for Retry.
+     */
+    fun send(peer: DiscoveredPeer, trustedPeer: TrustedPeer, uri: Uri, persistable: Boolean): Boolean {
         val running = service ?: return false
-        running.send(peer, trustedPeer, uri)
+        running.send(peer, trustedPeer, uri, persistable)
         return true
     }
 
+    fun startService(context: Context) = LinkBridgeService.start(context)
+
+    fun stopService(context: Context) {
+        service?.stop()
+    }
+
     internal fun publishPeers(newPeers: List<DiscoveredPeer>) {
-        peers = newPeers
-        main.post { listeners.forEach { it.onPeersChanged(newPeers) } }
+        _peers.value = newPeers
     }
 
-    internal fun publishReceiveStatus(status: String) {
-        receiveStatus = status
-        main.post { listeners.forEach { it.onReceiveStatus(status) } }
-    }
-
-    internal fun publishActivity(message: String, isOutgoing: Boolean) {
-        main.post { listeners.forEach { it.onActivityLogged(message, isOutgoing) } }
+    internal fun publishReceiveState(state: ReceiveState) {
+        _receiveState.value = state
     }
 
     internal fun publishSendState(state: SendState) {
-        main.post { listeners.forEach { it.onSendStateChanged(state) } }
+        _sendState.value = state
+        if (state !is SendState.Progress) _sendResults.tryEmit(state)
+    }
+
+    /** Records [entry] and bumps [historyVersion]. */
+    internal fun recordHistory(context: Context, entry: TransferHistoryEntry) {
+        TransferHistoryStore(context.applicationContext).add(entry)
+        _historyVersion.update { it + 1 }
     }
 }

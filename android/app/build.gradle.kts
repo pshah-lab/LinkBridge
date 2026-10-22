@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -58,6 +59,11 @@ android {
         }
     }
 
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -71,9 +77,31 @@ kotlin {
 dependencies {
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+
+    // Compose, pinned to the newest line that still compiles against android-36: Compose UI
+    // 1.12+, material3 1.5.0-alpha19+, lifecycle 2.11+ and Haze 1.7.3 require compileSdk 37.
+    // BOM 2026.06.01 = Compose UI 1.11.4. Its material3 (1.4.x) keeps MotionScheme.expressive()
+    // internal, so material3 is pinned to 1.5.0-alpha18 (public Expressive APIs, compileSdk 35+).
+    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3:1.5.0-alpha18")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    implementation("dev.chrisbanes.haze:haze:1.7.2")
+    // Only for the XML window theme (Theme.Material3.DayNight) shown before Compose draws.
+    implementation("com.google.android.material:material:1.14.0")
     // TLS-PSK between paired devices (Android's built-in TLS has no usable PSK support).
     implementation("org.bouncycastle:bctls-jdk18on:1.86.2")
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for JVM tests (the android.jar copy is a stub that throws).
+    testImplementation("org.json:json:20240303")
+    // Virtual time and Dispatchers.setMain for MainViewModel tests; matches coroutines-core.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }

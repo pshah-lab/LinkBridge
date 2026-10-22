@@ -21,9 +21,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ReceiveServer(
     private val context: Context,
     private val port: Int,
-    private val onStatus: (String) -> Unit,
-    private val onTransferCompleted: (ReceivedTransfer) -> Unit = {},
-    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean = { true },
+    private val onListening: () -> Unit,
+    private val onProgress: (fileName: String, received: Long, total: Long) -> Unit,
+    /** The server itself failed (start or accept), so nothing is being received. Reason only. */
+    private val onFailed: (String) -> Unit,
+    private val onTransferCompleted: (ReceivedTransfer) -> Unit,
+    /** One incoming file failed; the server keeps listening. `fileName` is null before metadata arrives. */
+    private val onTransferFailed: (fileName: String?, reason: String) -> Unit,
+    private val onApprovalRequested: (IncomingTransferRequest) -> Boolean,
     /** Free bytes where Downloads lives, or -1 if unknown. */
     private val availableBytes: () -> Long = {
         @Suppress("DEPRECATION")
@@ -43,7 +48,7 @@ class ReceiveServer(
             runCatching {
                 ServerSocket(port).use { socket ->
                     serverSocket = socket
-                    onStatus("Ready to receive files (encrypted) on port $port.")
+                    onListening()
                     while (running.get()) {
                         val client = socket.accept()
                         runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
@@ -55,7 +60,7 @@ class ReceiveServer(
             }.onFailure { error ->
                 if (running.get()) {
                     Log.e(TAG, "Receive server failed", error)
-                    onStatus("Receive server failed: ${error.localizedMessage}")
+                    onFailed(error.localizedMessage ?: "Unknown error")
                 }
             }
         }
@@ -185,10 +190,10 @@ class ReceiveServer(
         senderName: String
     ) {
         var savedUri: android.net.Uri? = null
+        var metadata: IncomingFileMetadata? = null
         runCatching {
             val resolver = context.contentResolver
             val digest = MessageDigest.getInstance("SHA-256")
-            var metadata: IncomingFileMetadata? = null
             var output: OutputStream? = null
             var received = 0L
 
@@ -200,7 +205,7 @@ class ReceiveServer(
                         if (parsed.transferId != transferId) error("Transfer ID mismatch")
                         if (!ReceiveLimits.sizeIsPlausible(parsed.bytes, contentLength)) error("Declared size exceeds the body")
                         // Refuse before asking the user, so an accepted file can't fill the storage.
-                        if (!ReceiveLimits.hasRoom(parsed.bytes, availableBytes())) throw InsufficientStorageException()
+                        if (!ReceiveLimits.hasRoom(parsed.bytes, availableBytes())) throw InsufficientStorageException(parsed.fileName)
                         val approval = IncomingTransferRequest(
                             senderName = senderName,
                             senderId = senderId,
@@ -229,7 +234,7 @@ class ReceiveServer(
                     output?.write(plain) ?: error("Output stream was not opened")
                     digest.update(plain, 0, plain.size)
                     received += plain.size
-                    onStatus("Receiving ${currentMetadata.fileName}\n${formatBytes(received)} / ${formatBytes(currentMetadata.bytes)}")
+                    onProgress(currentMetadata.fileName, received, currentMetadata.bytes)
                 }
             } finally {
                 output?.close()
@@ -251,8 +256,9 @@ class ReceiveServer(
             val values = ContentValues()
             values.put(MediaStore.Downloads.IS_PENDING, 0)
             savedUri?.let { resolver.update(it, values, null, null) }
-            onStatus("Received ${finalMetadata.fileName}\nSaved to Downloads/LinkBridge.")
-            onTransferCompleted(ReceivedTransfer(finalMetadata.fileName, received, senderName))
+            onTransferCompleted(
+                ReceivedTransfer(finalMetadata.fileName, received, senderName, savedUri?.toString())
+            )
             reply.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
             savedUri?.let { context.contentResolver.delete(it, null, null) }
@@ -261,12 +267,12 @@ class ReceiveServer(
                 return
             }
             if (error is InsufficientStorageException) {
-                onStatus("Not enough free space to receive a file")
+                onTransferFailed(error.fileName, INSUFFICIENT_STORAGE_REASON)
                 reply.writeJsonResponse(507, """{"error":"insufficient_storage"}""")
                 return
             }
             Log.e(TAG, "Receive failed", error)
-            onStatus("Receive failed\n${error.localizedMessage}")
+            onTransferFailed(metadata?.fileName, error.localizedMessage ?: "Unknown error")
             reply.writeJsonResponse(500, """{"error":"save_failed"}""")
         }
     }
@@ -296,19 +302,9 @@ class ReceiveServer(
         flush()
     }
 
-    private fun formatBytes(bytes: Long): String {
-        if (bytes < 1024) return "$bytes B"
-        val units = arrayOf("KB", "MB", "GB")
-        var value = bytes.toDouble() / 1024.0
-        var unitIndex = 0
-        while (value >= 1024.0 && unitIndex < units.lastIndex) {
-            value /= 1024.0
-            unitIndex += 1
-        }
-        return "%.1f %s".format(value, units[unitIndex])
-    }
-
     companion object {
+        /** The `onTransferFailed` reason when Downloads has no room for the file. */
+        const val INSUFFICIENT_STORAGE_REASON = "Not enough free space to receive a file"
         private const val TAG = "LinkBridgeReceive"
         private const val MAX_HEADER_BYTES = 64 * 1024
         private const val MAX_TRANSFER_BYTES = Long.MAX_VALUE - 1024
@@ -318,7 +314,13 @@ class ReceiveServer(
     }
 }
 
-data class ReceivedTransfer(val fileName: String, val bytes: Long, val senderName: String)
+data class ReceivedTransfer(
+    val fileName: String,
+    val bytes: Long,
+    val senderName: String,
+    /** The saved MediaStore item, so history can open it. */
+    val contentUri: String?
+)
 
 data class IncomingTransferRequest(
     val senderName: String,
@@ -348,7 +350,7 @@ private data class IncomingFileMetadata(
 
 private class TransferDeclinedException : RuntimeException("Transfer declined")
 
-private class InsufficientStorageException : RuntimeException("Not enough free space")
+private class InsufficientStorageException(val fileName: String) : RuntimeException("Not enough free space")
 
 private data class HttpRequestHeader(
     val startLine: String,

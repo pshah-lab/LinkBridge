@@ -8,10 +8,7 @@ class TrustedPeerStore(context: Context) {
     private val credentials = CredentialStore(context, "trusted_peers")
 
     fun save(peer: TrustedPeer) {
-        val peers = load().filterNot { it.deviceId == peer.deviceId } + peer
-        val json = JSONArray()
-        peers.forEach { json.put(it.toJson()) }
-        credentials.putString(KEY_PEERS, json.toString())
+        write(load().filterNot { it.deviceId == peer.deviceId } + peer)
     }
 
     fun load(): List<TrustedPeer> {
@@ -22,6 +19,17 @@ class TrustedPeerStore(context: Context) {
                 add(json.getJSONObject(index).toTrustedPeer())
             }
         }
+    }
+
+    /** Forgets [deviceId]; backs Unpair. */
+    fun remove(deviceId: String) {
+        write(load().filterNot { it.deviceId == deviceId })
+    }
+
+    private fun write(peers: List<TrustedPeer>) {
+        val json = JSONArray()
+        peers.forEach { json.put(it.toJson()) }
+        credentials.putString(KEY_PEERS, json.toString())
     }
 
     fun isTrusted(deviceId: String?): Boolean {
@@ -45,7 +53,9 @@ data class TrustedPeer(
     val platform: String,
     val host: String,
     val port: Int,
-    val authToken: String?
+    val authToken: String?,
+    /** When pairing finished; null for peers paired before this was recorded. */
+    val pairedAt: Long? = null
 )
 
 private fun TrustedPeer.toJson(): JSONObject {
@@ -56,6 +66,7 @@ private fun TrustedPeer.toJson(): JSONObject {
         .put("host", host)
         .put("port", port)
         .put("authToken", authToken)
+        .put("pairedAt", pairedAt)
 }
 
 private fun JSONObject.toTrustedPeer(): TrustedPeer {
@@ -65,6 +76,7 @@ private fun JSONObject.toTrustedPeer(): TrustedPeer {
         platform = getString("platform"),
         host = getString("host"),
         port = getInt("port"),
-        authToken = optString("authToken").ifBlank { null }
+        authToken = optString("authToken").ifBlank { null },
+        pairedAt = if (isNull("pairedAt")) null else getLong("pairedAt")
     )
 }
