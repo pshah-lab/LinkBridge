@@ -12,12 +12,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/** A centred one-line message for an empty list or a screen that has nothing yet. */
+/** A centred one-line message for an empty list or a screen that has nothing yet, with an optional [action] below. */
 @Composable
 fun EmptyState(
     text: String,
     modifier: Modifier = Modifier,
     top: (@Composable () -> Unit)? = null,
+    action: (@Composable () -> Unit)? = null,
 ) {
     Column(
         modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 48.dp),
@@ -31,5 +32,6 @@ fun EmptyState(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
+        action?.invoke()
     }
 }

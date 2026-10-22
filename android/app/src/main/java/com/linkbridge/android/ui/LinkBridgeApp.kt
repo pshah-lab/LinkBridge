@@ -1,5 +1,9 @@
 package com.linkbridge.android.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -29,6 +33,7 @@ import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -42,12 +47,15 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.linkbridge.android.MainViewModel
 import com.linkbridge.android.PairingStep
+import com.linkbridge.android.TransferHistoryEntry
 import com.linkbridge.android.UiState
 import com.linkbridge.android.presentation.BannerAction
+import com.linkbridge.android.ui.components.ApprovalSheet
 import com.linkbridge.android.ui.components.ConnectionChip
 import com.linkbridge.android.ui.components.EmptyState
 import com.linkbridge.android.ui.components.GlassNavBar
@@ -58,6 +66,11 @@ import com.linkbridge.android.ui.devices.PairingSheet
 import com.linkbridge.android.ui.devices.PreviewData
 import com.linkbridge.android.ui.devices.ScreenPreviews
 import com.linkbridge.android.ui.glass.LocalBlurEnabled
+import com.linkbridge.android.ui.history.HistoryActions
+import com.linkbridge.android.ui.history.HistoryScreen
+import com.linkbridge.android.ui.send.SendActions
+import com.linkbridge.android.ui.send.SendScreen
+import com.linkbridge.android.ui.send.rememberFilePicker
 import com.linkbridge.android.ui.glass.LocalHazeState
 import com.linkbridge.android.ui.glass.glassSurface
 import com.linkbridge.android.ui.theme.LinkBridgeTheme
@@ -79,6 +92,13 @@ class AppActions(
     val devices: DevicesActions,
     val pairing: PairingActions,
     val clearNotice: () -> Unit,
+    /** Opens the file picker; a picked file is staged. */
+    val onPick: () -> Unit = {},
+    val onSend: () -> Unit = {},
+    val onRetry: (TransferHistoryEntry) -> Unit = {},
+    val onResolveApproval: (id: Int, accept: Boolean) -> Unit = { _, _ -> },
+    /** Opens a received file in another app; false when no app can open it. */
+    val openFile: (uri: String) -> Boolean = { false },
 )
 
 /**
@@ -88,7 +108,9 @@ class AppActions(
 @Composable
 fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val actions = remember(vm) {
+    val context = LocalContext.current
+    val pick = rememberFilePicker(onPicked = vm::stage)
+    val actions = remember(vm, pick, context) {
         AppActions(
             devices = DevicesActions(
                 onSelect = vm::select,
@@ -109,6 +131,11 @@ fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
                 onDismiss = vm::dismissPairing,
             ),
             clearNotice = vm::clearNotice,
+            onPick = pick,
+            onSend = vm::send,
+            onRetry = vm::retry,
+            onResolveApproval = vm::resolveApproval,
+            openFile = { uri -> openReceivedFile(context, uri) },
         )
     }
     AppFrame(state, actions)
@@ -156,8 +183,11 @@ fun AppFrame(state: UiState, actions: AppActions) {
 
     BackHandler(enabled = inSettings) { inSettings = false }
 
+    // One modal sheet at a time: pairing first, then the oldest incoming file.
+    val approval = approvalToShow(pairing, state.approvals)
+
     // Sheet scrim: blur the app behind the sheet when blur is available.
-    val blurBehind = pairing != null && LocalBlurEnabled.current
+    val blurBehind = (pairing != null || approval != null) && LocalBlurEnabled.current
     Box(Modifier.fillMaxSize().then(if (blurBehind) Modifier.blur(16.dp) else Modifier)) {
         AnimatedContent(
             targetState = inSettings,
@@ -173,6 +203,21 @@ fun AppFrame(state: UiState, actions: AppActions) {
                     onSelectTab = selectTab,
                     onOpenSettings = { inSettings = true },
                     snackbar = snackbar,
+                    sendActions = SendActions(
+                        onPick = actions.onPick,
+                        onSend = actions.onSend,
+                        onGoToDevices = { selectTab(Tab.DEVICES) },
+                    ),
+                    historyActions = HistoryActions(
+                        onResolve = actions.onResolveApproval,
+                        onOpen = { entry ->
+                            val uri = entry.contentUri
+                            if (uri == null || !actions.openFile(uri)) {
+                                scope.launch { snackbar.showSnackbar("No app on this phone can open ${entry.fileName}.") }
+                            }
+                        },
+                        onRetry = actions.onRetry,
+                    ),
                     devicesActions = DevicesActions(
                         onSelect = { id ->
                             actions.devices.onSelect(id)
@@ -202,6 +247,30 @@ fun AppFrame(state: UiState, actions: AppActions) {
             ),
         )
     }
+
+    if (approval != null) {
+        // Keyed by id: the next queued request gets a fresh sheet.
+        key(approval.id) {
+            ApprovalSheet(approval, queued = state.approvals.size, onResolve = actions.onResolveApproval)
+        }
+    }
+}
+
+/** ACTION_VIEW on [uri] with a read grant; false when no app can open it. */
+private fun openReceivedFile(context: Context, uri: String): Boolean {
+    val parsed = Uri.parse(uri)
+    val type = runCatching { context.contentResolver.getType(parsed) }.getOrNull() ?: "*/*"
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(parsed, type)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    return try {
+        context.startActivity(intent)
+        true
+    } catch (_: ActivityNotFoundException) {
+        false
+    } catch (_: SecurityException) {
+        false
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -212,6 +281,8 @@ private fun TabsFrame(
     onSelectTab: (Tab) -> Unit,
     onOpenSettings: () -> Unit,
     snackbar: SnackbarHostState,
+    sendActions: SendActions,
+    historyActions: HistoryActions,
     devicesActions: DevicesActions,
 ) {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -240,8 +311,8 @@ private fun TabsFrame(
         ) {
             when (tab) {
                 Tab.DEVICES -> DevicesScreen(state, devicesActions, contentPadding = padding)
-                Tab.SEND -> Placeholder("Send is coming soon.", padding)
-                Tab.HISTORY -> Placeholder("History is coming soon.", padding)
+                Tab.SEND -> SendScreen(state, sendActions, contentPadding = padding)
+                Tab.HISTORY -> HistoryScreen(state, historyActions, contentPadding = padding)
             }
         }
     }
