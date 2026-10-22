@@ -182,10 +182,8 @@ class LinkBridgeService : Service() {
                 showApprovalNotification(id, request)
             } else {
                 center.resolve(id, false)
-                LinkBridgeHub.publishActivity(
-                    "Declined ${request.fileName} from ${request.senderName}: turn on notifications to accept files while LinkBridge is in the background.",
-                    isOutgoing = false
-                )
+                // No way to ask: the Devices banner already offers to turn notifications on.
+                Log.w(TAG, "Declined a background file request: notifications are off")
                 return false
             }
         }

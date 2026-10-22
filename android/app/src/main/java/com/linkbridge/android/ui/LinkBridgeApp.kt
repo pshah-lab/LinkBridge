@@ -10,7 +10,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,7 +17,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -26,8 +24,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
@@ -50,6 +46,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.linkbridge.android.BuildConfig
 import com.linkbridge.android.MainViewModel
 import com.linkbridge.android.PairingStep
 import com.linkbridge.android.TransferHistoryEntry
@@ -57,7 +54,6 @@ import com.linkbridge.android.UiState
 import com.linkbridge.android.presentation.BannerAction
 import com.linkbridge.android.ui.components.ApprovalSheet
 import com.linkbridge.android.ui.components.ConnectionChip
-import com.linkbridge.android.ui.components.EmptyState
 import com.linkbridge.android.ui.components.GlassNavBar
 import com.linkbridge.android.ui.devices.DevicesActions
 import com.linkbridge.android.ui.devices.DevicesScreen
@@ -71,6 +67,8 @@ import com.linkbridge.android.ui.history.HistoryScreen
 import com.linkbridge.android.ui.send.SendActions
 import com.linkbridge.android.ui.send.SendScreen
 import com.linkbridge.android.ui.send.rememberFilePicker
+import com.linkbridge.android.ui.settings.SettingsActions
+import com.linkbridge.android.ui.settings.SettingsScreen
 import com.linkbridge.android.ui.glass.LocalHazeState
 import com.linkbridge.android.ui.glass.glassSurface
 import com.linkbridge.android.ui.theme.LinkBridgeTheme
@@ -99,6 +97,9 @@ class AppActions(
     val onResolveApproval: (id: Int, accept: Boolean) -> Unit = { _, _ -> },
     /** Opens a received file in another app; false when no app can open it. */
     val openFile: (uri: String) -> Boolean = { false },
+    /** Settings rows; its onBack is ignored (the frame owns navigation). */
+    val settings: SettingsActions = SettingsActions(),
+    val versionName: String = "",
 )
 
 /**
@@ -136,6 +137,12 @@ fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
             onRetry = vm::retry,
             onResolveApproval = vm::resolveApproval,
             openFile = { uri -> openReceivedFile(context, uri) },
+            settings = SettingsActions(
+                onReceiving = vm::setReceiving,
+                onEnableNotifications = onRequestNotifications,
+                onUnpair = vm::unpair,
+            ),
+            versionName = BuildConfig.VERSION_NAME,
         )
     }
     AppFrame(state, actions)
@@ -195,7 +202,16 @@ fun AppFrame(state: UiState, actions: AppActions) {
             label = "destination",
         ) { settings ->
             if (settings) {
-                SettingsPlaceholder(onBack = { inSettings = false })
+                SettingsScreen(
+                    state = state,
+                    actions = SettingsActions(
+                        onBack = { inSettings = false },
+                        onReceiving = actions.settings.onReceiving,
+                        onEnableNotifications = actions.settings.onEnableNotifications,
+                        onUnpair = actions.settings.onUnpair,
+                    ),
+                    versionName = actions.versionName,
+                )
             } else {
                 TabsFrame(
                     state = state,
@@ -345,33 +361,6 @@ private fun TopBar(
             Icon(Icons.Filled.Settings, contentDescription = "Settings")
         }
     }
-}
-
-@Composable
-private fun Placeholder(text: String, padding: PaddingValues) {
-    Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-        EmptyState(text)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsPlaceholder(onBack: () -> Unit) {
-    Scaffold(
-        modifier = Modifier.backdrop(),
-        containerColor = Color.Transparent,
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-            )
-        },
-    ) { padding -> Placeholder("Settings are coming soon.", padding) }
 }
 
 // ---- Previews ----

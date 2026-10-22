@@ -52,6 +52,8 @@ data class UiState(
     val thisDevice: DeviceIdentity? = null,
     val trusted: List<TrustedPeer> = emptyList(),
     val receivingOn: Boolean = true,
+    /** Whether the app may post notifications (always true below API 33). */
+    val notificationsOn: Boolean = true,
     /** A one-off message for a snackbar; the UI calls `clearNotice()` once shown. */
     val notice: String? = null
 )

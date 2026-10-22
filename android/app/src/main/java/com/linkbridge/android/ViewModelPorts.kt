@@ -80,3 +80,21 @@ class SharedPrefsSelection(context: Context) : SelectionPrefs {
         const val KEY = "selected_device"
     }
 }
+
+/** [SharePort] over the hub, for the [uris] [ShareActivity] accepted. Shared URIs are not persistable. */
+class LinkBridgeSharePort(context: Context, private val uris: List<Uri>) : SharePort {
+    private val context = context.applicationContext
+
+    override val peers get() = LinkBridgeHub.peers
+    override val sendState get() = LinkBridgeHub.sendState
+    override val sendResults get() = LinkBridgeHub.sendResults
+
+    override fun trusted(): List<TrustedPeer> = TrustedPeerStore(context).load()
+
+    override fun fileNames(): List<String> = uris.map { uri ->
+        runCatching { context.contentResolver.fileInfo(uri).name }.getOrDefault("file")
+    }
+
+    override fun send(peer: DiscoveredPeer, trustedPeer: TrustedPeer, index: Int): Boolean =
+        LinkBridgeHub.send(peer, trustedPeer, uris[index], persistable = false)
+}

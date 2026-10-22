@@ -71,14 +71,4 @@ object TransferRecords {
         detail = message,
         contentUri = if (persistable) uri else null
     )
-
-    /** Status text for the old View UI. Task 12 deletes it with the shim. */
-    fun legacyStatusText(state: ReceiveState, port: Int): String = when (state) {
-        ReceiveState.Starting -> "Starting LinkBridge…"
-        ReceiveState.Listening -> "Ready to receive files (encrypted) on port $port."
-        is ReceiveState.Receiving ->
-            "Receiving ${state.fileName}\n${formatBytes(state.received)} / ${formatBytes(state.total)}"
-        ReceiveState.Stopped -> "LinkBridge is stopped. Open the app to receive files."
-        is ReceiveState.Failed -> "Receive server failed: ${state.message}"
-    }
 }

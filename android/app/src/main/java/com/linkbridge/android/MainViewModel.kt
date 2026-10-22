@@ -356,6 +356,7 @@ class MainViewModel(
             thisDevice = identity,
             trusted = send.trusted,
             receivingOn = other.receive !is ReceiveState.Stopped,
+            notificationsOn = other.notificationsAllowed,
             notice = notice
         )
     }
