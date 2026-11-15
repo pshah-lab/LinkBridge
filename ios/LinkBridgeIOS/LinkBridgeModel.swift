@@ -23,6 +23,8 @@ final class LinkBridgeModel: ObservableObject {
     @Published private(set) var history: [TransferRecord] = []
 
     let identity = IdentityStore().loadOrCreate()
+    /// Accepts pairing and receives files while the app is open.
+    let receiveHost: ReceiveHost
     private let browser: PeerBrowser
     private let trustedStore = TrustedPeerStore()
     private var pairingClient: PairingClient?
@@ -34,10 +36,22 @@ final class LinkBridgeModel: ObservableObject {
 
     init() {
         browser = PeerBrowser(localDeviceId: identity.deviceId)
+        let identity = identity
+        receiveHost = ReceiveHost(makeServer: { callbacks in
+            ControlServer(identity: identity, receiveDirectory: ReceiveHost.receiveDirectory,
+                          pairDecision: callbacks.pairDecision, transferDecision: callbacks.transferDecision,
+                          transferReceived: callbacks.transferReceived, transferWithdrawn: callbacks.transferWithdrawn)
+        })
         trusted = trustedStore.load()
         if let data = UserDefaults.standard.data(forKey: Self.historyKey),
            let saved = try? JSONDecoder().decode([TransferRecord].self, from: data) {
             history = saved
+        }
+        receiveHost.onPaired = { [weak self] in
+            guard let self else { return }
+            // A device that paired with this iPhone is now trusted; its tags only match now.
+            self.trusted = self.trustedStore.load()
+            self.browser.refresh()
         }
         browser.onChange = { [weak self] peers in
             guard let self else { return }

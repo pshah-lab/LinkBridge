@@ -876,6 +876,50 @@ DispatchQueue.global().async {
         check(!FileManager.default.fileExists(atPath: inDownloads.path), "and not in Downloads/LinkBridge")
     }
 
+    section("testPartialFileRemovedOnStop") {
+        // The iPhone stops its server when the app leaves the foreground, mid-transfer or not.
+        let identity = IdentityStore().loadOrCreate()
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        check(!secret.isEmpty, "self peer is trusted")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("stop-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        var partsAtStop: [String] = []
+        var stopping: ControlServer?
+        let stoppable = ControlServer(
+            identity: identity, preferredPort: 0, preferredSecurePort: 0, receiveDirectory: tmp,
+            pairDecision: { _, done in done(false) },
+            transferDecision: { _, done in done(true) },
+            transferProgress: { received, total in
+                // First write of the body: the partial file exists and most bytes are still to come.
+                guard let server = stopping, received < total else { return }
+                stopping = nil
+                partsAtStop = ((try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []).filter { $0.hasSuffix(".part") }
+                server.stop()
+            }
+        )
+        let ready = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            stopping = stoppable
+            stoppable.start { _ in ready.signal() }
+        }
+        ready.wait()
+        defer { DispatchQueue.main.sync { stoppable.stop() } }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("slow-\(UUID().uuidString).bin")
+        try Data(count: Security.chunkSize * 4).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var sendError: Error?
+        let sent = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            do { try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(stoppable.securePort)", secret: secret) } catch { sendError = error }
+            sent.signal()
+        }
+        check(sent.wait(timeout: .now() + 30) == .success, "send finished in time")
+        check(partsAtStop.count == 1, "a partial file existed when stop was called, got \(partsAtStop)")
+        let left = DispatchQueue.main.sync { (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? [] }
+        check(left.isEmpty, "no partial or finished file left after stop, got \(left)")
+        check(sendError != nil, "the sender's send throws")
+    }
+
     section("parametersEnablePeerToPeer") {
         let psk = Data(repeating: 7, count: 32)
         check(SecureTransport.serverParameters(keys: [(identity: "a", psk: psk)]).includePeerToPeer, "TLS server parameters")

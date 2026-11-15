@@ -129,11 +129,18 @@ public final class ControlServer {
         }
     }
 
+    /// Stops listening and drops open connections, so an upload in progress ends at once and
+    /// its partial file is deleted. Main queue.
     public func stop() {
         listener?.cancel()
         listener = nil
         secureListener?.cancel()
         secureListener = nil
+        plainLimiter.cancelAll()
+        secureLimiter.cancelAll()
+        // A cancelled upload also deletes its own file when its read fails; this makes sure
+        // nothing is left the moment stop returns.
+        Self.removeLeftoverPartialFiles(in: receiveDirectory)
     }
 
     /// TLS-PSK options are fixed when a listener starts, so restart the secure listener to
@@ -1079,7 +1086,7 @@ private final class Deadline {
 /// Called on the listener's queue (main), like all request handling.
 final class ConnectionLimiter {
     private let total: () -> Int
-    private var open: [ObjectIdentifier: String] = [:]
+    private var open: [ObjectIdentifier: (source: String, connection: NWConnection)] = [:]
 
     init(total: @escaping () -> Int) {
         self.total = total
@@ -1090,13 +1097,13 @@ final class ConnectionLimiter {
     /// Admits the connection and tracks it until it ends, or cancels it and returns false.
     func admit(_ connection: NWConnection) -> Bool {
         let source = ControlServer.sourceHost(of: connection)
-        let fromSource = open.values.filter { $0 == source }.count
+        let fromSource = open.values.filter { $0.source == source }.count
         guard open.count < total(), fromSource < ControlServer.maxConnectionsPerSource else {
             connection.cancel()
             return false
         }
         let key = ObjectIdentifier(connection)
-        open[key] = source
+        open[key] = (source, connection)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .cancelled:
@@ -1109,6 +1116,11 @@ final class ConnectionLimiter {
             }
         }
         return true
+    }
+
+    /// Cancels every open connection; each leaves the count when its cancel completes.
+    func cancelAll() {
+        open.values.forEach { $0.connection.cancel() }
     }
 }
 
@@ -1305,6 +1317,18 @@ public struct IncomingPairRequest {
     public let expiresAt: Date
     /// IP address the request came from, shown so the user can spot an unexpected one.
     public let sourceAddress: String
+
+    public init(id: UUID, deviceName: String, deviceId: UUID, platform: String, code: String,
+                replacesExisting: Bool, expiresAt: Date, sourceAddress: String) {
+        self.id = id
+        self.deviceName = deviceName
+        self.deviceId = deviceId
+        self.platform = platform
+        self.code = code
+        self.replacesExisting = replacesExisting
+        self.expiresAt = expiresAt
+        self.sourceAddress = sourceAddress
+    }
 }
 
 public struct IncomingTransferRequest {
@@ -1314,4 +1338,12 @@ public struct IncomingTransferRequest {
     public let senderId: UUID
     public let fileName: String
     public let bytes: Int
+
+    public init(id: UUID, senderName: String, senderId: UUID, fileName: String, bytes: Int) {
+        self.id = id
+        self.senderName = senderName
+        self.senderId = senderId
+        self.fileName = fileName
+        self.bytes = bytes
+    }
 }
