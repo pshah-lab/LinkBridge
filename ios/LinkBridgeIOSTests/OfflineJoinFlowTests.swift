@@ -22,14 +22,21 @@ private func qrText(record: DiscoveryRecord = androidRecord()) -> String {
 private final class FakeJoiner: HotspotJoining {
     var result: Result<Void, Error> = .success(())
     var joined: Bool? = true
+    /// When set, `join` waits for `finishJoin()`, like iOS showing its "Join network?" alert.
+    var holdsJoin = false
     private(set) var joins: [(ssid: String, passphrase: String)] = []
     private(set) var leaves: [String] = []
+    private(set) var events: [String] = []
+    private var pending: CheckedContinuation<Void, Never>?
 
     func join(ssid: String, passphrase: String) async throws {
         joins.append((ssid, passphrase))
+        if holdsJoin { await withCheckedContinuation { pending = $0 } }
+        events.append("joined")
         try result.get()
     }
-    func leave(ssid: String) { leaves.append(ssid) }
+    func finishJoin() { pending?.resume(); pending = nil }
+    func leave(ssid: String) { leaves.append(ssid); events.append("leave") }
     func isJoined(ssid: String) async -> Bool? { joined }
 }
 
@@ -122,6 +129,7 @@ private func bonjourPixel(rid: String = androidRid) -> ResolvedPeer {
     #expect(peer.host == "pixel.local")
     #expect(hello.calls.isEmpty, "hello not needed once Bonjour answered")
     #expect(clock.now >= 1 && clock.now < 3)
+    flow.end()
 }
 
 @MainActor
@@ -129,6 +137,7 @@ private func bonjourPixel(rid: String = androidRid) -> ResolvedPeer {
     let (flow, _, hello, _) = makeFlow(bonjour: { _ in [bonjourPixel(rid: "ffff")] })
     await flow.handleScanned(qrText())
     #expect(hello.calls.count == 1, "another advertiser is not the Android from the code")
+    flow.end()
 }
 
 @MainActor
@@ -145,6 +154,35 @@ private func bonjourPixel(rid: String = androidRid) -> ResolvedPeer {
     #expect(peer.port == 50000 && peer.tlsPort == 50001)
     #expect(peer.service == nil)
     #expect(peer.rid == androidRid)
+    flow.end()
+}
+
+@MainActor
+@Test func endDuringJoinRemovesConfigOnceJoinFinishes() async {
+    let (flow, joiner, hello, _) = makeFlow()
+    joiner.holdsJoin = true
+    let scan = Task { await flow.handleScanned(qrText()) }
+    for _ in 0..<200 where joiner.joins.isEmpty { await Task.yield() }
+    #expect(flow.phase == .joining)
+    flow.end()
+    #expect(joiner.leaves == ["DIRECT-lb-ab12"])
+    // iOS finishes installing the network after the user cancelled.
+    joiner.finishJoin()
+    await scan.value
+    #expect(joiner.events == ["leave", "joined", "leave"], "removed again after the late join")
+    #expect(flow.phase == .scanning)
+    #expect(hello.calls.isEmpty)
+}
+
+@MainActor
+@Test func helloFromAnotherDeviceIsRejected() async {
+    let (flow, joiner, hello, _) = makeFlow()
+    var other = androidRecord()
+    other.rid = "ffffffffffffffffffffffffffffffff"
+    hello.result = .success(other)
+    await flow.handleScanned(qrText())
+    #expect(flow.phase == .failed("Couldn't join: move closer to the Android and scan again"))
+    #expect(joiner.leaves == ["DIRECT-lb-ab12"])
 }
 
 @MainActor
@@ -170,6 +208,7 @@ private func bonjourPixel(rid: String = androidRid) -> ResolvedPeer {
     let other = ResolvedPeer(deviceName: "Mac", deviceId: UUID(), platform: "macos", host: "mac.local", port: 49152,
                              tlsPort: 49162, rid: "eeee")
     #expect(OfflinePeers.merge(bonjour: [other], hello: [helloPeer]).count == 2)
+    flow.end()
 }
 
 @MainActor

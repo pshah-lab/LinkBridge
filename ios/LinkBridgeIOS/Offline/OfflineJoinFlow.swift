@@ -166,7 +166,12 @@ final class OfflineJoinFlow: ObservableObject {
             }
             return
         }
-        guard started == generation else { return }
+        guard started == generation else {
+            // Ended while iOS was still joining: the configuration was installed after `end()`
+            // removed it. Remove it again unless a newer session uses the same network.
+            if configuredSSID != payload.ssid { joiner.leave(ssid: payload.ssid) }
+            return
+        }
 
         if let peer = await bonjourPeer(for: payload, started: started) {
             connected(peer)
@@ -201,11 +206,13 @@ final class OfflineJoinFlow: ObservableObject {
     }
 
     /// The Android as its hello describes it, at the address from the code. The response is
-    /// untrusted: one outside the record limits counts as no answer.
+    /// untrusted: one outside the record limits, or from another device than the code's (a
+    /// different rid), counts as no answer.
     private func helloPeer(_ payload: OfflineLinkPayload) async -> ResolvedPeer? {
         let host = Self.host(payload)
         for attempt in 1...Self.helloAttempts {
-            if let record = try? await hello.hello(host: host, port: payload.helloPort), record.isValid {
+            if let record = try? await hello.hello(host: host, port: payload.helloPort), record.isValid,
+               record.rid == payload.record.rid {
                 return OfflinePeers.peer(from: record, host: host, trusted: trustedPeers())
             }
             // The address may still be coming up right after the join.
