@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Offline direct link: a local-only hotspot (no location permission needed). -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- Tells the hotspot address apart from the Wi-Fi network the phone itself is joined to. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />

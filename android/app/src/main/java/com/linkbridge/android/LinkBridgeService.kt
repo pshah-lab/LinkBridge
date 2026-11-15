@@ -21,8 +21,21 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import com.linkbridge.android.offline.Cancelable
+import com.linkbridge.android.offline.HotspotBinding
+import com.linkbridge.android.offline.OfflineHotspot
+import com.linkbridge.android.offline.currentNetInterfaces
 import com.linkbridge.android.presentation.ReceiveState
 import com.linkbridge.android.presentation.peerFailureMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import java.net.Inet4Address
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -46,6 +59,22 @@ class LinkBridgeService : Service() {
     private lateinit var discovery: DiscoveryService
     private lateinit var receiveServer: ReceiveServer
     private var isForeground = false
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var hotspotObserver: Job? = null
+    private val hotspotBinding by lazy {
+        HotspotBinding(
+            setAcceptFilter = { filter -> receiveServer.acceptFilter = filter },
+            abortReceives = { receiveServer.abortActive() },
+            abortSends = { controlClient.abortUploads() },
+            interfaces = ::currentNetInterfaces,
+            stationAddress = ::stationWifiAddress,
+            schedule = { delayMs, block ->
+                val task = Runnable(block)
+                main.postDelayed(task, delayMs)
+                Cancelable { main.removeCallbacks(task) }
+            },
+        )
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -93,6 +122,7 @@ class LinkBridgeService : Service() {
 
     override fun onDestroy() {
         stopped = true
+        scope.cancel()
         // Decline while the hub still points here, so each request's notification is cancelled.
         center.declineAll()
         if (LinkBridgeHub.service === this) LinkBridgeHub.service = null
@@ -139,6 +169,32 @@ class LinkBridgeService : Service() {
         update.history?.let { LinkBridgeHub.recordHistory(this, it) }
         if (!stopped) LinkBridgeHub.publishReceiveState(update.state)
     }
+
+    /**
+     * Binds the receiver and sends to [hotspot]'s lifecycle (null detaches). The hotspot's UI owner
+     * creates it; call on the main thread.
+     */
+    fun attachHotspot(hotspot: OfflineHotspot?) {
+        hotspotObserver?.cancel()
+        hotspotObserver = null
+        if (hotspot == null) {
+            hotspotBinding.onState(com.linkbridge.android.offline.HotspotState.Idle)
+            return
+        }
+        hotspotObserver = scope.launch { hotspot.state.collect(hotspotBinding::onState) }
+    }
+
+    /** The IPv4 address of the Wi-Fi network this phone is joined to, if any. */
+    @Suppress("DEPRECATION") // allNetworks: the station Wi-Fi need not be the default network.
+    private fun stationWifiAddress(): Inet4Address? = runCatching {
+        val manager = getSystemService(ConnectivityManager::class.java)
+        manager.allNetworks.asSequence()
+            .filter { manager.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+            .flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty().asSequence() }
+            .map { it.address }
+            .filterIsInstance<Inet4Address>()
+            .firstOrNull()
+    }.getOrNull()
 
     fun rescan() {
         main.post {

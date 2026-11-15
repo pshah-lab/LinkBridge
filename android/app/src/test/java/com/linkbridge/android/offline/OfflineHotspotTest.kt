@@ -158,4 +158,30 @@ class OfflineHotspotTest {
         assertEquals(HotspotState.Failed(HotspotFailure.UNSUPPORTED_OS), h.state.value)
         assertEquals(0, port.starts)
     }
+
+    @Test
+    fun stopResetsBusyForTheNextSession() {
+        val port = FakePort()
+        val time = FakeTime()
+        val h = activeHotspot(port, time)
+        h.setBusy(true)
+        h.stop()
+        h.start()
+        port.callback!!.onStarted("DIRECT-lb", "secret123")
+        time.advanceBy(10 * minute)
+        assertEquals(HotspotState.Stopped(bySystem = false), h.state.value)
+    }
+
+    @Test
+    fun systemStopResetsBusyForTheNextSession() {
+        val port = FakePort()
+        val time = FakeTime()
+        val h = activeHotspot(port, time)
+        h.setBusy(true)
+        port.callback!!.onStopped()
+        h.start()
+        port.callback!!.onStarted("DIRECT-lb", "secret123")
+        time.advanceBy(10 * minute)
+        assertEquals(HotspotState.Stopped(bySystem = false), h.state.value)
+    }
 }

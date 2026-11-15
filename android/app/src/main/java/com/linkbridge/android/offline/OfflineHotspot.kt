@@ -70,6 +70,7 @@ class OfflineHotspot(
         override fun onStopped() {
             if (_state.value is HotspotState.Active || _state.value == HotspotState.Starting) {
                 cancelIdleTimer()
+                busy = false // a stale flag must not disable the next session's idle timer
                 _state.value = HotspotState.Stopped(bySystem = true)
             }
         }
@@ -101,6 +102,7 @@ class OfflineHotspot(
         val current = _state.value
         if (current != HotspotState.Starting && current !is HotspotState.Active) return
         cancelIdleTimer()
+        busy = false // a stale flag must not disable the next session's idle timer
         _state.value = HotspotState.Stopped(bySystem = false)
         port.stop()
     }

@@ -9,9 +9,20 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class ControlClient {
     private val pairingKeys = PairingKeyStore()
+    private val openUploads: MutableSet<SecureTransport.Connection> = ConcurrentHashMap.newKeySet()
+    /** Bumped by [abortUploads], so an upload can tell its failure was an abort. */
+    private val abortCount = AtomicInteger(0)
+
+    /** Closes every upload connection now open; those uploads fail with [UPLOADS_ABORTED_MESSAGE]. */
+    fun abortUploads() {
+        abortCount.incrementAndGet()
+        openUploads.toList().forEach { it.close() }
+    }
     fun fetchDevice(peer: DiscoveredPeer): Result<DeviceIdentity> {
         return runCatching {
             val url = URL("http://${localEndpoint(peer)}/device")
@@ -125,6 +136,7 @@ class ControlClient {
         openInputStream: () -> InputStream?,
         onProgress: (bytesSent: Long, totalBytes: Long) -> Unit = { _, _ -> }
     ): Result<Unit> {
+        val abortsAtStart = abortCount.get()
         return runCatching {
             require(size >= 0) { "Selected file size is unknown; choose a file provider that exposes file size." }
             trustedPeer?.authToken
@@ -187,6 +199,10 @@ class ControlClient {
                 ""
             ).joinToString("\r\n")
 
+            if (abortCount.get() != abortsAtStart) {
+                encryptedFile.delete()
+                throw java.io.IOException(UPLOADS_ABORTED_MESSAGE)
+            }
             val (status, body) = try {
                 SecureTransport.connect(
                     host = peer.host,
@@ -194,12 +210,20 @@ class ControlClient {
                     identity = SecureTransport.identity(localIdentity.deviceId),
                     psk = SecureTransport.psk(localToken)
                 ).use { connection ->
-                    connection.output.write(head.toByteArray())
-                    encryptedFile.inputStream().use { it.copyTo(connection.output, 64 * 1024) }
-                    connection.output.flush()
-                    readResponse(connection.input)
+                    openUploads += connection
+                    try {
+                        // An abort between connect and registering would have missed this one.
+                        if (abortCount.get() != abortsAtStart) connection.close()
+                        connection.output.write(head.toByteArray())
+                        encryptedFile.inputStream().use { it.copyTo(connection.output, 64 * 1024) }
+                        connection.output.flush()
+                        readResponse(connection.input)
+                    } finally {
+                        openUploads -= connection
+                    }
                 }
             } catch (error: java.io.IOException) {
+                if (abortCount.get() != abortsAtStart) throw java.io.IOException(UPLOADS_ABORTED_MESSAGE, error)
                 throw java.io.IOException("Secure connection to ${peer.deviceName} failed. If this keeps happening, pair again.", error)
             } finally {
                 encryptedFile.delete()
@@ -250,3 +274,5 @@ private fun ByteArray.toHexString(): String {
 }
 
 data class PairingSession(val code: String, val authToken: String)
+
+const val UPLOADS_ABORTED_MESSAGE = "The Wi-Fi hotspot stopped"

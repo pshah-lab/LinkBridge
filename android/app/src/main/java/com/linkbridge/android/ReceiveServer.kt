@@ -9,6 +9,7 @@ import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
@@ -33,13 +34,20 @@ class ReceiveServer(
     private val availableBytes: () -> Long = {
         @Suppress("DEPRECATION")
         runCatching { Environment.getExternalStorageDirectory().usableSpace }.getOrDefault(-1L)
-    }
+    },
+    /**
+     * Decides, from the local address a connection arrived on, whether to serve it; a refused
+     * connection is closed unread. Replaceable while running (the hotspot binds it to its own address).
+     */
+    @Volatile var acceptFilter: (localAddress: InetAddress) -> Boolean = { true }
 ) {
     private val running = AtomicBoolean(false)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val gate = ConnectionGate()
     private val replayCache = ConcurrentHashMap<String, Long>()
     private var serverSocket: ServerSocket? = null
+    private val liveSockets: MutableSet<Socket> = ConcurrentHashMap.newKeySet()
+    private val abortedSockets: MutableSet<Socket> = ConcurrentHashMap.newKeySet()
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -51,6 +59,11 @@ class ReceiveServer(
                     onListening()
                     while (running.get()) {
                         val client = socket.accept()
+                        if (!acceptedByFilter(client)) {
+                            runCatching { client.close() }
+                            continue
+                        }
+                        track(client)
                         runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
                         if (!gate.submit(client, ::handleClient)) {
                             Log.w(TAG, "Refused connection: receiver busy")
@@ -64,6 +77,28 @@ class ReceiveServer(
                 }
             }
         }
+    }
+
+    /**
+     * Closes every connection now in flight (handshaking, awaiting approval or receiving). A file
+     * being received then fails through the usual path: the partial item is deleted and
+     * `onTransferFailed` reports [ABORTED_REASON]. The server keeps listening.
+     */
+    fun abortActive() {
+        liveSockets.removeAll { it.isClosed }
+        liveSockets.forEach { client ->
+            abortedSockets += client
+            runCatching { client.close() }
+        }
+        liveSockets.clear()
+    }
+
+    private fun acceptedByFilter(client: Socket): Boolean =
+        runCatching { acceptFilter(client.localAddress) }.getOrDefault(false)
+
+    private fun track(client: Socket) {
+        liveSockets.removeAll { it.isClosed }
+        liveSockets += client
     }
 
     fun stop() {
@@ -81,19 +116,27 @@ class ReceiveServer(
         val connection = try {
             SecureTransport.accept(socket) { identity -> pskFor(identity) }
         } catch (error: Exception) {
+            abortedSockets -= socket
             Log.w(TAG, "Rejected connection: TLS handshake failed (${error.javaClass.simpleName})")
             return null
         }
         val upload = try {
-            handleRequest(connection)
+            handleRequest(connection) { socket in abortedSockets }
         } catch (error: Exception) {
             null
         }
         if (upload == null) {
+            abortedSockets -= socket
             connection.close()
             return null
         }
-        return { connection.use { upload() } }
+        return {
+            try {
+                connection.use { upload() }
+            } finally {
+                abortedSockets -= socket
+            }
+        }
     }
 
     private fun pskFor(identity: String): ByteArray? =
@@ -103,7 +146,7 @@ class ReceiveServer(
             ?.let(SecureTransport::psk)
 
     /** Checks the header. Returns the body handling, or null after replying with an error. */
-    private fun handleRequest(connection: SecureTransport.Connection): (() -> Unit)? {
+    private fun handleRequest(connection: SecureTransport.Connection, wasAborted: () -> Boolean): (() -> Unit)? {
         val reply = connection.output
         val input = BufferedInputStream(connection.input)
         val headerBytes = readHeaderBytes(input)
@@ -175,7 +218,7 @@ class ReceiveServer(
             return null
         }
 
-        return { receiveUpload(reply, input, contentLength, authToken, encryption, transferId, senderId, trustedPeer.deviceName) }
+        return { receiveUpload(reply, input, contentLength, authToken, encryption, transferId, senderId, trustedPeer.deviceName, wasAborted) }
     }
 
     /** Stage 2: decrypts the body, asks the user, and saves the file. */
@@ -187,7 +230,8 @@ class ReceiveServer(
         scheme: String,
         transferId: String,
         senderId: String,
-        senderName: String
+        senderName: String,
+        wasAborted: () -> Boolean
     ) {
         var savedUri: android.net.Uri? = null
         var metadata: IncomingFileMetadata? = null
@@ -272,7 +316,9 @@ class ReceiveServer(
                 return
             }
             Log.e(TAG, "Receive failed", error)
-            onTransferFailed(metadata?.fileName, error.localizedMessage ?: "Unknown error")
+            val reason = if (wasAborted()) ABORTED_REASON else error.localizedMessage ?: "Unknown error"
+            onTransferFailed(metadata?.fileName, reason)
+            if (wasAborted()) return // the connection is closed; there is nobody to answer
             reply.writeJsonResponse(500, """{"error":"save_failed"}""")
         }
     }
@@ -304,6 +350,7 @@ class ReceiveServer(
 
     companion object {
         /** The `onTransferFailed` reason when Downloads has no room for the file. */
+        const val ABORTED_REASON = "The Wi-Fi hotspot stopped"
         const val INSUFFICIENT_STORAGE_REASON = "Not enough free space to receive a file"
         private const val TAG = "LinkBridgeReceive"
         private const val MAX_HEADER_BYTES = 64 * 1024
