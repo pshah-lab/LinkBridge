@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.linkbridge.android.offline.Cancelable
+import com.linkbridge.android.offline.HelloPeerTable
 import com.linkbridge.android.offline.HotspotBinding
 import com.linkbridge.android.offline.OFFLINE_HELLO_PORT
 import com.linkbridge.android.offline.OfflineHelloServer
@@ -64,7 +65,8 @@ class LinkBridgeService : Service() {
     private lateinit var receiveServer: ReceiveServer
     private var helloServer: OfflineHelloServer? = null
     private var bonjourPeers: List<DiscoveredPeer> = emptyList()
-    private val helloPeers = linkedMapOf<String, DiscoveredPeer>()
+    private val helloPeers = HelloPeerTable(clock = System::currentTimeMillis)
+    private val purgeHelloPeers = Runnable { publishMergedPeers() }
     private var isForeground = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var hotspotObserver: Job? = null
@@ -311,7 +313,7 @@ class LinkBridgeService : Service() {
         if (stopped) return
         val trusted by lazy { TrustedPeerStore(this).load() }
         LinkBridgeHub.publishPeers(
-            mergePeers(bonjourPeers, helloPeers.values.toList()) { rid, tags -> DiscoveryTags.match(rid, tags, trusted) }
+            mergePeers(bonjourPeers, helloPeers.peers()) { rid, tags -> DiscoveryTags.match(rid, tags, trusted) }
         )
     }
 
@@ -319,10 +321,9 @@ class LinkBridgeService : Service() {
     private fun onHotspotAddress(address: Inet4Address?) {
         helloServer?.stop()
         helloServer = null
-        if (helloPeers.isNotEmpty()) {
-            helloPeers.clear()
-            publishMergedPeers()
-        }
+        main.removeCallbacks(purgeHelloPeers)
+        helloPeers.clear()
+        publishMergedPeers()
         if (address == null) return
         val server = OfflineHelloServer(
             bindAddress = address,
@@ -333,8 +334,10 @@ class LinkBridgeService : Service() {
                 val deviceId = DiscoveryTags.match(record.rid, record.tags, trusted)
                 main.post {
                     if (helloServer == null) return@post
-                    helloPeers[record.rid] = record.toPeer(source, deviceId)
+                    helloPeers.put(record.rid, record.toPeer(source, deviceId))
                     publishMergedPeers()
+                    main.removeCallbacks(purgeHelloPeers)
+                    main.postDelayed(purgeHelloPeers, HELLO_PEER_TTL_MS + 1_000)
                 }
             },
         )
@@ -427,6 +430,7 @@ class LinkBridgeService : Service() {
 
     companion object {
         const val CONTROL_PORT = 49153
+        private const val HELLO_PEER_TTL_MS = 5 * 60_000L
         private const val TAG = "LinkBridgeService"
         private const val READY_TEXT = "Ready to send and receive on this Wi-Fi"
         private const val STOPPED_MESSAGE = "LinkBridge stopped"

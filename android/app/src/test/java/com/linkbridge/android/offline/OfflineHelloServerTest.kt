@@ -9,7 +9,6 @@ import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -88,6 +87,26 @@ class OfflineHelloServerTest {
         assertTrue(peers.isEmpty())
     }
 
+    @Test fun trickledRequestIsClosedAtTheDeadline() {
+        val s = OfflineHelloServer(loopback, 0, { mine }, { true }, { now }, connectionDeadlineMs = 600) { _, _ -> }
+            .also { servers += it; assertTrue(it.start()) }
+        Socket(loopback, s.localPort).use { c ->
+            c.soTimeout = 3000
+            val started = System.nanoTime()
+            var closed = false
+            // One byte every 200 ms never trips a per-read timeout, but must hit the total deadline.
+            for (i in 0 until 25) {
+                try { c.getOutputStream().apply { write('P'.code); flush() } } catch (_: java.io.IOException) { closed = true; break }
+                Thread.sleep(200)
+                if (runCatching { c.getInputStream().available() }.getOrDefault(0) > 0) break
+            }
+            val reply = runCatching { c.getInputStream().readBytes() }.getOrDefault(ByteArray(0))
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue("closed after ${elapsedMs}ms", elapsedMs < 2500)
+            assertTrue(closed || reply.isEmpty() || status(String(reply)) == 400)
+        }
+    }
+
     @Test fun stopClosesPort() {
         val s = server()
         val port = s.localPort
@@ -107,7 +126,6 @@ class OfflineHelloServerTest {
         assertTrue(isPrivateIpv4(InetAddress.getByName("172.31.0.1")))
         assertFalse(isPrivateIpv4(InetAddress.getByName("172.32.0.1")))
         assertFalse(isPrivateIpv4(InetAddress.getByName("8.8.8.8")))
-        assertNotNull(InetAddress.getByName("10.0.0.1"))
         assertTrue(isPrivateIpv4(InetAddress.getByName("10.0.0.1")))
     }
 }

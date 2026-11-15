@@ -2,7 +2,6 @@ package com.linkbridge.android.offline
 
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.io.InputStream
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -36,6 +35,8 @@ class OfflineHelloServer(
     private val localRecord: () -> DiscoveryRecord,
     private val isAllowedSource: (InetAddress) -> Boolean = ::isPrivateIpv4,
     private val clock: () -> Long,
+    /** Total time one connection may take, from accept to close. */
+    private val connectionDeadlineMs: Long = CONNECTION_DEADLINE_MS,
     private val onPeer: (DiscoveryRecord, Inet4Address) -> Unit,
 ) {
     @Volatile private var server: ServerSocket? = null
@@ -79,6 +80,12 @@ class OfflineHelloServer(
                 continue
             }
             clients += client
+            if (server !== socket) { // stop() ran between accept and here: it will not see this socket
+                clients -= client
+                active.decrementAndGet()
+                runCatching { client.close() }
+                return
+            }
             executor.execute {
                 try { handle(client) } finally {
                     clients -= client
@@ -92,15 +99,14 @@ class OfflineHelloServer(
     private fun handle(client: Socket) {
         val remote = client.inetAddress
         if (remote !is Inet4Address || !isAllowedSource(remote)) return
-        client.soTimeout = IO_TIMEOUT_MS
+        val deadline = System.nanoTime() + connectionDeadlineMs * 1_000_000L
         try {
-            if (!allowRequest()) return respond(client, 429, "Too Many Requests")
-            val input = client.getInputStream()
-            val head = readHead(input) ?: return respond(client, 400, "Bad Request")
+            if (!allowRequest()) return respond(client, deadline, 429, "Too Many Requests")
+            val head = readHead(client, deadline) ?: return respond(client, deadline, 400, "Bad Request")
             val lines = head.split("\r\n")
             val request = lines[0].split(' ')
-            if (request.size != 3 || !request[2].startsWith("HTTP/1.")) return respond(client, 400, "Bad Request")
-            if (request[0] != "POST" || request[1] != PATH) return respond(client, 404, "Not Found")
+            if (request.size != 3 || !request[2].startsWith("HTTP/1.")) return respond(client, deadline, 400, "Bad Request")
+            if (request[0] != "POST" || request[1] != PATH) return respond(client, deadline, 404, "Not Found")
 
             var length: Int? = null
             for (line in lines.drop(1)) {
@@ -111,21 +117,21 @@ class OfflineHelloServer(
                 when (name) {
                     "content-length" -> {
                         if (length != null || value.isEmpty() || !value.all { it in '0'..'9' } || value.length > 9) {
-                            return respond(client, 400, "Bad Request")
+                            return respond(client, deadline, 400, "Bad Request")
                         }
                         length = value.toInt()
                     }
-                    "transfer-encoding" -> return respond(client, 400, "Bad Request")
+                    "transfer-encoding" -> return respond(client, deadline, 400, "Bad Request")
                 }
             }
-            if (length == null || length > MAX_BODY) return respond(client, 400, "Bad Request")
-            val body = readBody(input, length) ?: return respond(client, 400, "Bad Request")
-            val record = DiscoveryRecord.fromJson(String(body, Charsets.UTF_8)) ?: return respond(client, 400, "Bad Request")
+            if (length == null || length > MAX_BODY) return respond(client, deadline, 400, "Bad Request")
+            val body = readBody(client, deadline, length) ?: return respond(client, deadline, 400, "Bad Request")
+            val record = DiscoveryRecord.fromJson(String(body, Charsets.UTF_8)) ?: return respond(client, deadline, 400, "Bad Request")
 
             val reply = localRecord().toJson().toByteArray(Charsets.UTF_8)
-            if (reply.size > MAX_BODY) return respond(client, 400, "Bad Request")
+            if (reply.size > MAX_BODY) return respond(client, deadline, 400, "Bad Request")
             runCatching { onPeer(record, remote) }
-            respond(client, 200, "OK", reply)
+            respond(client, deadline, 200, "OK", reply)
         } catch (_: IOException) {
             // Peer went away or timed out; nothing to answer.
         }
@@ -142,12 +148,13 @@ class OfflineHelloServer(
     }
 
     /** The request head without the blank line, or null when it is too long or the stream ends first. */
-    private fun readHead(input: InputStream): String? {
+    private fun readHead(client: Socket, deadline: Long): String? {
         val buffer = ByteArrayOutputStream()
         var matched = 0
         while (buffer.size() <= MAX_HEAD) {
-            val b = input.read()
-            if (b < 0) return null
+            val one = ByteArray(1)
+            if (readWithin(client, deadline, one, 0, 1) < 0) return null
+            val b = one[0].toInt() and 0xFF
             buffer.write(b)
             matched = if (b == TERMINATOR[matched].code) matched + 1 else if (b == TERMINATOR[0].code) 1 else 0
             if (matched == TERMINATOR.length) return String(buffer.toByteArray(), 0, buffer.size() - TERMINATOR.length, Charsets.ISO_8859_1)
@@ -155,18 +162,26 @@ class OfflineHelloServer(
         return null
     }
 
-    private fun readBody(input: InputStream, length: Int): ByteArray? {
+    private fun readBody(client: Socket, deadline: Long, length: Int): ByteArray? {
         val body = ByteArray(length)
         var read = 0
         while (read < length) {
-            val n = input.read(body, read, length - read)
+            val n = readWithin(client, deadline, body, read, length - read)
             if (n < 0) return null
             read += n
         }
         return body
     }
 
-    private fun respond(client: Socket, status: Int, reason: String, body: ByteArray = ByteArray(0)) {
+    /** One read that cannot outlast [deadline] (System.nanoTime based): the timeout is the time left. */
+    private fun readWithin(client: Socket, deadline: Long, buf: ByteArray, off: Int, len: Int): Int {
+        val leftMs = (deadline - System.nanoTime()) / 1_000_000L
+        if (leftMs <= 0) throw java.net.SocketTimeoutException("deadline")
+        client.soTimeout = leftMs.toInt()
+        return client.getInputStream().read(buf, off, len)
+    }
+
+    private fun respond(client: Socket, deadline: Long, status: Int, reason: String, body: ByteArray = ByteArray(0)) {
         val head = buildString {
             append("HTTP/1.1 $status $reason\r\n")
             if (body.isNotEmpty()) append("Content-Type: application/json\r\n")
@@ -182,7 +197,7 @@ class OfflineHelloServer(
             val sink = ByteArray(1024)
             var drained = 0
             while (drained < MAX_DRAIN) {
-                val n = client.getInputStream().read(sink)
+                val n = readWithin(client, deadline, sink, 0, sink.size)
                 if (n < 0) break
                 drained += n
             }
@@ -197,7 +212,7 @@ class OfflineHelloServer(
         private const val MAX_HEAD = 8192
         private const val MAX_CONCURRENT = 8
         private const val MAX_DRAIN = 16 * 1024
-        private const val IO_TIMEOUT_MS = 3_000
+        const val CONNECTION_DEADLINE_MS = 5_000L
         private const val TERMINATOR = "\r\n\r\n"
     }
 }
