@@ -84,6 +84,8 @@ final class MacModel {
     private(set) var offlineJoin: OfflineJoinState = .searching
     @ObservationIgnored private var bonjourNearby: [ResolvedPeer] = []
     @ObservationIgnored private var helloBook = HelloPeerBook()
+    /// Bonjour peers listed when the offline guide opened; none of them is the Android just joined.
+    @ObservationIgnored private var offlineBaseline: Set<String> = []
     @ObservationIgnored private let bonjourSnapshot = PeerSnapshot()
     @ObservationIgnored private var manualBusy = false
     @ObservationIgnored private var refreshingHello = false
@@ -251,6 +253,7 @@ final class MacModel {
     // MARK: - Offline link
 
     func openOfflineGuide() {
+        offlineBaseline = Set(bonjourNearby.map(OfflineLocator.baselineKey))
         offlineJoin = .searching
         offlineManualError = nil
         showOfflineGuide = true
@@ -263,9 +266,10 @@ final class MacModel {
         guard !locating, !manualBusy, let record = server?.currentDiscoveryRecord() else { return }
         locating = true
         defer { locating = false }
-        let peers = bonjourSnapshot, trusted = trustedStore.load()
+        let peers = bonjourSnapshot, trusted = trustedStore.load(), baseline = offlineBaseline
         let result = await Task.detached {
-            OfflineLocator.system(bonjourPeers: { peers.value }, trusted: { trusted }).locate(localRecord: record)
+            OfflineLocator.system(bonjourPeers: { peers.value }, trusted: { trusted })
+                .locate(localRecord: record, baseline: baseline)
         }.value
         guard showOfflineGuide, !manualBusy else { return }
         apply(result, manual: false)

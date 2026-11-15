@@ -63,17 +63,20 @@ public struct DeviceListItem: Identifiable, Equatable {
             let paired = peer.deviceId.map(trustedIds.contains) ?? false
             let canPair = !paired && platform == .mac && peer.deviceId != nil
             let subtitle: String
+            // An unpaired device advertises no deviceId (only tags), so a missing tlsPort, not a
+            // missing deviceId, marks an old app. Kotlin's DeviceListItem uses the same rule.
             if paired {
                 subtitle = peer.secureEndpoint == nil ? "Paired · needs a LinkBridge update" : "Paired · Nearby"
+            } else if peer.tlsPort == nil {
+                subtitle = "Needs a LinkBridge update"
             } else if canPair {
                 subtitle = "Not paired"
-            } else if peer.deviceId == nil {
-                subtitle = "Needs a LinkBridge update"
             } else {
                 switch platform {
                 case .iphone: subtitle = "Pair from the iPhone app"
-                case .android: subtitle = "Pair from the Android app (coming soon)"
-                default: subtitle = "Pair from the other app (coming soon)"
+                case .android: subtitle = "Pair from the Android app"
+                case .mac: subtitle = "Not paired"
+                default: subtitle = "Pair from the other app"
                 }
             }
             return DeviceListItem(id: peer.deviceId?.uuidString ?? peer.endpoint, deviceId: peer.deviceId,

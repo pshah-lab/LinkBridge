@@ -6,6 +6,8 @@ import SystemConfiguration
 
 /// Peers found by hello rather than Bonjour. They stay listed while they keep answering:
 /// each is due for a fresh hello every `refreshInterval`, and is dropped when that fails.
+/// An entry is keyed by its host address first: after pairing the same Android answers with new
+/// tags (and so a deviceId), which must replace the unpaired entry rather than sit beside it.
 public struct HelloPeerBook {
     public static let refreshInterval: TimeInterval = 30
     private var entries: [(peer: ResolvedPeer, refreshedAt: Date)] = []
@@ -15,7 +17,7 @@ public struct HelloPeerBook {
     public var peers: [ResolvedPeer] { entries.map(\.peer) }
 
     public mutating func record(_ peer: ResolvedPeer, at now: Date) {
-        entries.removeAll { OfflinePeers.isSameDevice($0.peer, peer) }
+        entries.removeAll { Self.matches($0.peer, peer) }
         entries.append((peer, now))
     }
 
@@ -24,7 +26,11 @@ public struct HelloPeerBook {
     }
 
     public mutating func drop(_ peer: ResolvedPeer) {
-        entries.removeAll { OfflinePeers.isSameDevice($0.peer, peer) }
+        entries.removeAll { Self.matches($0.peer, peer) }
+    }
+
+    private static func matches(_ a: ResolvedPeer, _ b: ResolvedPeer) -> Bool {
+        a.host == b.host || OfflinePeers.isSameDevice(a, b)
     }
 }
 
@@ -60,6 +66,7 @@ public final class OfflineLocator {
 
     static let pollInterval: TimeInterval = 0.25
 
+    #if os(macOS)
     /// A locator wired to the real network: the system's default gateway and the plain-HTTP hello.
     public static func system(bonjourPeers: @escaping () -> [ResolvedPeer],
                               trusted: @escaping () -> [TrustedPeer]) -> OfflineLocator {
@@ -67,13 +74,22 @@ public final class OfflineLocator {
                        hello: { host, record in try OfflineHelloClient.exchange(host: host, record: record) },
                        bonjourPeers: bonjourPeers, trusted: trusted)
     }
+    #endif
 
-    /// One pass: waits up to `timeout` for a Bonjour peer (polling every 250 ms), then tries the
-    /// hello at the gateway.
-    public func locate(localRecord: DiscoveryRecord, timeout: TimeInterval = 3) -> LocateResult {
+    /// What `locate`'s `baseline` holds for a Bonjour peer.
+    public static func baselineKey(_ peer: ResolvedPeer) -> String { peer.rid ?? peer.endpoint }
+
+    /// One pass: waits up to `timeout` for a Bonjour peer that is an Android and was not already
+    /// listed when the guide opened (`baseline`, from `baselineKey`), polling every 250 ms; then
+    /// tries the hello at the gateway. With peer-to-peer Wi-Fi on, a nearby Mac or iPhone shows
+    /// up in Bonjour too and must not count as the Android just joined.
+    public func locate(localRecord: DiscoveryRecord, baseline: Set<String> = [],
+                       timeout: TimeInterval = 3) -> LocateResult {
         let deadline = clock().addingTimeInterval(timeout)
         while true {
-            if let peer = bonjourPeers().first { return .found(peer) }
+            if let peer = bonjourPeers().first(where: {
+                $0.platform == "android" && !baseline.contains(Self.baselineKey($0))
+            }) { return .found(peer) }
             if clock() >= deadline { break }
             sleep(Self.pollInterval)
         }

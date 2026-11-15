@@ -1299,6 +1299,17 @@ DispatchQueue.global().async {
             _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: stub.port, record: mine)
             check(false, "a hello response with port 0 and 15 tags is rejected")
         } catch { check(error as? OfflineHelloError == .malformedResponse, "hostile response rejected, got \(error)") }
+
+        // Unknown keys are rejected, as on Android.
+        var withExtra = try JSONSerialization.jsonObject(with: JSONEncoder().encode(mine)) as! [String: Any]
+        withExtra["extra"] = 1
+        let extraBody = try JSONSerialization.data(withJSONObject: withExtra)
+        let extraStub = HelloStub { _ in ("200 OK", extraBody, nil) }
+        defer { extraStub.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: extraStub.port, record: mine)
+            check(false, "a hello response with an unknown key is rejected")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "unknown key rejected, got \(error)") }
     }
 
     section("offlinePeersFromHelloAndMerge") {
@@ -1392,6 +1403,51 @@ DispatchQueue.global().async {
         check(book.peers.count == 1, "the peer stays listed without the guide while refreshes succeed")
         book.drop(helloPeer)
         check(book.peers.isEmpty, "a failed refresh drops the peer")
+
+        // helloPeerBookUpdatesAfterPairing: same Android at the same address, now with a tag
+        // (a deviceId) and even a new rid; the unpaired entry is replaced, not duplicated.
+        book.record(helloPeer, at: t0)
+        let secret = Data(repeating: 9, count: 32).base64EncodedString()
+        let androidId = UUID()
+        let pairedTrust = [TrustedPeer(deviceId: androidId, deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                       features: [], pairedAt: Date(), authToken: secret)]
+        var pairedRecord = theirs
+        pairedRecord.rid = "ffffffffffffffffffffffffffffffff"
+        pairedRecord.tags = DiscoveryTags.tags(secrets: [secret], rid: pairedRecord.rid)
+        let pairedPeer = OfflinePeers.peer(from: pairedRecord, host: "192.168.49.1", trusted: pairedTrust)
+        check(pairedPeer.deviceId == androidId, "paired hello peer has its deviceId")
+        book.record(pairedPeer, at: t0.addingTimeInterval(1))
+        check(book.peers.count == 1 && book.peers.first?.deviceId == androidId, "paired entry replaces the unpaired one")
+        let elsewhere = OfflinePeers.peer(from: DiscoveryRecord(rid: "dd", tags: "", deviceName: "Tab", platform: "android",
+                                                                protocolVersion: 2, port: 49152, tlsPort: 49153, features: ""),
+                                          host: "192.168.50.1", trusted: [])
+        book.record(elsewhere, at: t0)
+        check(book.peers.count == 2, "another device at another address is its own entry")
+        book.drop(pairedPeer)
+        check(book.peers.map(\.host) == ["192.168.50.1"], "drop removes only that address")
+
+        // locatorIgnoresOtherBonjourPeers: with AWDL on, a nearby Mac or iPhone, or a device
+        // already listed when the guide opened, is not the Android just joined.
+        let nearbyMac = ResolvedPeer(deviceName: "Studio", deviceId: nil, platform: "macos", host: "studio.local",
+                                     port: 49152, tlsPort: 49162, rid: "cc")
+        let nearbyPhone = ResolvedPeer(deviceName: "Phone", deviceId: nil, platform: "ios", host: "phone.local",
+                                       port: 49152, tlsPort: 49162, rid: "c1")
+        let listedAndroid = ResolvedPeer(deviceName: "Old", deviceId: nil, platform: "android", host: "old.local",
+                                         port: 49152, tlsPort: 49153, rid: "c2")
+        virtualNow = start
+        helloHosts = []
+        let baseline: Set<String> = [OfflineLocator.baselineKey(listedAndroid)]
+        if case .found(let peer) = locator(gateway: gateway, bonjour: [nearbyMac, nearbyPhone, listedAndroid])
+            .locate(localRecord: mine, baseline: baseline) {
+            check(peer.host == "192.168.49.1" && helloHosts == ["192.168.49.1"],
+                  "other platforms and baseline peers are skipped; the hello finds the Android, got \(peer.host)")
+        } else { check(false, "the hello should still find the Android") }
+        virtualNow = start
+        helloHosts = []
+        if case .found(let peer) = locator(gateway: gateway, bonjour: [nearbyMac, listedAndroid, bonjourPeer])
+            .locate(localRecord: mine, baseline: baseline) {
+            check(peer.host == "pixel.local" && helloHosts.isEmpty, "a new Bonjour Android is found, got \(peer.host)")
+        } else { check(false, "a new Bonjour Android should be found") }
 
         // locatorFallsBackToHelloAtGateway
         helloHosts = []

@@ -81,8 +81,18 @@ func runPresentationChecks() {
         check(unpaired.subtitle == "Not paired" && unpaired.canPair && unpaired.platform == .mac, "unpaired Mac can pair")
         let android = DeviceListItem.merge(nearby: [peer("Phone", platform: "android")], trusted: [],
                                            lastSeen: [:], now: fixedNow)[0]
-        check(android.subtitle == "Pair from the Android app (coming soon)" && !android.canPair
+        check(android.subtitle == "Pair from the Android app" && !android.canPair
               && android.platform == .android, "unpaired Android explains direction")
+        // Current unpaired devices advertise no deviceId; only a missing tlsPort means an old app.
+        let tagOnlyAndroid = DeviceListItem.merge(nearby: [peer("Pixel", id: nil, platform: "android")], trusted: [],
+                                                  lastSeen: [:], now: fixedNow)[0]
+        check(tagOnlyAndroid.subtitle == "Pair from the Android app", "unpaired Android without deviceId is not an old app")
+        let tagOnlyIphone = DeviceListItem.merge(nearby: [peer("Phone", id: nil, platform: "ios")], trusted: [],
+                                                 lastSeen: [:], now: fixedNow)[0]
+        check(tagOnlyIphone.subtitle == "Pair from the iPhone app", "unpaired iPhone without deviceId is not an old app")
+        let oldAndroid = DeviceListItem.merge(nearby: [peer("Old", id: nil, platform: "android", tlsPort: nil)], trusted: [],
+                                              lastSeen: [:], now: fixedNow)[0]
+        check(oldAndroid.subtitle == "Needs a LinkBridge update", "no tlsPort is an old app")
         let iphoneId = UUID()
         let iphone = DeviceListItem.merge(nearby: [peer("Phone", id: iphoneId, platform: "ios")],
                                           trusted: [trusted("Phone", id: iphoneId, platform: "ios")], lastSeen: [:], now: fixedNow)[0]

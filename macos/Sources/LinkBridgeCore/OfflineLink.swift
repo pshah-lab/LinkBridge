@@ -55,6 +55,18 @@ public struct DiscoveryRecord: Codable, Equatable {
     public var isValid: Bool {
         !rid.isEmpty && port != 0 && tlsPort != 0 && tagCount <= OfflineLinkPayload.maxTags
     }
+
+    /// The JSON keys a record may carry; anything else makes it invalid (as on Android).
+    static let jsonKeys: Set<String> = ["rid", "tags", "deviceName", "platform", "protocol", "port", "tlsPort", "features"]
+
+    /// Decodes an untrusted record (a hello body): nil for unknown keys or out-of-limit values.
+    static func decodeUntrusted(_ data: Data) -> DiscoveryRecord? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object.keys.allSatisfy(jsonKeys.contains),
+              let record = try? JSONDecoder().decode(DiscoveryRecord.self, from: data), record.isValid
+        else { return nil }
+        return record
+    }
 }
 
 /// The text an Android hotspot shows as a QR code: how to join its Wi-Fi, where its hello
@@ -91,7 +103,6 @@ public struct OfflineLinkPayload: Equatable {
     }
 
     private static let topKeys: Set<String> = ["ssid", "pass", "addr", "hello", "record"]
-    private static let recordKeys: Set<String> = ["rid", "tags", "deviceName", "platform", "protocol", "port", "tlsPort", "features"]
 
     /// Returns nil for anything that is not a well-formed, in-limits payload.
     public static func parse(_ text: String) -> OfflineLinkPayload? {
@@ -100,7 +111,7 @@ public struct OfflineLinkPayload: Equatable {
               let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
               Set(object.keys) == topKeys,
               let recordObject = object["record"] as? [String: Any],
-              recordObject.keys.allSatisfy(recordKeys.contains),
+              recordObject.keys.allSatisfy(DiscoveryRecord.jsonKeys.contains),
               let wire = try? JSONDecoder().decode(Wire.self, from: json),
               let address = parseIPv4(wire.addr), isPrivate(address),
               (1...32).contains(wire.ssid.utf8.count),
@@ -295,7 +306,7 @@ public enum OfflineHelloClient {
                 return atEnd ? .failure(.malformedResponse) : nil
             }
             let body = buffer[bodyStart..<(bodyStart + length)]
-            guard let record = try? JSONDecoder().decode(DiscoveryRecord.self, from: Data(body)), record.isValid else {
+            guard let record = DiscoveryRecord.decodeUntrusted(Data(body)) else {
                 return .failure(.malformedResponse)
             }
             return .success(record)
