@@ -111,6 +111,7 @@ section("Discovery: a device seen before pairing is recognized once paired") {
                                "deviceName": Data("Phone".utf8), "platform": Data("android".utf8), "tlsPort": Data("49162".utf8)]
     browser.ingest(name: "Phone", host: "10.0.0.9", port: 49152, txt: txt)
     check(published.first?.deviceId == nil, "unknown before pairing")
+    check(published.first?.rid == rid, "the Bonjour peer keeps its rid for de-duplication")
     trusted = [phone]
     TrustedPeerStore.notifyChanged()
     check(published.first?.deviceId == nil, "the browser itself doesn't listen; the app calls refresh()")
@@ -1268,6 +1269,69 @@ DispatchQueue.global().async {
         } catch { check(error as? OfflineHelloError == .connectionFailed, "closed port fails, got \(error)") }
     }
 
+    section("discoveryRecordIsValid") {
+        let good = DiscoveryRecord(rid: "bb", tags: "", deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49153, features: "file-transfer")
+        check(good.isValid, "a normal record is valid")
+        var noTls = good; noTls.tlsPort = nil
+        check(noTls.isValid, "no tlsPort (older app) is valid")
+        var zeroPort = good; zeroPort.port = 0
+        check(!zeroPort.isValid, "port 0 is invalid")
+        var zeroTls = good; zeroTls.tlsPort = 0
+        check(!zeroTls.isValid, "tlsPort 0 is invalid")
+        var emptyRid = good; emptyRid.rid = ""
+        check(!emptyRid.isValid, "empty rid is invalid")
+        var tags14 = good; tags14.tags = Array(repeating: "0011223344556677", count: 14).joined(separator: ",")
+        check(tags14.isValid, "14 tags are valid")
+        var tags15 = good; tags15.tags = Array(repeating: "0011223344556677", count: 15).joined(separator: ",")
+        check(!tags15.isValid, "15 tags are invalid")
+    }
+
+    section("helloRejectsHostileResponse") {
+        let mine = DiscoveryRecord(rid: "aa", tags: "", deviceName: "iPhone", platform: "ios", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49162, features: "file-transfer")
+        let hostile = DiscoveryRecord(rid: "bb", tags: Array(repeating: "0011223344556677", count: 15).joined(separator: ","),
+                                      deviceName: "Evil", platform: "android", protocolVersion: 2,
+                                      port: 0, tlsPort: 49153, features: "")
+        let stub = HelloStub { _ in ("200 OK", try! JSONEncoder().encode(hostile), nil) }
+        defer { stub.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: stub.port, record: mine)
+            check(false, "a hello response with port 0 and 15 tags is rejected")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "hostile response rejected, got \(error)") }
+    }
+
+    section("offlinePeersFromHelloAndMerge") {
+        let secret = Data(repeating: 7, count: 32).base64EncodedString()
+        let deviceId = UUID()
+        let trusted = [TrustedPeer(deviceId: deviceId, deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                   features: [], pairedAt: Date(), authToken: secret)]
+        let rid = "000102030405060708090a0b0c0d0e0f"
+        let record = DiscoveryRecord(rid: rid, tags: DiscoveryTags.tags(secrets: [secret], rid: rid), deviceName: "Pixel",
+                                     platform: "android", protocolVersion: 2, port: 49152, tlsPort: 49153, features: "")
+        let hello = OfflinePeers.peer(from: record, host: "192.168.49.1", trusted: trusted)
+        check(hello.host == "192.168.49.1" && hello.port == 49152 && hello.tlsPort == 49153, "hello peer at the QR address with the record's ports")
+        check(hello.service == nil && !hello.isDirect, "hello peer has no Bonjour service")
+        check(hello.deviceId == deviceId, "tags match the paired device")
+        check(hello.rid == rid, "hello peer keeps the rid")
+        let unpaired = OfflinePeers.peer(from: record, host: "192.168.49.1", trusted: [])
+        check(unpaired.deviceId == nil, "no deviceId without a pairing")
+
+        // Bonjour lists the same paired device: one row, and Bonjour's wins.
+        let bonjour = ResolvedPeer(deviceName: "Pixel", deviceId: deviceId, platform: "android", host: "pixel.local",
+                                   port: 49152, tlsPort: 49153, rid: "ffff")
+        let merged = OfflinePeers.merge(bonjour: [bonjour], hello: [hello])
+        check(merged.count == 1 && merged.first?.host == "pixel.local", "same deviceId: one peer, Bonjour's")
+        // Unpaired: no deviceId on either side; the rid ties them together.
+        let bonjourUnpaired = ResolvedPeer(deviceName: "Pixel", deviceId: nil, platform: "android", host: "pixel.local",
+                                           port: 49152, tlsPort: 49153, rid: rid)
+        check(OfflinePeers.merge(bonjour: [bonjourUnpaired], hello: [unpaired]).count == 1, "same rid: one peer")
+        let other = ResolvedPeer(deviceName: "Mac", deviceId: UUID(), platform: "macos", host: "mac.local",
+                                 port: 49152, tlsPort: 49162, rid: "eeee")
+        check(OfflinePeers.merge(bonjour: [other], hello: [unpaired]).count == 2, "different devices: both kept")
+        check(OfflinePeers.merge(bonjour: [], hello: [unpaired]).count == 1, "hello alone is listed")
+    }
+
     section("Unpair removes a trusted peer") {
         let id = UUID()
         TrustedPeerStore().save(TrustedPeer(deviceId: id, deviceName: "Gone", platform: "android", protocolVersion: 2,
@@ -1281,6 +1345,9 @@ DispatchQueue.global().async {
         var macCode: String?
         let (pairServer, pairPort) = startServer(preferredPort: 0, approve: { true }, lastRequest: { macCode = $0.code })
         defer { DispatchQueue.main.sync { pairServer.stop() } }
+        let live = DispatchQueue.main.sync { (pairServer.currentDiscoveryRecord(), pairServer.securePort) }
+        check(live.0.port == pairPort && live.0.tlsPort == live.1 && live.0.rid == ControlServer.discoveryRid,
+              "currentDiscoveryRecord carries the ports the server listens on")
         let done = DispatchSemaphore(value: 0)
         var result: Result<(PairingClient.Started, TrustedPeer), Error>?
         Task.detached {

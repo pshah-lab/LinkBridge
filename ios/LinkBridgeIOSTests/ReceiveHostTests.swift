@@ -12,6 +12,10 @@ private final class FakeServer: ServerControlling {
     init(callbacks: ReceiveHostCallbacks) { self.callbacks = callbacks }
     func start(onReady: @escaping (UInt16?) -> Void) { starts += 1; onReady(49152) }
     func stop() { stops += 1 }
+    func currentDiscoveryRecord() -> DiscoveryRecord {
+        DiscoveryRecord(rid: "aa", tags: "", deviceName: "iPhone", platform: "ios", protocolVersion: 2,
+                        port: 49152, tlsPort: 49162, features: "file-transfer")
+    }
 }
 
 @MainActor
@@ -46,9 +50,12 @@ private func pairRequest() -> IncomingPairRequest {
     #expect(servers().count == 1, "already running: not started twice")
     #expect(servers()[0].starts == 1)
 
+    #expect(host.discoveryRecord?.port == 49152, "the hello record comes from the running server")
+
     host.sceneLeftForeground()
     #expect(servers()[0].stops == 1)
     #expect(!host.isRunning)
+    #expect(host.discoveryRecord == nil, "no hello record while stopped")
 
     host.sceneBecameActive()
     #expect(host.isRunning)

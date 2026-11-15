@@ -131,7 +131,8 @@ public final class PeerBrowser: NSObject {
             port: record.port,
             tlsPort: value("tlsPort").flatMap(UInt16.init),
             service: endpoints[name],
-            isDirect: direct[name] ?? false
+            isDirect: direct[name] ?? false,
+            rid: rid
         )
     }
 

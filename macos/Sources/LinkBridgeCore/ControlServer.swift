@@ -269,9 +269,15 @@ public final class ControlServer {
     public static let discoveryRid = DiscoveryTags.randomRid()
 
     private func advertisedService() -> NWListener.Service {
+        NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil,
+                           txtRecord: currentDiscoveryRecord().txtRecord)
+    }
+
+    /// This server's record with the ports it listens on now: what it advertises over Bonjour
+    /// and what its app sends in an offline hello.
+    public func currentDiscoveryRecord() -> DiscoveryRecord {
         let secrets = trustedPeerStore.load().sorted { $0.pairedAt > $1.pairedAt }.compactMap(\.authToken)
-        let record = Self.discoveryRecord(identity: identity, secrets: secrets, port: port, tlsPort: securePort)
-        return NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil, txtRecord: record.txtRecord)
+        return Self.discoveryRecord(identity: identity, secrets: secrets, port: port, tlsPort: securePort)
     }
 
     /// What this server tells peers about itself: the source of both the Bonjour TXT record and

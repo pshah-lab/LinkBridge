@@ -5,15 +5,41 @@ import SwiftUI
 struct DevicesView: View {
     @ObservedObject var model: LinkBridgeModel
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// Set about 5 s after the screen appears; the offline card shows if nothing was found by then.
+    @State private var searchedAWhile = false
+    @State private var scanning = false
+
+    /// How long discovery gets before the offline card is offered.
+    static let offlineCardDelay: Duration = .seconds(5)
 
     var body: some View {
+        list
+            .task {
+                try? await Task.sleep(for: Self.offlineCardDelay)
+                searchedAWhile = true
+            }
+            .sheet(isPresented: $scanning) { OfflineJoinSheet(flow: model.offlineJoin) }
+    }
+
+    @ViewBuilder
+    private var list: some View {
         let items = model.deviceItems
+        let card = OfflineLinkCard(flow: model.offlineJoin, noPeers: searchedAWhile && model.nearby.isEmpty,
+                                   onScan: { scanning = true })
         if items.isEmpty {
-            ContentUnavailableView("No devices yet", systemImage: "wifi",
-                                   description: Text("Make sure both devices are on the same Wi-Fi and LinkBridge is open."))
+            VStack(spacing: 0) {
+                card.padding()
+                ContentUnavailableView("No devices yet", systemImage: "wifi",
+                                       description: Text("Make sure both devices are on the same Wi-Fi and LinkBridge is open."))
+            }
         } else {
-            List(items) { item in
-                row(item)
+            List {
+                Section { card }
+                Section {
+                    ForEach(items) { item in
+                        row(item)
+                    }
+                }
             }
             .scrollContentBackground(.hidden)
         }

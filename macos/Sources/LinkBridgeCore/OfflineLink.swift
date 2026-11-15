@@ -49,6 +49,12 @@ public struct DiscoveryRecord: Codable, Equatable {
     var tagCount: Int {
         tags.isEmpty ? 0 : tags.split(separator: ",", omittingEmptySubsequences: false).count
     }
+
+    /// Within the limits a peer may send: a rid, ports 1–65535 and at most 14 tags. Both the QR
+    /// payload and the hello response are untrusted, so both are checked with this.
+    public var isValid: Bool {
+        !rid.isEmpty && port != 0 && tlsPort != 0 && tagCount <= OfflineLinkPayload.maxTags
+    }
 }
 
 /// The text an Android hotspot shows as a QR code: how to join its Wi-Fi, where its hello
@@ -99,8 +105,7 @@ public struct OfflineLinkPayload: Equatable {
               let address = parseIPv4(wire.addr), isPrivate(address),
               (1...32).contains(wire.ssid.utf8.count),
               (8...63).contains(wire.pass.unicodeScalars.count),
-              wire.hello != 0, wire.record.port != 0, wire.record.tlsPort != 0,
-              wire.record.tagCount <= maxTags
+              wire.hello != 0, wire.record.isValid
         else { return nil }
         return OfflineLinkPayload(ssid: wire.ssid, passphrase: wire.pass, address: address,
                                   helloPort: wire.hello, record: wire.record)
@@ -290,10 +295,38 @@ public enum OfflineHelloClient {
                 return atEnd ? .failure(.malformedResponse) : nil
             }
             let body = buffer[bodyStart..<(bodyStart + length)]
-            guard let record = try? JSONDecoder().decode(DiscoveryRecord.self, from: Data(body)) else {
+            guard let record = try? JSONDecoder().decode(DiscoveryRecord.self, from: Data(body)), record.isValid else {
                 return .failure(.malformedResponse)
             }
             return .success(record)
         }
+    }
+}
+
+/// Peers learned from the offline hello, and how they sit next to Bonjour peers.
+public enum OfflinePeers {
+    /// The peer a hello record describes, reached at `host` (the QR address), never via Bonjour.
+    /// Its tags are matched against `trusted`, so a paired device gets its deviceId.
+    public static func peer(from record: DiscoveryRecord, host: String, trusted: [TrustedPeer]) -> ResolvedPeer {
+        let matched = DiscoveryTags.match(rid: record.rid, tags: record.tags, peers: trusted)
+        return ResolvedPeer(deviceName: record.deviceName, deviceId: matched?.deviceId, platform: record.platform,
+                            host: host, port: record.port, tlsPort: record.tlsPort, service: nil, rid: record.rid)
+    }
+
+    /// True when both describe one device: the same matched deviceId, else the same rid.
+    public static func isSameDevice(_ a: ResolvedPeer, _ b: ResolvedPeer) -> Bool {
+        if let id = a.deviceId, id == b.deviceId { return true }
+        if let rid = a.rid, rid == b.rid { return true }
+        return false
+    }
+
+    /// Bonjour peers, then each hello peer Bonjour doesn't already list. Bonjour wins because
+    /// its peers can also be reached over peer-to-peer Wi-Fi.
+    public static func merge(bonjour: [ResolvedPeer], hello: [ResolvedPeer]) -> [ResolvedPeer] {
+        var merged = bonjour
+        for peer in hello where !merged.contains(where: { isSameDevice($0, peer) }) {
+            merged.append(peer)
+        }
+        return merged
     }
 }

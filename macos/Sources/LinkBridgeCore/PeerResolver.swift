@@ -15,9 +15,12 @@ public struct ResolvedPeer {
     public let service: NWEndpoint?
     /// True when the peer was last reached over Apple peer-to-peer Wi-Fi (AWDL), not a network.
     public let isDirect: Bool
+    /// The advertiser's per-launch `rid`, when known. Ties one device's Bonjour and hello
+    /// sightings together when neither has a deviceId (not paired).
+    public let rid: String?
 
     public init(deviceName: String, deviceId: UUID?, platform: String?, host: String, port: UInt16, tlsPort: UInt16?,
-                service: NWEndpoint? = nil, isDirect: Bool = false) {
+                service: NWEndpoint? = nil, isDirect: Bool = false, rid: String? = nil) {
         self.deviceName = deviceName
         self.deviceId = deviceId
         self.platform = platform
@@ -26,6 +29,7 @@ public struct ResolvedPeer {
         self.tlsPort = tlsPort
         self.service = service
         self.isDirect = isDirect
+        self.rid = rid
     }
 
     public var endpoint: String {

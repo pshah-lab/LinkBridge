@@ -181,6 +181,7 @@ Parsers return "invalid" (and the app shows nothing) unless all of these hold:
   10/8, 172.16/12 or 192.168/16.
 - `hello`, `record.port` and `record.tlsPort` (when present) are integers 1 to 65535.
 - `record.tags` has at most 14 comma-separated entries (empty string is none).
+- `record.rid` is not empty (Swift `DiscoveryRecord.isValid`; Android does not check this yet).
 
 The encoder writes keys sorted and does not escape `/`; parsers must not depend on key order.
 
@@ -208,3 +209,5 @@ Content-Length: <required>
 - Request and response bodies are at most 4096 bytes. A client rejects a response without
   `Content-Length` or with a body over 4096 bytes, and a server rejects a request the same way.
 - The Swift client (`OfflineHelloClient.exchange`) gives up after 3 seconds in total by default.
+- The response is untrusted: the Swift client rejects a record outside the `record` limits above
+  (port or `tlsPort` 0, more than 14 tags, empty `rid`) as malformed.

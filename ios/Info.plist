@@ -4,6 +4,8 @@
 <dict>
     <key>NSLocalNetworkUsageDescription</key>
     <string>LinkBridge finds nearby devices on this Wi-Fi network, sends files to them and receives files from them directly.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Scan the code on your Android device to connect without Wi-Fi.</string>
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>

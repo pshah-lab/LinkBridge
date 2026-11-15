@@ -6,6 +6,8 @@ import LinkBridgeCore
 protocol ServerControlling: AnyObject {
     func start(onReady: @escaping (UInt16?) -> Void)
     func stop()
+    /// What the server would advertise now, with the ports it listens on.
+    func currentDiscoveryRecord() -> DiscoveryRecord
 }
 
 extension ControlServer: ServerControlling {}
@@ -46,6 +48,11 @@ final class ReceiveHost: ObservableObject {
     /// Where received files go: the app's Documents folder, visible in the Files app.
     static var receiveDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    /// This iPhone's discovery record for the offline hello, or nil while the server is stopped.
+    var discoveryRecord: DiscoveryRecord? {
+        isRunning ? server?.currentDiscoveryRecord() : nil
     }
 
     func sceneBecameActive() {
