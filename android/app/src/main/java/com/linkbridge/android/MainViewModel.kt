@@ -91,13 +91,8 @@ class MainViewModel(
     private val offlinePermissionDenied = MutableStateFlow(false)
     /** The hotspot state whose message the user already saw or caused, so it isn't shown again. */
     private val offlineDismissed = MutableStateFlow<HotspotState?>(null)
-    /** When the idle clock last restarted: the hotspot came up, or a transfer ended. */
-    private val offlineIdleSince = MutableStateFlow(clock())
-
-    /** Whether the hotspot's idle timer is paused; the one place that decides it. */
-    private val offlineBusy: StateFlow<Boolean> =
-        combine(state, hub.sendState, ::isOfflineBusy)
-            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    /** When the hotspot's idle timer stops it (null while paused); the service owns the busy signal. */
+    private val offlineIdleDeadline = hub.hotspotIdleDeadline
 
     /** True once no peer has been seen for [NO_PEERS_MS]. */
     private val noPeersForAWhile: Flow<Boolean> = hub.peers.map { it.isEmpty() }.distinctUntilChanged()
@@ -127,7 +122,7 @@ class MainViewModel(
 
     val offline: StateFlow<OfflineUi> = combine(
         combine(hub.hotspotState, hub.offlineEndpoint, noPeersForAWhile, offlineScreenOpen, ::OfflineInputs),
-        combine(offlinePermissionDenied, offlineDismissed, offlineNow, offlineIdleSince, offlineBusy, ::OfflineMoreInputs),
+        combine(offlinePermissionDenied, offlineDismissed, offlineNow, offlineIdleDeadline, ::OfflineMoreInputs),
         ::buildOffline
     ).stateIn(viewModelScope, SharingStarted.Eagerly, OfflineUi())
 
@@ -142,8 +137,7 @@ class MainViewModel(
         val permissionDenied: Boolean,
         val dismissed: HotspotState?,
         val now: Long,
-        val idleSince: Long,
-        val busy: Boolean
+        val idleDeadline: Long?
     )
 
     /** Starts the hotspot. The caller has asked for (and been granted) Nearby devices. */
@@ -212,7 +206,7 @@ class MainViewModel(
                 ssid = active?.ssid,
                 passphrase = active?.passphrase,
                 address = if (qr != null) endpoint?.address?.hostAddress else null,
-                minutesLeftLabel = minutesLeftLabel(b.busy, b.now - b.idleSince)
+                minutesLeftLabel = minutesLeftLabel(b.idleDeadline, b.now)
             )
         } else {
             null
@@ -266,17 +260,14 @@ class MainViewModel(
         }
         viewModelScope.launch { hub.sendResults.collect(::onSendResult) }
         viewModelScope.launch {
-            // Idempotent, so the hotspot learns the current flag again whenever its state changes.
-            combine(hub.hotspotState, offlineBusy) { hotspot, busy -> hotspot to busy }.collect { (hotspot, busy) ->
-                hub.setHotspotBusy(busy)
-                if (hotspot is HotspotState.Active && !busy) offlineIdleSince.value = clock()
-            }
+            // The service watches transfers and approvals itself; only the UI knows about pairing.
+            state.map { it.pairing.isRunning() }.distinctUntilChanged().collect { hub.setPairingBusy(it) }
         }
     }
 
     override fun onCleared() {
-        // Nothing watches transfers once this is gone, so don't leave the idle timer paused.
-        hub.setHotspotBusy(false)
+        // Pairing dies with this view model.
+        hub.setPairingBusy(false)
     }
 
     // ---- Devices ----

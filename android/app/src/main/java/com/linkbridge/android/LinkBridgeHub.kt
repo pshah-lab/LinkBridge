@@ -59,6 +59,9 @@ object LinkBridgeHub {
     /** Set while the offline hotspot is up and its address is known. */
     val offlineEndpoint: StateFlow<OfflineEndpoint?> = _offlineEndpoint.asStateFlow()
 
+    /** The UI is pairing a device; the one busy input the service can't see. */
+    val pairingInProgress = MutableStateFlow(false)
+
     private var offlineHotspot: OfflineHotspot? = null
 
     /** The process-wide offline hotspot, created on first use. Main thread only. */

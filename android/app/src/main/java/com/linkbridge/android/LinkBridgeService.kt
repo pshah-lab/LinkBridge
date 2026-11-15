@@ -26,6 +26,7 @@ import android.net.NetworkCapabilities
 import com.linkbridge.android.offline.Cancelable
 import com.linkbridge.android.offline.HelloPeerTable
 import com.linkbridge.android.offline.HotspotBinding
+import com.linkbridge.android.offline.HotspotBusyDriver
 import com.linkbridge.android.offline.OFFLINE_HELLO_PORT
 import com.linkbridge.android.offline.OfflineHelloServer
 import com.linkbridge.android.offline.OfflineHotspot
@@ -70,6 +71,7 @@ class LinkBridgeService : Service() {
     private var isForeground = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var hotspotObserver: Job? = null
+    private var busyDriver: HotspotBusyDriver? = null
     private val hotspotBinding by lazy {
         HotspotBinding(
             setAcceptFilter = { filter -> receiveServer.acceptFilter = filter },
@@ -194,11 +196,23 @@ class LinkBridgeService : Service() {
     fun attachHotspot(hotspot: OfflineHotspot?) {
         hotspotObserver?.cancel()
         hotspotObserver = null
+        busyDriver?.stop()
+        busyDriver = null
         if (hotspot == null) {
             hotspotBinding.onState(com.linkbridge.android.offline.HotspotState.Idle)
             return
         }
         hotspotObserver = scope.launch { hotspot.state.collect(hotspotBinding::onState) }
+        // Transfers are the service's, so it (not any screen) pauses the idle timer.
+        busyDriver = HotspotBusyDriver(
+            scope = scope,
+            receive = LinkBridgeHub.receiveState,
+            send = LinkBridgeHub.sendState,
+            approvals = LinkBridgeHub.pendingApprovals,
+            pairing = LinkBridgeHub.pairingInProgress,
+            hotspot = hotspot.state,
+            setBusy = hotspot::setBusy,
+        )
     }
 
     /** The IPv4 addresses of every Wi-Fi network this phone is joined to; empty if none or unknown. */

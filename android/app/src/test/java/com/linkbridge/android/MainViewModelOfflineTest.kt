@@ -5,7 +5,6 @@ import com.linkbridge.android.offline.DiscoveryRecord
 import com.linkbridge.android.offline.HotspotFailure
 import com.linkbridge.android.offline.HotspotState
 import com.linkbridge.android.offline.OfflineLinkPayload
-import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -117,6 +116,7 @@ class MainViewModelOfflineTest {
         assertEquals("DIRECT-ab-Pixel", screen.ssid)
 
         hub.offlineEndpoint.value = OfflineEndpoint(address, record)
+        hub.hotspotIdleDeadline.value = now + 10 * 60_000L
         runCurrent()
         screen = vm.offline.value.screen!!
         val payload = OfflineLinkPayload.parse(screen.qrText!!)!!
@@ -131,23 +131,22 @@ class MainViewModelOfflineTest {
     }
 
     @Test
-    fun countdownTracksIdleTimeAndPausesWhileBusy() = offlineTest {
+    fun countdownComesFromTheHotspotsIdleDeadline() = offlineTest {
         val vm = viewModel()
         vm.startOffline()
         hub.hotspotState.value = HotspotState.Active("n", "pass1234word")
+        hub.hotspotIdleDeadline.value = now + 10 * 60_000L
         runCurrent()
+        assertEquals("Stops in 10 min if idle", vm.offline.value.screen!!.minutesLeftLabel)
 
         now += 4 * 60_000L
         advanceTimeBy(30_001)
         assertEquals("Stops in 6 min if idle", vm.offline.value.screen!!.minutesLeftLabel)
 
-        hub.receiveState.value = ReceiveState.Receiving("a.txt", 1, 10)
+        // The service paused the timer for a transfer.
+        hub.hotspotIdleDeadline.value = null
         runCurrent()
         assertEquals("Transfer in progress", vm.offline.value.screen!!.minutesLeftLabel)
-
-        hub.receiveState.value = ReceiveState.Listening
-        runCurrent()
-        assertEquals("Stops in 10 min if idle", vm.offline.value.screen!!.minutesLeftLabel)
     }
 
     @Test
@@ -215,71 +214,31 @@ class MainViewModelOfflineTest {
         assertNull(vm.offline.value.screen)
     }
 
-    // ---- setBusy ----
-
-    private fun TestScope.activeVm(): MainViewModel {
-        val vm = viewModel()
-        hub.hotspotState.value = HotspotState.Active("n", "pass1234word")
-        runCurrent()
-        return vm
-    }
-
-    private val approval = PendingApproval(1, IncomingTransferRequest("Studio", MAC_ID, "a.txt", 10), expiresAt = Long.MAX_VALUE)
+    // ---- pairing is the only busy input the view model contributes ----
 
     @Test
-    fun busyIsFalseWhenNothingIsHappening() = offlineTest {
-        activeVm()
-        assertEquals(false, hub.busyCalls.last())
-    }
-
-    @Test
-    fun busyWhileReceiving() = offlineTest {
-        activeVm()
-        hub.receiveState.value = ReceiveState.Receiving("a.txt", 1, 10)
-        runCurrent()
-        assertEquals(true, hub.busyCalls.last())
-        hub.receiveState.value = ReceiveState.Listening
-        runCurrent()
-        assertEquals(false, hub.busyCalls.last())
-    }
-
-    @Test
-    fun busyWhileSending() = offlineTest {
-        activeVm()
-        hub.sendState.value = SendState.Progress("a.txt", 1, 10)
-        runCurrent()
-        assertEquals(true, hub.busyCalls.last())
-        hub.sendState.value = SendState.Done("a.txt", 10, "Studio")
-        runCurrent()
-        assertEquals(false, hub.busyCalls.last())
-    }
-
-    @Test
-    fun busyWhileApprovalPending() = offlineTest {
-        activeVm()
-        hub.pendingApprovals.value = listOf(approval)
-        runCurrent()
-        assertEquals(true, hub.busyCalls.last())
-        hub.pendingApprovals.value = emptyList()
-        runCurrent()
-        assertEquals(false, hub.busyCalls.last())
-    }
-
-    @Test
-    fun busyWhilePairing() = offlineTest {
-        val stores = FakeStores()
-        val pairing = FakePairing()
+    fun pairingInProgressIsReportedAndClears() = offlineTest {
         hub.peers.value = listOf(unpairedMac)
         val vm = MainViewModel(
-            hub, stores, pairing, FakePrefs(), CoroutineScope(SupervisorJob() + dispatcher), dispatcher,
+            hub, FakeStores(), FakePairing(), FakePrefs(), CoroutineScope(SupervisorJob() + dispatcher), dispatcher,
             clock = { now }, zone = ZoneOffset.UTC, sdkInt = 34
         )
         runCurrent()
+        assertEquals(false, hub.pairingBusyCalls.last())
         vm.pair(unpairedMac.serviceName)
         runCurrent()
-        assertEquals(true, hub.busyCalls.last())
+        assertEquals(true, hub.pairingBusyCalls.last())
         vm.cancelPairing()
         runCurrent()
-        assertEquals(false, hub.busyCalls.last())
+        assertEquals(false, hub.pairingBusyCalls.last())
+    }
+
+    @Test
+    fun transfersDoNotTouchTheViewModelsBusyInput() = offlineTest {
+        viewModel()
+        hub.receiveState.value = ReceiveState.Receiving("a.txt", 1, 10)
+        hub.sendState.value = SendState.Progress("a.txt", 1, 10)
+        runCurrent()
+        assertTrue(hub.pairingBusyCalls.none { it })
     }
 }

@@ -184,4 +184,34 @@ class OfflineHotspotTest {
         time.advanceBy(10 * minute)
         assertEquals(HotspotState.Stopped(bySystem = false), h.state.value)
     }
+
+    @Test
+    fun idleDeadlineTracksTheTimer() {
+        val port = FakePort(); val time = FakeTime()
+        val h = hotspot(port, time)
+        assertEquals(null, h.idleDeadline.value)
+        time.now = 1_000
+        h.start()
+        port.callback!!.onStarted("DIRECT-lb", "secret123")
+        assertEquals(1_000 + IDLE_TIMEOUT_MS, h.idleDeadline.value)
+
+        time.advanceBy(3 * minute)
+        h.setBusy(true)
+        assertEquals(null, h.idleDeadline.value)
+
+        time.advanceBy(2 * minute)
+        h.setBusy(false)
+        assertEquals(time.now + IDLE_TIMEOUT_MS, h.idleDeadline.value)
+
+        h.stop()
+        assertEquals(null, h.idleDeadline.value)
+    }
+
+    @Test
+    fun idleDeadlineClearsWhenTheTimerStopsIt() {
+        val port = FakePort(); val time = FakeTime()
+        val h = activeHotspot(port, time)
+        time.advanceBy(IDLE_TIMEOUT_MS + 1)
+        assertEquals(null, h.idleDeadline.value)
+    }
 }

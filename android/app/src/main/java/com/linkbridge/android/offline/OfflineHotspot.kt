@@ -52,6 +52,10 @@ class OfflineHotspot(
     private val _state = MutableStateFlow<HotspotState>(HotspotState.Idle)
     val state: StateFlow<HotspotState> = _state.asStateFlow()
 
+    private val _idleDeadline = MutableStateFlow<Long?>(null)
+    /** When the idle timer will stop the hotspot (epoch ms, [clock]); null while busy or not Active. */
+    val idleDeadline: StateFlow<Long?> = _idleDeadline.asStateFlow()
+
     private var busy = false
     private var lastActivityAt = 0L
     private var idleTimer: Cancelable? = null
@@ -122,16 +126,19 @@ class OfflineHotspot(
 
     private fun armIdleTimer(delayMs: Long) {
         cancelIdleTimer()
+        _idleDeadline.value = lastActivityAt + IDLE_TIMEOUT_MS
         idleTimer = schedule(delayMs) { onIdleTimer() }
     }
 
     private fun cancelIdleTimer() {
         idleTimer?.cancel()
         idleTimer = null
+        _idleDeadline.value = null
     }
 
     private fun onIdleTimer() {
         idleTimer = null
+        _idleDeadline.value = null
         if (busy || _state.value !is HotspotState.Active) return
         val remaining = IDLE_TIMEOUT_MS - (clock() - lastActivityAt)
         if (remaining > 0) armIdleTimer(remaining) else stop()

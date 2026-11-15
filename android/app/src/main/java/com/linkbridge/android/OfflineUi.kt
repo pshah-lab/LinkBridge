@@ -1,8 +1,6 @@
 package com.linkbridge.android
 
-import com.linkbridge.android.LinkBridgeHub.SendState
 import com.linkbridge.android.offline.HotspotFailure
-import com.linkbridge.android.offline.IDLE_TIMEOUT_MS
 
 const val OFFLINE_CARD_TEXT = "No Wi-Fi? Connect directly"
 const val OFFLINE_CARD_UNSUPPORTED_TEXT = "Needs Android 13 or later"
@@ -45,18 +43,9 @@ fun hotspotFailureMessage(reason: HotspotFailure): String = when (reason) {
     HotspotFailure.GENERIC -> "Couldn't start offline link. Try again"
 }
 
-/**
- * Whether the hotspot's idle timer should be paused: a transfer in either direction, an approval
- * prompt waiting for an answer, or pairing in progress.
- */
-internal fun isOfflineBusy(state: UiState, hubSend: SendState?): Boolean =
-    state.live.isNotEmpty() ||
-        hubSend is SendState.Progress ||
-        state.pairing.let { it is PairingStep.Connecting || it is PairingStep.Code || it is PairingStep.Waiting }
-
-internal fun minutesLeftLabel(busy: Boolean, idleForMs: Long): String {
-    if (busy) return "Transfer in progress"
-    val left = (IDLE_TIMEOUT_MS - idleForMs).coerceAtLeast(0)
-    val minutes = ((left + 59_999) / 60_000).coerceAtLeast(1)
+internal fun minutesLeftLabel(deadline: Long?, now: Long): String {
+    // No deadline while Active means the idle timer is paused for a transfer, approval or pairing.
+    if (deadline == null) return "Transfer in progress"
+    val minutes = (((deadline - now).coerceAtLeast(0) + 59_999) / 60_000).coerceAtLeast(1)
     return "Stops in $minutes min if idle"
 }

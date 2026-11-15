@@ -57,10 +57,11 @@ internal class FakeHub : HubPort {
     override val offlineEndpoint = MutableStateFlow<OfflineEndpoint?>(null)
     var hotspotStarts = 0
     var hotspotStops = 0
-    val busyCalls = mutableListOf<Boolean>()
+    override val hotspotIdleDeadline = MutableStateFlow<Long?>(null)
+    val pairingBusyCalls = mutableListOf<Boolean>()
     override fun startHotspot() { hotspotStarts += 1 }
     override fun stopHotspot() { hotspotStops += 1 }
-    override fun setHotspotBusy(busy: Boolean) { busyCalls += busy }
+    override fun setPairingBusy(busy: Boolean) { pairingBusyCalls += busy }
 
     override fun startService() { serviceRunning = true }
     override fun stopService() { serviceRunning = false }

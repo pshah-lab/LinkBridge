@@ -30,8 +30,10 @@ interface HubPort {
     val offlineEndpoint: StateFlow<OfflineEndpoint?>
     fun startHotspot()
     fun stopHotspot()
-    /** True while the hotspot must not time out for being idle. */
-    fun setHotspotBusy(busy: Boolean)
+    /** When the hotspot will stop for being idle (epoch ms); null while busy or off. */
+    val hotspotIdleDeadline: StateFlow<Long?>
+    /** Pairing is in progress, which keeps the hotspot from timing out; the service handles transfers. */
+    fun setPairingBusy(busy: Boolean)
 }
 
 /** Identity, trusted peers and history. Blocking; call off the main thread. */
@@ -72,7 +74,8 @@ class LinkBridgeHubPort(private val context: Context) : HubPort {
         LinkBridgeHub.hotspot(context).start()
     }
     override fun stopHotspot() = LinkBridgeHub.hotspot(context).stop()
-    override fun setHotspotBusy(busy: Boolean) = LinkBridgeHub.hotspot(context).setBusy(busy)
+    override val hotspotIdleDeadline get() = LinkBridgeHub.hotspot(context).idleDeadline
+    override fun setPairingBusy(busy: Boolean) { LinkBridgeHub.pairingInProgress.value = busy }
 }
 
 class AppStores(context: Context) : Stores {
