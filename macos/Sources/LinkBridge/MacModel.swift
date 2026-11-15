@@ -30,6 +30,7 @@ final class MacModel {
         }
     }
 
+    /// Bonjour peers merged with peers found by the offline hello.
     private(set) var nearby: [ResolvedPeer] = []
     private(set) var trusted: [TrustedPeer] = []
     private(set) var lastSeen: [UUID: Date] = [:]
@@ -69,6 +70,23 @@ final class MacModel {
     @ObservationIgnored private var trustedObserver: NSObjectProtocol?
     /// File approvals by request ID, so an accepted file can show as "receiving".
     @ObservationIgnored private var fileRequests: [UUID: IncomingTransferRequest] = [:]
+
+    /// Where the guided join to an Android offline link stands.
+    enum OfflineJoinState: Equatable {
+        case searching
+        case found(String)
+        case needsManualAddress
+    }
+
+    /// True once no device has shown up for 5 s; shows the "Connect directly" card.
+    private(set) var offlineCardVisible = false
+    var showOfflineGuide = false
+    private(set) var offlineJoin: OfflineJoinState = .searching
+    @ObservationIgnored private var bonjourNearby: [ResolvedPeer] = []
+    @ObservationIgnored private var helloPeers: [(peer: ResolvedPeer, seen: Date)] = []
+    @ObservationIgnored private var noPeersSince: Date?
+    @ObservationIgnored private var locating = false
+    private static let helloPeerLifetime: TimeInterval = 30
 
     /// Set when the user has turned notifications off for LinkBridge in System Settings.
     var notificationsDenied = false
@@ -196,6 +214,12 @@ final class MacModel {
     }
 
     private func discovered(_ peers: [ResolvedPeer]) {
+        bonjourNearby = peers
+        mergeNearby()
+    }
+
+    private func mergeNearby() {
+        let peers = OfflinePeers.merge(bonjour: bonjourNearby, hello: helloPeers.map(\.peer))
         nearby = peers
         let now = Date()
         for id in peers.compactMap(\.deviceId) { lastSeen[id] = now }
@@ -206,8 +230,61 @@ final class MacModel {
 
     private func tick() {
         approvals.tick()
+        let now = Date()
+        if nearby.isEmpty {
+            if noPeersSince == nil { noPeersSince = now }
+            offlineCardVisible = now.timeIntervalSince(noPeersSince ?? now) >= 5
+        } else {
+            noPeersSince = nil
+            offlineCardVisible = false
+        }
+        let before = helloPeers.count
+        helloPeers.removeAll { now.timeIntervalSince($0.seen) > Self.helloPeerLifetime }
+        if helloPeers.count != before { mergeNearby() }
         // A receive that stops reporting progress has failed on the sender's side.
         if let receiving, Date().timeIntervalSince(receiving.updatedAt) > 15 { self.receiving = nil }
+    }
+
+    // MARK: - Offline link
+
+    func openOfflineGuide() {
+        offlineJoin = .searching
+        showOfflineGuide = true
+        showMainWindow()
+    }
+
+    /// One locate pass for the open guide: Bonjour, then the hello at the gateway.
+    func locateOffline() async {
+        await runLocate { locator, record in locator.locate(localRecord: record) }
+    }
+
+    func connectOfflineManually(_ address: String) async {
+        await runLocate { locator, record in locator.connectManually(address: address, localRecord: record) }
+    }
+
+    private func runLocate(_ work: @escaping @Sendable (OfflineLocator, DiscoveryRecord) -> LocateResult) async {
+        guard !locating, let record = server?.currentDiscoveryRecord() else { return }
+        locating = true
+        defer { locating = false }
+        let bonjour = bonjourNearby
+        let trusted = trustedStore.load()
+        let result = await Task.detached {
+            work(OfflineLocator.system(bonjourPeers: { bonjour }, trusted: { trusted }), record)
+        }.value
+        guard showOfflineGuide else { return }
+        switch result {
+        case .found(let peer):
+            if peer.service == nil {
+                helloPeers.removeAll { OfflinePeers.isSameDevice($0.peer, peer) }
+                helloPeers.append((peer, Date()))
+                mergeNearby()
+            }
+            offlineJoin = .found(peer.deviceName)
+            if let id = peer.deviceId { select(id) }
+            showOfflineGuide = false
+        case .needsManualAddress:
+            offlineJoin = .needsManualAddress
+        }
     }
 
     // MARK: - Approvals

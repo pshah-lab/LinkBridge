@@ -43,6 +43,7 @@ struct MainWindow: View {
                 }
             }
         }
+        .sheet(isPresented: Bindable(model).showOfflineGuide) { OfflineJoinGuide() }
         .sheet(item: $sheetApproval) { item in
             ApprovalSheet(item: item) { model.resolve(item.id, approved: $0) }
         }
@@ -90,6 +91,9 @@ struct MainWindow: View {
 
     private var noDevices: some View {
         EmptyState(symbol: "wifi", message: "No devices yet — open LinkBridge on your phone on the same Wi-Fi.")
+            .safeAreaInset(edge: .bottom) {
+                if model.offlineCardVisible { OfflineJoinCard().frame(maxWidth: 360).padding(.bottom, 24) }
+            }
     }
 
     private func syncSheet() {

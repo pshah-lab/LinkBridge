@@ -1332,6 +1332,68 @@ DispatchQueue.global().async {
         check(OfflinePeers.merge(bonjour: [], hello: [unpaired]).count == 1, "hello alone is listed")
     }
 
+    section("offlineLocator") {
+        let rid = "000102030405060708090a0b0c0d0e0f"
+        let mine = DiscoveryRecord(rid: "aa", tags: "", deviceName: "Mac", platform: "macos", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49162, features: "")
+        let theirs = DiscoveryRecord(rid: rid, tags: "", deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                     port: 49152, tlsPort: 49153, features: "")
+        let gateway = OfflineLinkPayload.parseIPv4("192.168.49.1")
+        var helloHosts: [String] = []
+        func locator(gateway: IPv4Address?, bonjour: [ResolvedPeer] = [], failHello: Bool = false) -> OfflineLocator {
+            OfflineLocator(gateway: { gateway },
+                           hello: { host, _ in
+                               helloHosts.append("\(host)")
+                               if failHello { throw OfflineHelloError.timedOut }
+                               return theirs
+                           },
+                           bonjourPeers: { bonjour })
+        }
+        let bonjourPeer = ResolvedPeer(deviceName: "Pixel", deviceId: nil, platform: "android", host: "pixel.local",
+                                       port: 49152, tlsPort: 49153, rid: rid)
+
+        // locatorPrefersBonjour
+        helloHosts = []
+        if case .found(let peer) = locator(gateway: gateway, bonjour: [bonjourPeer]).locate(localRecord: mine) {
+            check(peer.host == "pixel.local" && helloHosts.isEmpty, "Bonjour peer wins and no hello is sent")
+        } else { check(false, "Bonjour peer should be found") }
+
+        // locatorFallsBackToHelloAtGateway
+        helloHosts = []
+        if case .found(let peer) = locator(gateway: gateway).locate(localRecord: mine) {
+            check(peer.host == "192.168.49.1" && peer.port == 49152 && peer.service == nil && peer.rid == rid,
+                  "hello peer at the gateway")
+            check(helloHosts == ["192.168.49.1"], "hello went to the gateway")
+        } else { check(false, "hello at the gateway should find the peer") }
+
+        // locatorNeedsManualWhenNoGateway
+        helloHosts = []
+        if case .needsManualAddress = locator(gateway: nil).locate(localRecord: mine) {
+            check(helloHosts.isEmpty, "no gateway: no hello")
+        } else { check(false, "no gateway should need a manual address") }
+        if case .needsManualAddress = locator(gateway: OfflineLinkPayload.parseIPv4("8.8.8.8")).locate(localRecord: mine) {
+            check(helloHosts.isEmpty, "public gateway: no hello")
+        } else { check(false, "a public gateway should need a manual address") }
+
+        // locatorNeedsManualWhenHelloFails
+        if case .needsManualAddress = locator(gateway: gateway, failHello: true).locate(localRecord: mine) {
+            check(helloHosts == ["192.168.49.1"], "hello was tried")
+        } else { check(false, "a failed hello should need a manual address") }
+
+        // manualRejectsPublicAddress
+        helloHosts = []
+        for text in ["8.8.8.8", "192.168.49", "192.168.049.1", "pixel.local", ""] {
+            if case .found = locator(gateway: nil).connectManually(address: text, localRecord: mine) {
+                check(false, "\(text) should be rejected")
+            } else { check(helloHosts.isEmpty, "\(text) rejected without a hello") }
+        }
+
+        // manualAcceptsPrivateAddress
+        if case .found(let peer) = locator(gateway: nil).connectManually(address: " 192.168.1.20 ", localRecord: mine) {
+            check(peer.host == "192.168.1.20" && helloHosts == ["192.168.1.20"], "manual private address reaches the hello")
+        } else { check(false, "a private address should be accepted") }
+    }
+
     section("Unpair removes a trusted peer") {
         let id = UUID()
         TrustedPeerStore().save(TrustedPeer(deviceId: id, deviceName: "Gone", platform: "android", protocolVersion: 2,
