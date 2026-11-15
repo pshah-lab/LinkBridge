@@ -590,6 +590,56 @@ func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = nil) ->
     return (status, code, phoneSecret, id, retry)
 }
 
+/// A tiny plain-HTTP server for the offline hello: records each request body and answers with
+/// `reply(body)` as (status line, response body, content-length override).
+final class HelloStub {
+    let listener: NWListener
+    let queue = DispatchQueue(label: "checks.hellostub")
+    let lock = NSLock()
+    private var bodies: [Data] = []
+    private var heads: [String] = []
+    var port: UInt16 { listener.port?.rawValue ?? 0 }
+    var receivedBodies: [Data] { lock.lock(); defer { lock.unlock() }; return bodies }
+    var receivedHeads: [String] { lock.lock(); defer { lock.unlock() }; return heads }
+
+    init(reply: @escaping (Data) -> (status: String, body: Data, contentLength: Int?)) {
+        listener = try! NWListener(using: .tcp, on: .any)
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+        listener.newConnectionHandler = { [self] connection in
+            connection.start(queue: queue)
+            var buffer = Data()
+            func read() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [self] data, _, isComplete, error in
+                    if let data { buffer.append(data) }
+                    let separator = Data("\r\n\r\n".utf8)
+                    if let end = buffer.range(of: separator) {
+                        let head = String(decoding: buffer[buffer.startIndex..<end.lowerBound], as: UTF8.self)
+                        let length = head.components(separatedBy: "\r\n").compactMap { line -> Int? in
+                            line.lowercased().hasPrefix("content-length:") ? Int(line.dropFirst(15).trimmingCharacters(in: .whitespaces)) : nil
+                        }.first ?? 0
+                        if buffer.count - (end.upperBound - buffer.startIndex) >= length {
+                            let body = Data(buffer[end.upperBound..<(end.upperBound + length)])
+                            lock.lock(); bodies.append(body); heads.append(head); lock.unlock()
+                            let r = reply(body)
+                            let out = "HTTP/1.1 \(r.status)\r\nContent-Type: application/json\r\nContent-Length: \(r.contentLength ?? r.body.count)\r\nConnection: close\r\n\r\n"
+                            connection.send(content: Data(out.utf8) + r.body, contentContext: .finalMessage, isComplete: true,
+                                            completion: .contentProcessed { _ in connection.cancel() })
+                            return
+                        }
+                    }
+                    if isComplete || error != nil { connection.cancel() } else { read() }
+                }
+            }
+            read()
+        }
+        listener.start(queue: queue)
+        _ = ready.wait(timeout: .now() + 5)
+    }
+
+    func stop() { listener.cancel() }
+}
+
 DispatchQueue.global().async {
     var approve = true
     var lastRequest: IncomingPairRequest?
@@ -1072,6 +1122,106 @@ DispatchQueue.global().async {
         check(Date().timeIntervalSince(started) < 1, "refused at once, not after the approval timeout")
         check(requests.count == waiting, "no second prompt from the same sender")
         firstDone.wait()
+    }
+
+    section("offlineLinkVectors") {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let file = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("docs/test-vectors/offline-link.json"))) as! [String: Any]
+        let valid = file["valid"] as! [[String: Any]]
+        let invalid = file["invalid"] as! [[String: Any]]
+        check(valid.count >= 4, "at least 4 valid vectors")
+        check(invalid.count >= 9, "at least 9 invalid vectors")
+        for vector in valid {
+            let text = vector["text"] as! String
+            let note = vector["note"] as? String ?? text
+            let expected = vector["expected"] as! [String: Any]
+            guard let payload = OfflineLinkPayload.parse(text) else { check(false, "parses: \(note)"); continue }
+            check(payload.ssid == expected["ssid"] as? String, "ssid: \(note)")
+            check(payload.passphrase == expected["pass"] as? String, "pass: \(note)")
+            check(OfflineLinkPayload.format(payload.address) == expected["addr"] as? String, "addr: \(note)")
+            check(Int(payload.helloPort) == expected["hello"] as? Int, "hello: \(note)")
+            let expectedRecord = try JSONDecoder().decode(DiscoveryRecord.self, from: JSONSerialization.data(withJSONObject: expected["record"]!))
+            check(payload.record == expectedRecord, "record: \(note)")
+            check(payload.encoded() == text, "round-trips byte for byte: \(note)")
+            check(OfflineLinkPayload.parse(payload.encoded()) == payload, "re-parses: \(note)")
+        }
+        for vector in invalid {
+            check(OfflineLinkPayload.parse(vector["text"] as! String) == nil, "rejected: \(vector["reason"] ?? "")")
+        }
+    }
+
+    section("discoveryRecord matches the advertised TXT record") {
+        let identity = IdentityStore().loadOrCreate()
+        let record = ControlServer.discoveryRecord(identity: identity, secrets: ["secret"], port: 49152, tlsPort: 49153)
+        check(record.rid == ControlServer.discoveryRid && record.rid.count == 32, "rid is the per-launch rid")
+        check(record.tags == DiscoveryTags.tags(secrets: ["secret"], rid: record.rid), "tags from the secrets")
+        check(record.deviceName == identity.deviceName && record.platform == identity.platform, "identity fields")
+        check(record.protocolVersion == ControlServer.protocolVersion && record.port == 49152 && record.tlsPort == 49153, "ports and version")
+        let txt = record.txtRecord
+        check(txt["rid"] == record.rid && txt["tags"] == record.tags && txt["deviceName"] == record.deviceName, "TXT identity keys")
+        check(txt["platform"] == record.platform && txt["protocol"] == "2" && txt["tlsPort"] == "49153", "TXT protocol keys")
+        check(txt["features"] == identity.features.joined(separator: ",") && txt["port"] == nil, "TXT features, and no port key")
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as! [String: Any]
+        check(Set(json.keys) == ["rid", "tags", "deviceName", "platform", "protocol", "port", "tlsPort", "features"], "JSON keys are the TXT keys plus port")
+    }
+
+    section("helloExchangeRoundTrip") {
+        let mine = DiscoveryRecord(rid: "aa", tags: "t1", deviceName: "Mac", platform: "macos", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49153, features: "file-transfer")
+        let theirs = DiscoveryRecord(rid: "bb", tags: "", deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                     port: 49152, tlsPort: nil, features: "file-transfer")
+        let theirsJSON = try JSONEncoder().encode(theirs)
+
+        let ok = HelloStub { _ in ("200 OK", theirsJSON, nil) }
+        defer { ok.stop() }
+        let got = try OfflineHelloClient.exchange(host: "127.0.0.1", port: ok.port, record: mine)
+        check(got == theirs, "returns the server's record")
+        check(ok.receivedBodies.first.flatMap { try? JSONDecoder().decode(DiscoveryRecord.self, from: $0) } == mine, "server saw our record")
+        let head = ok.receivedHeads.first ?? ""
+        check(head.hasPrefix("POST /offline/hello HTTP/1.1"), "request line, got \(head)")
+        check(head.lowercased().contains("content-type: application/json"), "content type")
+
+        let big = Data(#"{"pad":""#.utf8) + Data(repeating: 0x61, count: 5000) + Data(#""}"#.utf8)
+        let oversized = HelloStub { _ in ("200 OK", big, nil) }
+        defer { oversized.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: oversized.port, record: mine)
+            check(false, "a body over 4 KB is rejected")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "oversized body rejected, got \(error)") }
+
+        for (status, expected) in [("429 Too Many Requests", OfflineHelloError.busy), ("400 Bad Request", .rejected),
+                                   ("500 Internal Server Error", .unexpectedStatus(500))] {
+            let stub = HelloStub { _ in (status, Data("{}".utf8), nil) }
+            defer { stub.stop() }
+            do {
+                _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: stub.port, record: mine)
+                check(false, "\(status) throws")
+            } catch { check(error as? OfflineHelloError == expected, "\(status) maps to \(expected), got \(error)") }
+        }
+
+        let garbage = HelloStub { _ in ("200 OK", Data("not json".utf8), nil) }
+        defer { garbage.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: garbage.port, record: mine)
+            check(false, "non-JSON body throws")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "non-JSON body rejected, got \(error)") }
+
+        let silent = HelloStub { _ in ("200 OK", theirsJSON, theirsJSON.count + 100) }
+        defer { silent.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: silent.port, record: mine, timeout: 1)
+            check(false, "a short body throws")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "short body rejected, got \(error)") }
+
+        let closedPort = HelloStub { _ in ("200 OK", Data(), nil) }
+        let deadPort = closedPort.port
+        closedPort.stop()
+        Thread.sleep(forTimeInterval: 0.2)
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: deadPort, record: mine, timeout: 2)
+            check(false, "a closed port throws")
+        } catch { check(error as? OfflineHelloError == .connectionFailed, "closed port fails, got \(error)") }
     }
 
     section("Unpair removes a trusted peer") {

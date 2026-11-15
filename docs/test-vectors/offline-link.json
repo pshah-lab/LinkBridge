@@ -1,0 +1,242 @@
+{
+  "description" : "LinkBridge offline link QR vectors. text = linkbridge-offline:1: + base64url(JSON, no padding). valid[].expected is what a parser must return; invalid[].text must be rejected.",
+  "invalid" : [
+    {
+      "reason" : "public address 8.8.8.8",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiOC44LjguOCIsImhlbGxvIjo0OTE1NCwicGFzcyI6InBhc3N3b3JkMSIsInJlY29yZCI6eyJkZXZpY2VOYW1lIjoiUCIsImZlYXR1cmVzIjoiZmlsZS10cmFuc2ZlciIsInBsYXRmb3JtIjoiYW5kcm9pZCIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "address just outside 172.16/12",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTcyLjMyLjAuMSIsImhlbGxvIjo0OTE1NCwicGFzcyI6InBhc3N3b3JkMSIsInJlY29yZCI6eyJkZXZpY2VOYW1lIjoiUCIsImZlYXR1cmVzIjoiZmlsZS10cmFuc2ZlciIsInBsYXRmb3JtIjoiYW5kcm9pZCIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "link-local address is not private",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTY5LjI1NC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9"
+    },
+    {
+      "reason" : "octet out of range 192.168.1.300",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjMwMCIsImhlbGxvIjo0OTE1NCwicGFzcyI6InBhc3N3b3JkMSIsInJlY29yZCI6eyJkZXZpY2VOYW1lIjoiUCIsImZlYXR1cmVzIjoiZmlsZS10cmFuc2ZlciIsInBsYXRmb3JtIjoiYW5kcm9pZCIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "address with leading zero",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4wMS4xIiwiaGVsbG8iOjQ5MTU0LCJwYXNzIjoicGFzc3dvcmQxIiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJQIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiIiLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJOZXQifQ"
+    },
+    {
+      "reason" : "address with three parts",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xIiwiaGVsbG8iOjQ5MTU0LCJwYXNzIjoicGFzc3dvcmQxIiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJQIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiIiLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJOZXQifQ"
+    },
+    {
+      "reason" : "hello port 0",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6MCwicGFzcyI6InBhc3N3b3JkMSIsInJlY29yZCI6eyJkZXZpY2VOYW1lIjoiUCIsImZlYXR1cmVzIjoiZmlsZS10cmFuc2ZlciIsInBsYXRmb3JtIjoiYW5kcm9pZCIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "hello port 65536",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NjU1MzYsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9"
+    },
+    {
+      "reason" : "record port 0",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0IjowLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "record tlsPort 0",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjB9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "ssid of 33 bytes",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSJ9"
+    },
+    {
+      "reason" : "ssid of 17 two-byte characters (34 bytes)",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6IsOpw6nDqcOpw6nDqcOpw6nDqcOpw6nDqcOpw6nDqcOpw6kifQ"
+    },
+    {
+      "reason" : "empty ssid",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6IiJ9"
+    },
+    {
+      "reason" : "pass of 7 characters",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiIxMjM0NTY3IiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJQIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiIiLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJOZXQifQ"
+    },
+    {
+      "reason" : "pass of 64 characters",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwIiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJQIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiIiLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJOZXQifQ"
+    },
+    {
+      "reason" : "wrong version prefix linkbridge-offline:2:",
+      "text" : "linkbridge-offline:2:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9"
+    },
+    {
+      "reason" : "wrong scheme",
+      "text" : "linkbridge:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9"
+    },
+    {
+      "reason" : "unknown top-level key",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJleHRyYSI6MSwiaGVsbG8iOjQ5MTU0LCJwYXNzIjoicGFzc3dvcmQxIiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJQIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiIiLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJOZXQifQ"
+    },
+    {
+      "reason" : "unknown record key",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJleHRyYSI6IngiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9"
+    },
+    {
+      "reason" : "missing record key (features)",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9"
+    },
+    {
+      "reason" : "missing top-level key (hello)",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJwYXNzIjoicGFzc3dvcmQxIiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJQIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiIiLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJOZXQifQ"
+    },
+    {
+      "reason" : "hello as a string",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6IjQ5MTU0IiwicGFzcyI6InBhc3N3b3JkMSIsInJlY29yZCI6eyJkZXZpY2VOYW1lIjoiUCIsImZlYXR1cmVzIjoiZmlsZS10cmFuc2ZlciIsInBsYXRmb3JtIjoiYW5kcm9pZCIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "15 tags",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IjAwMDAwMDAwMTExMTExMTEsMDAwMDAwMDAyMjIyMjIyMiwwMDAwMDAwMDMzMzMzMzMzLDAwMDAwMDAwNDQ0NDQ0NDQsMDAwMDAwMDA1NTU1NTU1NSwwMDAwMDAwMDY2NjY2NjY2LDAwMDAwMDAwNzc3Nzc3NzcsMDAwMDAwMDA4ODg4ODg4OCwwMDAwMDAwMDk5OTk5OTk5LDAwMDAwMDAwYWFhYWFhYWEsMDAwMDAwMDBiYmJiYmJiYiwwMDAwMDAwMGNjY2NjY2NjLDAwMDAwMDAwZGRkZGRkZGQsMDAwMDAwMDBlZWVlZWVlZSwwMDAwMDAwMGZmZmZmZmZmIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    },
+    {
+      "reason" : "text of 1025 characters",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eCIsImZlYXR1cmVzIjoiZmlsZS10cmFuc2ZlcixkaXNwbGF5LXNlbmQiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9"
+    },
+    {
+      "reason" : "base64 with illegal characters",
+      "text" : "linkbridge-offline:1:!!!!"
+    },
+    {
+      "reason" : "standard-alphabet base64 (+ and /)",
+      "text" : "linkbridge-offline:1:+/+/"
+    },
+    {
+      "reason" : "padded base64",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlAiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo0OTE1MiwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IiIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6Ik5ldCJ9=="
+    },
+    {
+      "reason" : "empty body",
+      "text" : "linkbridge-offline:1:"
+    },
+    {
+      "reason" : "valid base64 of non-JSON",
+      "text" : "linkbridge-offline:1:bm90IGpzb24"
+    }
+  ],
+  "valid" : [
+    {
+      "expected" : {
+        "addr" : "192.168.43.1",
+        "hello" : 49154,
+        "pass" : "hunter2hunter2",
+        "record" : {
+          "deviceName" : "Pixel 8",
+          "features" : "file-transfer,display-send",
+          "platform" : "android",
+          "port" : 49152,
+          "protocol" : 2,
+          "rid" : "000102030405060708090a0b0c0d0e0f",
+          "tags" : "e715ba5b9a4483e8,0011223344556677",
+          "tlsPort" : 49153
+        },
+        "ssid" : "DIRECT-LB-Pixel"
+      },
+      "note" : "typical Android hotspot",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC40My4xIiwiaGVsbG8iOjQ5MTU0LCJwYXNzIjoiaHVudGVyMmh1bnRlcjIiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlBpeGVsIDgiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIsZGlzcGxheS1zZW5kIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiJlNzE1YmE1YjlhNDQ4M2U4LDAwMTEyMjMzNDQ1NTY2NzciLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJESVJFQ1QtTEItUGl4ZWwifQ"
+    },
+    {
+      "expected" : {
+        "addr" : "10.0.0.1",
+        "hello" : 1,
+        "pass" : "12345678",
+        "record" : {
+          "deviceName" : "Tab",
+          "features" : "file-transfer,display-send",
+          "platform" : "android",
+          "port" : 49152,
+          "protocol" : 2,
+          "rid" : "000102030405060708090a0b0c0d0e0f",
+          "tags" : ""
+        },
+        "ssid" : "A"
+      },
+      "note" : "no tlsPort, no tags, 10/8, 1-byte ssid, 8-char pass",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTAuMC4wLjEiLCJoZWxsbyI6MSwicGFzcyI6IjEyMzQ1Njc4IiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJUYWIiLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIsZGlzcGxheS1zZW5kIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIwMDAxMDIwMzA0MDUwNjA3MDgwOTBhMGIwYzBkMGUwZiIsInRhZ3MiOiIifSwic3NpZCI6IkEifQ"
+    },
+    {
+      "expected" : {
+        "addr" : "172.31.255.254",
+        "hello" : 65535,
+        "pass" : "pässwördpässwördpässwördpässwördpässwördpässwördpässwörd1234567",
+        "record" : {
+          "deviceName" : "Galaxy S24",
+          "features" : "file-transfer,display-send",
+          "platform" : "android",
+          "port" : 65535,
+          "protocol" : 2,
+          "rid" : "000102030405060708090a0b0c0d0e0f",
+          "tags" : "0000000011111111,0000000022222222,0000000033333333,0000000044444444,0000000055555555,0000000066666666,0000000077777777,0000000088888888,0000000099999999,00000000aaaaaaaa,00000000bbbbbbbb,00000000cccccccc,00000000dddddddd,00000000eeeeeeee",
+          "tlsPort" : 65535
+        },
+        "ssid" : "éééééééééééééééé"
+      },
+      "note" : "32-byte non-ASCII ssid, 63-char pass, 172.31/16, 14 tags, max ports",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTcyLjMxLjI1NS4yNTQiLCJoZWxsbyI6NjU1MzUsInBhc3MiOiJww6Rzc3fDtnJkcMOkc3N3w7ZyZHDDpHNzd8O2cmRww6Rzc3fDtnJkcMOkc3N3w7ZyZHDDpHNzd8O2cmRww6Rzc3fDtnJkMTIzNDU2NyIsInJlY29yZCI6eyJkZXZpY2VOYW1lIjoiR2FsYXh5IFMyNCIsImZlYXR1cmVzIjoiZmlsZS10cmFuc2ZlcixkaXNwbGF5LXNlbmQiLCJwbGF0Zm9ybSI6ImFuZHJvaWQiLCJwb3J0Ijo2NTUzNSwicHJvdG9jb2wiOjIsInJpZCI6IjAwMDEwMjAzMDQwNTA2MDcwODA5MGEwYjBjMGQwZTBmIiwidGFncyI6IjAwMDAwMDAwMTExMTExMTEsMDAwMDAwMDAyMjIyMjIyMiwwMDAwMDAwMDMzMzMzMzMzLDAwMDAwMDAwNDQ0NDQ0NDQsMDAwMDAwMDA1NTU1NTU1NSwwMDAwMDAwMDY2NjY2NjY2LDAwMDAwMDAwNzc3Nzc3NzcsMDAwMDAwMDA4ODg4ODg4OCwwMDAwMDAwMDk5OTk5OTk5LDAwMDAwMDAwYWFhYWFhYWEsMDAwMDAwMDBiYmJiYmJiYiwwMDAwMDAwMGNjY2NjY2NjLDAwMDAwMDAwZGRkZGRkZGQsMDAwMDAwMDBlZWVlZWVlZSIsInRsc1BvcnQiOjY1NTM1fSwic3NpZCI6IsOpw6nDqcOpw6nDqcOpw6nDqcOpw6nDqcOpw6nDqcOpIn0"
+    },
+    {
+      "expected" : {
+        "addr" : "172.16.0.1",
+        "hello" : 49154,
+        "pass" : "a/b\\c\"d+e=f",
+        "record" : {
+          "deviceName" : "Pat's \"phone\" / β",
+          "features" : "file-transfer,display-send",
+          "platform" : "android",
+          "port" : 49152,
+          "protocol" : 2,
+          "rid" : "000102030405060708090a0b0c0d0e0f",
+          "tags" : "e715ba5b9a4483e8",
+          "tlsPort" : 49153
+        },
+        "ssid" : "Home \"Wi-Fi\""
+      },
+      "note" : "JSON-special characters in pass and name",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTcyLjE2LjAuMSIsImhlbGxvIjo0OTE1NCwicGFzcyI6ImEvYlxcY1wiZCtlPWYiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6IlBhdCdzIFwicGhvbmVcIiAvIM6yIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyLGRpc3BsYXktc2VuZCIsInBsYXRmb3JtIjoiYW5kcm9pZCIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiZTcxNWJhNWI5YTQ0ODNlOCIsInRsc1BvcnQiOjQ5MTUzfSwic3NpZCI6IkhvbWUgXCJXaS1GaVwiIn0"
+    },
+    {
+      "expected" : {
+        "addr" : "192.168.2.1",
+        "hello" : 49154,
+        "pass" : "correct horse battery",
+        "record" : {
+          "deviceName" : "MacBook",
+          "features" : "file-transfer,display-send",
+          "platform" : "macos",
+          "port" : 49152,
+          "protocol" : 2,
+          "rid" : "000102030405060708090a0b0c0d0e0f",
+          "tags" : "aa",
+          "tlsPort" : 49153
+        },
+        "ssid" : "Mac-Hotspot"
+      },
+      "note" : "macOS record",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4yLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJjb3JyZWN0IGhvcnNlIGJhdHRlcnkiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6Ik1hY0Jvb2siLCJmZWF0dXJlcyI6ImZpbGUtdHJhbnNmZXIsZGlzcGxheS1zZW5kIiwicGxhdGZvcm0iOiJtYWNvcyIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiYWEiLCJ0bHNQb3J0Ijo0OTE1M30sInNzaWQiOiJNYWMtSG90c3BvdCJ9"
+    },
+    {
+      "expected" : {
+        "addr" : "192.168.1.1",
+        "hello" : 49154,
+        "pass" : "password1",
+        "record" : {
+          "deviceName" : "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "features" : "file-transfer,display-send",
+          "platform" : "android",
+          "port" : 49152,
+          "protocol" : 2,
+          "rid" : "000102030405060708090a0b0c0d0e0f",
+          "tags" : "",
+          "tlsPort" : 49153
+        },
+        "ssid" : "Net"
+      },
+      "note" : "exactly 1024 characters",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC4xLjEiLCJoZWxsbyI6NDkxNTQsInBhc3MiOiJwYXNzd29yZDEiLCJyZWNvcmQiOnsiZGV2aWNlTmFtZSI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4IiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyLGRpc3BsYXktc2VuZCIsInBsYXRmb3JtIjoiYW5kcm9pZCIsInBvcnQiOjQ5MTUyLCJwcm90b2NvbCI6MiwicmlkIjoiMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
+    }
+  ]
+}

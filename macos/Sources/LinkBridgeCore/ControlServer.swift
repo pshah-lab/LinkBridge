@@ -262,18 +262,20 @@ public final class ControlServer {
     public static let discoveryRid = DiscoveryTags.randomRid()
 
     private func advertisedService() -> NWListener.Service {
-        var txt = NWTXTRecord()
+        let secrets = trustedPeerStore.load().sorted { $0.pairedAt > $1.pairedAt }.compactMap(\.authToken)
+        let record = Self.discoveryRecord(identity: identity, secrets: secrets, port: port, tlsPort: securePort)
+        return NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil, txtRecord: record.txtRecord)
+    }
+
+    /// What this server tells peers about itself: the source of both the Bonjour TXT record and
+    /// the offline hello. `secrets` are the pairing secrets of trusted peers, newest first.
+    static func discoveryRecord(identity: DeviceIdentity, secrets: [String], port: UInt16, tlsPort: UInt16?,
+                                rid: String = ControlServer.discoveryRid) -> DiscoveryRecord {
         // No deviceId: a stable ID would let anyone on any network recognize this Mac.
         // Paired devices recognize it by their tag instead.
-        txt["rid"] = Self.discoveryRid
-        let secrets = trustedPeerStore.load().sorted { $0.pairedAt > $1.pairedAt }.compactMap(\.authToken)
-        txt["tags"] = DiscoveryTags.tags(secrets: secrets, rid: Self.discoveryRid)
-        txt["deviceName"] = identity.deviceName
-        txt["platform"] = identity.platform
-        txt["protocol"] = String(Self.protocolVersion)
-        txt["tlsPort"] = String(securePort)
-        txt["features"] = identity.features.joined(separator: ",")
-        return NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil, txtRecord: txt)
+        DiscoveryRecord(rid: rid, tags: DiscoveryTags.tags(secrets: secrets, rid: rid), deviceName: identity.deviceName,
+                        platform: identity.platform, protocolVersion: protocolVersion, port: port, tlsPort: tlsPort,
+                        features: identity.features.joined(separator: ","))
     }
 
     /// TLS-PSK connections from paired devices: transfers only.
