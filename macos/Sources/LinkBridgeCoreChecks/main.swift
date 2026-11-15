@@ -882,8 +882,24 @@ DispatchQueue.global().async {
         try FileSender.send(filePath: file.path, peer: peer, secret: secret)
         check((try? Data(contentsOf: tmp.appendingPathComponent(file.lastPathComponent))) == payload, "file arrived via the service endpoint")
 
+        // A service that never resolves falls back to the peer's network address.
+        let resolveTimeout = DirectRoute.resolveTimeout
+        DirectRoute.resolveTimeout = 1
+        defer { DirectRoute.resolveTimeout = resolveTimeout }
+        let dead = NWEndpoint.service(name: "gone-\(UUID().uuidString)", type: ControlServer.serviceType, domain: "local.", interface: nil)
+        let stale = ResolvedPeer(deviceName: identity.deviceName, deviceId: identity.deviceId, platform: "macos",
+                                 host: "127.0.0.1", port: plainPort, tlsPort: tlsPort, service: dead)
+        check((try? DirectRoute.resolve(dead, timeout: 1)) == nil, "dead service does not resolve")
+        let fallbackFile = FileManager.default.temporaryDirectory.appendingPathComponent("fallback-\(UUID().uuidString).bin")
+        try payload.write(to: fallbackFile)
+        defer { try? FileManager.default.removeItem(at: fallbackFile) }
+        try FileSender.send(filePath: fallbackFile.path, peer: stale, secret: secret)
+        check((try? Data(contentsOf: tmp.appendingPathComponent(fallbackFile.lastPathComponent))) == payload, "file arrived via the host fallback")
+
         // Pairing over the same route uses the NWConnection HTTP path, not URLSession.
         let original = TrustedPeerStore().find(deviceId: identity.deviceId)
+        // Pairing with itself replaces the self peer's secret; later sections expect the old one.
+        defer { if let original { TrustedPeerStore().save(original) } }
         let done = DispatchSemaphore(value: 0)
         var paired: Result<TrustedPeer, Error>?
         Task.detached {
@@ -898,8 +914,6 @@ DispatchQueue.global().async {
         }
         check(done.wait(timeout: .now() + 20) == .success, "pairing over the service endpoint finished in time")
         check((try paired?.get())?.deviceId == identity.deviceId, "pairing over the service endpoint succeeded")
-        // Pairing with itself replaced the self peer's secret; later sections expect the old one.
-        if let original { TrustedPeerStore().save(original) }
     }
 
     section("Slow or silent connections are closed and capped") {

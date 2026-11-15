@@ -17,7 +17,8 @@ public final class PairingClient {
     /// Where the peer's plain port is: a `host:port` string, or a Bonjour service to resolve.
     private enum Target {
         case endpoint(String)
-        case service(NWEndpoint, port: UInt16)
+        /// `host` is the peer's network address, used if the service can't be resolved.
+        case service(NWEndpoint, host: String, port: UInt16)
     }
 
     private let target: Target
@@ -33,7 +34,7 @@ public final class PairingClient {
     /// so pairing also works over peer-to-peer Wi-Fi; URLSession can't pin that interface, so
     /// those requests go over an `NWConnection`. Other peers use URLSession as before.
     public convenience init(peer: ResolvedPeer) {
-        self.init(target: peer.service.map { .service($0, port: peer.port) } ?? .endpoint(peer.endpoint))
+        self.init(target: peer.service.map { .service($0, host: peer.host, port: peer.port) } ?? .endpoint(peer.endpoint))
     }
 
     private init(target: Target) {
@@ -119,11 +120,11 @@ public final class PairingClient {
             let (responseData, response) = try await session.data(for: request)
             status = (response as? HTTPURLResponse)?.statusCode ?? 0
             data = responseData
-        case let .service(service, port):
+        case let .service(service, host, port):
             (status, data) = try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global().async {
                     continuation.resume(with: Result {
-                        try Self.directRequest(service: service, port: port, method: method, path: path, body: body, timeout: timeout)
+                        try Self.directRequest(service: service, host: host, port: port, method: method, path: path, body: body, timeout: timeout)
                     })
                 }
             }
@@ -141,11 +142,17 @@ public final class PairingClient {
 
 extension PairingClient {
     /// One HTTP/1.1 request to the peer's plain port over the interface its service resolved
-    /// on. The server answers with `Connection: close`. Blocks; call off the main thread.
-    private static func directRequest(service: NWEndpoint, port: UInt16, method: String, path: String,
+    /// on, or to `host` unpinned if it doesn't resolve. The server answers with
+    /// `Connection: close`. Blocks; call off the main thread.
+    private static func directRequest(service: NWEndpoint, host: String, port: UInt16, method: String, path: String,
                                       body: Data?, timeout: TimeInterval) throws -> (Int, Data) {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw PairingClientError.invalidEndpoint }
-        let route = try DirectRoute.resolve(service)
+        var route: (host: NWEndpoint.Host, interface: NWInterface?) = (NWEndpoint.Host(host), nil)
+        do {
+            route = try DirectRoute.resolve(service, timeout: DirectRoute.resolveTimeout)
+        } catch let error as DirectRouteError {
+            print("Could not resolve the pairing peer (\(error)); trying \(host)")
+        }
         let connection = NWConnection(host: route.host, port: nwPort,
                                       using: DirectRoute.tcpParameters(requiredInterface: route.interface))
         defer { connection.cancel() }

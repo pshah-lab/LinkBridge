@@ -28,12 +28,16 @@ public enum FileSender {
         guard let tlsPort = peer.tlsPort, let nwPort = NWEndpoint.Port(rawValue: tlsPort) else {
             throw SenderError.peerNeedsUpdate
         }
+        // If the service can't be resolved, try the network address as before peer-to-peer.
+        var route: (host: NWEndpoint.Host, interface: NWInterface?) = (NWEndpoint.Host(peer.host), nil)
         if let service = peer.service {
-            let route = try DirectRoute.resolve(service)
-            try send(filePath: filePath, host: route.host, port: nwPort, interface: route.interface, secret: secret, onProgress: onProgress)
-        } else {
-            try send(filePath: filePath, host: NWEndpoint.Host(peer.host), port: nwPort, interface: nil, secret: secret, onProgress: onProgress)
+            do {
+                route = try DirectRoute.resolve(service, timeout: DirectRoute.resolveTimeout)
+            } catch let error as DirectRouteError {
+                print("Could not resolve \(peer.deviceName) (\(error)); trying \(peer.host)")
+            }
         }
+        try send(filePath: filePath, host: route.host, port: nwPort, interface: route.interface, secret: secret, onProgress: onProgress)
     }
 
     private static func send(

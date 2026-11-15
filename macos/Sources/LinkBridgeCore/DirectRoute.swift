@@ -11,6 +11,10 @@ public enum DirectRoute {
     /// Applied to every listener, browser and connection LinkBridge builds, so AWDL is usable.
     static let peerToPeer = true
 
+    /// How long transfers and pairing wait for a service to resolve before falling back to the
+    /// peer's network address. Covers a cold AWDL link coming up. Checks shorten it.
+    static var resolveTimeout: TimeInterval = 10
+
     /// Plain TCP parameters with peer-to-peer enabled, optionally pinned to one interface.
     static func tcpParameters(requiredInterface: NWInterface? = nil) -> NWParameters {
         let parameters = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
@@ -63,9 +67,14 @@ public enum DirectRoute {
                     return
                 }
                 finish(.success((host, path?.availableInterfaces.first)))
-            case let .failed(error), let .waiting(error):
+            case let .failed(error):
                 finish(.failure(DirectRouteError.connectionFailed(error)))
+            case .cancelled:
+                // Cancelled from outside (resolve timed out, browser dropped the peer).
+                connection.stateUpdateHandler = nil
             default:
+                // .waiting is not final: a new AWDL link or Bonjour resolution often passes
+                // through it before .ready. resolve's timeout bounds the wait.
                 break
             }
         }
