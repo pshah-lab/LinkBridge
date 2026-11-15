@@ -8,6 +8,8 @@ protocol ServerControlling: AnyObject {
     func stop()
     /// What the server would advertise now, with the ports it listens on.
     func currentDiscoveryRecord() -> DiscoveryRecord
+    /// Restarts the TLS listener with the current trusted devices' keys and tags.
+    func reloadTrustedPeers(completion: @escaping () -> Void)
 }
 
 extension ControlServer: ServerControlling {}
@@ -69,6 +71,13 @@ final class ReceiveHost: ObservableObject {
                 self.isRunning = false
             }
         }
+    }
+
+    /// Call after this iPhone pairs as the client (or forgets a device): the server's TLS keys
+    /// and discovery tags are fixed when it starts. When this iPhone accepts a pairing, the
+    /// server reloads itself.
+    func reloadTrustedPeers() {
+        server?.reloadTrustedPeers(completion: {})
     }
 
     func sceneLeftForeground() {

@@ -8,10 +8,12 @@ private final class FakeServer: ServerControlling {
     let callbacks: ReceiveHostCallbacks
     var starts = 0
     var stops = 0
+    var reloads = 0
 
     init(callbacks: ReceiveHostCallbacks) { self.callbacks = callbacks }
     func start(onReady: @escaping (UInt16?) -> Void) { starts += 1; onReady(49152) }
     func stop() { stops += 1 }
+    func reloadTrustedPeers(completion: @escaping () -> Void) { reloads += 1; completion() }
     func currentDiscoveryRecord() -> DiscoveryRecord {
         DiscoveryRecord(rid: "aa", tags: "", deviceName: "iPhone", platform: "ios", protocolVersion: 2,
                         port: 49152, tlsPort: 49162, features: "file-transfer")
@@ -140,4 +142,17 @@ private func pairRequest() -> IncomingPairRequest {
     #expect(second == [false])
     #expect(first.isEmpty)
     #expect(host.pendingPair?.id == shown.id)
+}
+
+@MainActor
+@Test func testReloadTrustedPeersReachesTheRunningServer() {
+    let (host, servers) = makeHost()
+    host.reloadTrustedPeers() // nothing running: nothing to reload, no crash
+    #expect(servers().isEmpty)
+    host.sceneBecameActive()
+    host.reloadTrustedPeers()
+    #expect(servers()[0].reloads == 1)
+    host.sceneLeftForeground()
+    host.reloadTrustedPeers()
+    #expect(servers()[0].reloads == 1, "a stopped server is not touched")
 }

@@ -76,6 +76,8 @@ final class LinkBridgeModel: ObservableObject {
             self.bonjourPeers = peers
             self.updateNearby()
         }
+        // A session cut short by the app being killed left its network configured.
+        Task { [weak self] in await self?.offlineJoin.removeLeftoverNetworks() }
         offlinePhase = offlineJoin.$phase.sink { [weak self] phase in
             guard let self else { return }
             // Bonjour peers are already listed; only a peer found by the hello is added.
@@ -149,6 +151,8 @@ final class LinkBridgeModel: ObservableObject {
             do {
                 let peer = try await client.finish()
                 trusted = trustedStore.load()
+                // The receive server must know the new device's key before it can send here.
+                receiveHost.reloadTrustedPeers()
                 // The Mac was discovered before it was paired; its tags only match now.
                 browser.refresh()
                 selectedPeerId = peer.deviceId

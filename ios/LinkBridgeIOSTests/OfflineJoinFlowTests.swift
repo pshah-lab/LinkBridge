@@ -4,6 +4,7 @@ import LinkBridgePresentation
 @testable import LinkBridgeIOS
 import Network
 import Testing
+import CryptoKit
 
 private let qrAddress = "192.168.49.1"
 private let androidRid = "000102030405060708090a0b0c0d0e0f"
@@ -22,6 +23,7 @@ private func qrText(record: DiscoveryRecord = androidRecord()) -> String {
 private final class FakeJoiner: HotspotJoining {
     var result: Result<Void, Error> = .success(())
     var joined: Bool? = true
+    var configured: [String] = []
     /// When set, `join` waits for `finishJoin()`, like iOS showing its "Join network?" alert.
     var holdsJoin = false
     private(set) var joins: [(ssid: String, passphrase: String)] = []
@@ -38,15 +40,19 @@ private final class FakeJoiner: HotspotJoining {
     func finishJoin() { pending?.resume(); pending = nil }
     func leave(ssid: String) { leaves.append(ssid); events.append("leave") }
     func isJoined(ssid: String) async -> Bool? { joined }
+    func configuredSSIDs() async -> [String] { configured }
 }
 
 @MainActor
 private final class FakeHello: OfflineHelloSending {
     var result: Result<DiscoveryRecord, Error> = .success(androidRecord())
     private(set) var calls: [(host: String, port: UInt16)] = []
+    private(set) var callTimes: [Double] = []
+    var now: () -> Double = { 0 }
 
     func hello(host: String, port: UInt16) async throws -> DiscoveryRecord {
         calls.append((host, port))
+        callTimes.append(now())
         return try result.get()
     }
 }
@@ -56,9 +62,11 @@ private final class FakeHello: OfflineHelloSending {
 @MainActor
 private final class FakeClock: JoinClock {
     private(set) var now: Double = 0
+    /// Virtual seconds after which sleeps park.
+    var parkAfter: Double = 60
     func sleep(for seconds: Double) async throws {
         now += seconds
-        if now > 60 { try await Task.sleep(for: .seconds(3600)) } else { await Task.yield() }
+        if now > parkAfter { try await Task.sleep(for: .seconds(3600)) } else { await Task.yield() }
     }
 }
 
@@ -66,6 +74,7 @@ private final class FakeClock: JoinClock {
 private func makeFlow(bonjour: @escaping (Double) -> [ResolvedPeer] = { _ in [] })
     -> (OfflineJoinFlow, FakeJoiner, FakeHello, FakeClock) {
     let joiner = FakeJoiner(), hello = FakeHello(), clock = FakeClock()
+    hello.now = { clock.now }
     let flow = OfflineJoinFlow(joiner: joiner, hello: hello, browserPeers: { bonjour(clock.now) }, clock: clock,
                                trustedPeers: { [] })
     return (flow, joiner, hello, clock)
@@ -230,10 +239,92 @@ private func bonjourPixel(rid: String = androidRid) -> ResolvedPeer {
     joiner.joined = false
     for _ in 0..<200 where flow.phase != .disconnected { await Task.yield() }
     #expect(flow.phase == .disconnected)
+    #expect(joiner.leaves == ["DIRECT-lb-ab12"], "no saved network outlives the session")
     #expect(JoinPhase.disconnected.message == "Disconnected from the Android network")
     joiner.joined = true
     await flow.rejoin()
     #expect(joiner.joins.count == 2)
     guard case .connected = flow.phase else { Issue.record("not reconnected: \(flow.phase)"); return }
     flow.end()
+}
+
+@MainActor
+@Test func helloIsRefreshedEveryMinuteWhileConnected() async {
+    let (flow, _, hello, clock) = makeFlow()
+    clock.parkAfter = 200
+    await flow.handleScanned(qrText())
+    guard case .connected = flow.phase else { Issue.record("not connected: \(flow.phase)"); return }
+    #expect(hello.calls.count == 1)
+    for _ in 0..<2000 where hello.calls.count < 3 { await Task.yield() }
+    #expect(hello.calls.count == 3, "two refreshes within 200 virtual seconds")
+    let gaps = zip(hello.callTimes.dropFirst(), hello.callTimes).map { $0 - $1 }
+    #expect(gaps.allSatisfy { $0 >= 60 && $0 < 64 }, "about every 60 s: \(gaps)")
+    flow.end()
+}
+
+@MainActor
+@Test func helloAfterPairingAcceptsTheSameDeviceWithANewRid() async {
+    // Paired: the Android's tags now match this trusted peer.
+    let secret = Data((0..<32).map { UInt8($0 + 1) }).base64EncodedString()
+    let androidId = UUID()
+    let trusted = TrustedPeer(deviceId: androidId, deviceName: "Pixel 8", platform: "android", protocolVersion: 2,
+                              features: [], pairedAt: Date(), authToken: secret)
+    let joiner = FakeJoiner(), hello = FakeHello(), clock = FakeClock()
+    var paired = false
+    let flow = OfflineJoinFlow(joiner: joiner, hello: hello, browserPeers: { [] }, clock: clock,
+                               trustedPeers: { paired ? [trusted] : [] })
+    await flow.handleScanned(qrText())
+    guard case .connected(let before) = flow.phase else { Issue.record("not connected: \(flow.phase)"); return }
+    #expect(before.deviceId == nil)
+
+    // After pairing, the reply carries the tag for this iPhone (and here a new rid as well).
+    paired = true
+    let newRid = "ffffffffffffffffffffffffffffffff"
+    var record = androidRecord()
+    record.rid = newRid
+    record.tags = discoveryTag(secret: secret, rid: newRid)
+    hello.result = .success(record)
+    await flow.refreshHelloPeer()
+    guard case .connected(let afterNewRid) = flow.phase else { Issue.record("dropped: \(flow.phase)"); return }
+    // Unknown deviceId before: the new rid is refused, the row is unchanged.
+    #expect(afterNewRid.deviceId == nil)
+
+    // Same rid, matching tag: the Android gets its deviceId.
+    record.rid = androidRid
+    record.tags = discoveryTag(secret: secret, rid: androidRid)
+    #expect(record.tags == "e715ba5b9a4483e8", "the shared tag vector")
+    hello.result = .success(record)
+    await flow.refreshHelloPeer()
+    guard case .connected(let paired1) = flow.phase else { Issue.record("dropped: \(flow.phase)"); return }
+    #expect(paired1.deviceId == androidId)
+
+    // Now known by deviceId: a reply with a new rid (the Android app restarted) is still accepted.
+    record.rid = newRid
+    record.tags = discoveryTag(secret: secret, rid: newRid)
+    hello.result = .success(record)
+    await flow.refreshHelloPeer()
+    guard case .connected(let paired2) = flow.phase else { Issue.record("dropped: \(flow.phase)"); return }
+    #expect(paired2.deviceId == androidId)
+    #expect(paired2.rid == newRid)
+    flow.end()
+}
+
+@MainActor
+@Test func leftoverNetworksAreRemovedAtLaunch() async {
+    let (flow, joiner, _, _) = makeFlow()
+    joiner.configured = ["DIRECT-old-1", "DIRECT-old-2"]
+    await flow.removeLeftoverNetworks()
+    #expect(joiner.leaves == ["DIRECT-old-1", "DIRECT-old-2"])
+}
+
+/// DiscoveryTags.tag, which LinkBridgeCore keeps internal: HMAC(HKDF(secret), rid), 8 bytes, hex.
+private func discoveryTag(secret: String, rid: String) -> String {
+    let ridBytes = Data(stride(from: 0, to: rid.count, by: 2).map {
+        UInt8(rid[rid.index(rid.startIndex, offsetBy: $0)...].prefix(2), radix: 16)!
+    })
+    let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: Data(base64Encoded: secret)!),
+                                     salt: Data("linkbridge-discovery-v1".utf8), info: Data("tag".utf8),
+                                     outputByteCount: 32)
+    return Data(HMAC<SHA256>.authenticationCode(for: ridBytes, using: key)).prefix(8)
+        .map { String(format: "%02x", $0) }.joined()
 }

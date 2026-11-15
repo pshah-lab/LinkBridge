@@ -59,7 +59,7 @@ private func trusted(_ name: String, id: UUID, platform: String = "macos") -> Tr
 @Test func unpairedAndroidExplainsPairingDirection() {
     let item = DeviceListItem.merge(nearby: [peer("Phone", platform: "android")], trusted: [],
                                     lastSeen: [:], now: now)[0]
-    #expect(item.subtitle == "Pair from the Android app (coming soon)")
+    #expect(item.subtitle == "Pair from the Android app")
     #expect(!item.canPair)
     #expect(item.platform == .android)
 }
@@ -96,4 +96,17 @@ private func trusted(_ name: String, id: UUID, platform: String = "macos") -> Tr
             .hasPrefix("Couldn't reach Pixel"))
     #expect(SendFailureMessage.text(platform: .iphone, peerName: "Phone", unreachable: false, failed: 1, total: 1)
             .hasPrefix("Couldn't reach Phone"))
+}
+
+@Test func testUnpairedDevicesWithoutDeviceIdAreNotOldApps() {
+    // Tag-based discovery: an unpaired device advertises no deviceId.
+    let android = DeviceListItem.merge(nearby: [peer("Pixel", id: nil, platform: "android")], trusted: [],
+                                       lastSeen: [:], now: now)[0]
+    #expect(android.subtitle == "Pair from the Android app")
+    let iphone = DeviceListItem.merge(nearby: [peer("Phone", id: nil, platform: "ios")], trusted: [],
+                                      lastSeen: [:], now: now)[0]
+    #expect(iphone.subtitle == "Pair from the iPhone app")
+    let old = DeviceListItem.merge(nearby: [peer("Old", id: nil, platform: "android", tlsPort: nil)], trusted: [],
+                                   lastSeen: [:], now: now)[0]
+    #expect(old.subtitle == "Needs a LinkBridge update")
 }

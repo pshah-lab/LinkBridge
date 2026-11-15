@@ -51,6 +51,8 @@ struct LinkBridgeRootView: View {
             if phase == .active {
                 model.startDiscovery()
                 model.receiveHost.sceneBecameActive()
+                // Back from the background: the Android may have dropped this iPhone's hello.
+                Task { await model.offlineJoin.refreshHelloPeer() }
             } else if phase == .background {
                 model.stopDiscovery()
                 model.receiveHost.sceneLeftForeground()

@@ -80,6 +80,8 @@ final class OfflineJoinFlow: ObservableObject {
     static let pollInterval: Double = 0.25
     static let helloAttempts = 2
     static let watchInterval: Double = 3
+    /// Android forgets a hello peer after 5 minutes; say hello again well before that.
+    static let helloRefreshInterval: Double = 60
 
     private let joiner: HotspotJoining
     private let hello: OfflineHelloSending
@@ -129,13 +131,25 @@ final class OfflineJoinFlow: ObservableObject {
         await connect(payload)
     }
 
-    /// Asks the Android again over the hello, for a peer learned that way. Call after pairing:
-    /// the Android's tags only match once both sides have saved the new pairing.
+    /// Says hello to the Android again. That keeps this iPhone in the Android's hello table (it
+    /// forgets peers after 5 minutes) and, for a peer learned by the hello, refreshes it: after
+    /// pairing, the Android's tags only match once both sides have saved the new pairing. Called
+    /// after pairing, when the app becomes active, and every `helloRefreshInterval` while connected.
     func refreshHelloPeer() async {
-        guard case .connected(let current) = phase, current.service == nil, let payload else { return }
+        guard case .connected(let current) = phase, let payload else { return }
         let started = generation
-        guard let peer = await helloPeer(payload), started == generation, case .connected = phase else { return }
+        guard let peer = await helloPeer(payload, knownDeviceId: current.deviceId), started == generation,
+              case .connected(let now) = phase, now.service == nil else { return }
         phase = .connected(peer)
+    }
+
+    /// Removes offline-link networks left by an earlier run (the app was killed mid-session).
+    /// This app only ever configures offline links, so every network it configured is one.
+    /// Call at launch.
+    func removeLeftoverNetworks() async {
+        for ssid in await joiner.configuredSSIDs() where ssid != configuredSSID {
+            joiner.leave(ssid: ssid)
+        }
     }
 
     /// Stops the link and removes the network configuration.
@@ -206,14 +220,16 @@ final class OfflineJoinFlow: ObservableObject {
     }
 
     /// The Android as its hello describes it, at the address from the code. The response is
-    /// untrusted: one outside the record limits, or from another device than the code's (a
-    /// different rid), counts as no answer.
-    private func helloPeer(_ payload: OfflineLinkPayload) async -> ResolvedPeer? {
+    /// untrusted: one outside the record limits, or from another device than the code's, counts
+    /// as no answer. The same device either keeps the code's rid or, once paired, matches
+    /// `knownDeviceId` by its tags (its rid changes when the Android app restarts).
+    private func helloPeer(_ payload: OfflineLinkPayload, knownDeviceId: UUID? = nil) async -> ResolvedPeer? {
         let host = Self.host(payload)
         for attempt in 1...Self.helloAttempts {
-            if let record = try? await hello.hello(host: host, port: payload.helloPort), record.isValid,
-               record.rid == payload.record.rid {
-                return OfflinePeers.peer(from: record, host: host, trusted: trustedPeers())
+            if let record = try? await hello.hello(host: host, port: payload.helloPort), record.isValid {
+                let peer = OfflinePeers.peer(from: record, host: host, trusted: trustedPeers())
+                if record.rid == payload.record.rid { return peer }
+                if let knownDeviceId, peer.deviceId == knownDeviceId { return peer }
             }
             // The address may still be coming up right after the join.
             if attempt < Self.helloAttempts { try? await clock.sleep(for: 1) }
@@ -232,12 +248,21 @@ final class OfflineJoinFlow: ObservableObject {
         watch?.cancel()
         guard let ssid = configuredSSID else { return }
         watch = Task { [weak self] in
+            var sinceHello: Double = 0
             while let self, !Task.isCancelled {
                 do { try await self.clock.sleep(for: Self.watchInterval) } catch { return }
                 guard started == self.generation, case .connected = self.phase else { return }
                 if await self.joiner.isJoined(ssid: ssid) == false, started == self.generation {
+                    // No saved network may outlive the session; Rejoin installs it again.
+                    self.joiner.leave(ssid: ssid)
+                    if self.configuredSSID == ssid { self.configuredSSID = nil }
                     self.phase = .disconnected
                     return
+                }
+                sinceHello += Self.watchInterval
+                if sinceHello >= Self.helloRefreshInterval {
+                    sinceHello = 0
+                    await self.refreshHelloPeer()
                 }
             }
         }

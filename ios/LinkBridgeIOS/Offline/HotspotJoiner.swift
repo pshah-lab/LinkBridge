@@ -17,6 +17,8 @@ protocol HotspotJoining: AnyObject {
     func leave(ssid: String)
     /// Whether the iPhone is still on `ssid`; nil when it can't tell.
     func isJoined(ssid: String) async -> Bool?
+    /// Every network this app has configured (and not yet removed).
+    func configuredSSIDs() async -> [String]
 }
 
 /// `NEHotspotConfigurationManager`. Not `joinOnce`: a join-once network drops as soon as the app
@@ -53,6 +55,12 @@ final class HotspotJoiner: HotspotJoining {
 
     func leave(ssid: String) {
         NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+    }
+
+    func configuredSSIDs() async -> [String] {
+        await withCheckedContinuation { continuation in
+            NEHotspotConfigurationManager.shared.getConfiguredSSIDs { continuation.resume(returning: $0) }
+        }
     }
 
     /// The app may read the current network's name because it configured that network. With no
