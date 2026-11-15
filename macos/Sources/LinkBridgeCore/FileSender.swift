@@ -228,6 +228,22 @@ public enum FileSender {
     }
 }
 
+extension FileSender {
+    /// True when the peer could not be reached at all: the connection was refused or timed out.
+    public static func isUnreachable(_ error: Error) -> Bool {
+        switch error {
+        case SenderError.timedOut:
+            return true
+        case let SenderError.connectionFailed(inner):
+            return isUnreachable(inner)
+        case let NWError.posix(code):
+            return code == .ECONNREFUSED || code == .ETIMEDOUT
+        default:
+            return false
+        }
+    }
+}
+
 private enum SenderError: Error, CustomStringConvertible {
     case invalidEndpoint
     case httpStatus(Int, Data)

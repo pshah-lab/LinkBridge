@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import LinkBridgeCore
 import LinkBridgePresentation
 
@@ -82,6 +83,18 @@ func runPresentationChecks() {
                                            lastSeen: [:], now: fixedNow)[0]
         check(android.subtitle == "Pair from the Android app (coming soon)" && !android.canPair
               && android.platform == .android, "unpaired Android explains direction")
+        let iphoneId = UUID()
+        let iphone = DeviceListItem.merge(nearby: [peer("Phone", id: iphoneId, platform: "ios")],
+                                          trusted: [trusted("Phone", id: iphoneId, platform: "ios")], lastSeen: [:], now: fixedNow)[0]
+        check(iphone.isSendable && iphone.platform == .iphone && !iphone.subtitle.contains("coming soon"), "paired iPhone is sendable")
+        let iphoneUnpaired = DeviceListItem.merge(nearby: [peer("Phone", platform: "ios")], trusted: [], lastSeen: [:], now: fixedNow)[0]
+        check(iphoneUnpaired.subtitle == "Pair from the iPhone app" && !iphoneUnpaired.canPair, "unpaired iPhone subtitle")
+        check(SendFailureMessage.text(platform: .iphone, peerName: "Phone", unreachable: true, failed: 1, total: 1)
+              == "Open LinkBridge on the iPhone", "macUnreachableIphoneMessage")
+        check(SendFailureMessage.text(platform: .android, peerName: "Pixel", unreachable: true, failed: 1, total: 1)
+              .hasPrefix("Couldn't reach Pixel"), "non-iPhone keeps generic message")
+        check(FileSender.isUnreachable(NWError.posix(.ECONNREFUSED)) && FileSender.isUnreachable(NWError.posix(.ETIMEDOUT))
+              && !FileSender.isUnreachable(NWError.posix(.EPERM)), "unreachable classifier")
         let seen = UUID(), never = UUID()
         let away = DeviceListItem.merge(nearby: [], trusted: [trusted("A Mac", id: seen), trusted("B Mac", id: never)],
                                         lastSeen: [seen: fixedNow.addingTimeInterval(-300)], now: fixedNow)

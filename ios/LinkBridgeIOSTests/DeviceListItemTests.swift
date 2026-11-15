@@ -73,3 +73,27 @@ private func trusted(_ name: String, id: UUID, platform: String = "macos") -> Tr
     #expect(items[1].subtitle.hasPrefix("Paired "))
     #expect(items.allSatisfy { !$0.isNearby && !$0.isSendable && $0.isPaired })
 }
+
+@Test func testPairedIPhoneIsSendable() {
+    let id = UUID()
+    let item = DeviceListItem.merge(nearby: [peer("Phone", id: id, platform: "ios")],
+                                    trusted: [trusted("Phone", id: id, platform: "ios")], lastSeen: [:], now: now)[0]
+    #expect(item.platform == .iphone)
+    #expect(item.isSendable)
+    #expect(!item.subtitle.contains("coming soon"))
+}
+
+@Test func testUnpairedIPhoneSubtitle() {
+    let item = DeviceListItem.merge(nearby: [peer("Phone", platform: "ios")], trusted: [], lastSeen: [:], now: now)[0]
+    #expect(item.subtitle == "Pair from the iPhone app")
+    #expect(!item.canPair)
+}
+
+@Test func macUnreachableIphoneMessage() {
+    #expect(SendFailureMessage.text(platform: .iphone, peerName: "Phone", unreachable: true, failed: 1, total: 1)
+            == "Open LinkBridge on the iPhone")
+    #expect(SendFailureMessage.text(platform: .android, peerName: "Pixel", unreachable: true, failed: 1, total: 1)
+            .hasPrefix("Couldn't reach Pixel"))
+    #expect(SendFailureMessage.text(platform: .iphone, peerName: "Phone", unreachable: false, failed: 1, total: 1)
+            .hasPrefix("Couldn't reach Phone"))
+}

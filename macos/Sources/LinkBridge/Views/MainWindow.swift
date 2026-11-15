@@ -127,7 +127,7 @@ struct DeviceRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name).lineLimit(1)
-                Text(item.isPaired || item.platform != .android ? item.subtitle : "Pair from the Android app")
+                Text(item.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

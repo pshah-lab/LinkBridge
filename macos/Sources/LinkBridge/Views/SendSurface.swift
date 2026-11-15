@@ -74,7 +74,11 @@ struct SendSurface: View {
     /// Why a device in the sidebar can't receive, as one sentence. Pairing always starts on the phone.
     static func unavailableSentence(_ item: DeviceListItem) -> String {
         if !item.isPaired {
-            return item.platform == .android ? "Pair from the Android app." : "\(item.name) isn't paired with this Mac."
+            switch item.platform {
+            case .android: return "Pair from the Android app."
+            case .iphone: return "Pair from the iPhone app."
+            default: return "\(item.name) isn't paired with this Mac."
+            }
         }
         if !item.isNearby { return "\(item.subtitle) — open LinkBridge on \(item.name)." }
         return "\(item.name) needs a LinkBridge update before it can receive."

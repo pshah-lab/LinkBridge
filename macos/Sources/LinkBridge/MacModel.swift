@@ -292,6 +292,7 @@ final class MacModel {
             return
         }
         let peerName = peer.deviceName
+        let platform = DevicePlatform(peer.platform)
         lastError = nil
         sendingTarget = peerName
         sendPhase = .sending(fileName: SendBatch.progressName(files[0].url.lastPathComponent, index: 0, count: files.count),
@@ -299,6 +300,7 @@ final class MacModel {
 
         Task.detached { [weak self] in
             var failedFiles: [StagedFile] = []
+            var unreachable = false
             for (index, file) in files.enumerated() {
                 let url = file.url
                 let fileName = url.lastPathComponent
@@ -306,6 +308,7 @@ final class MacModel {
                 await self?.showProgress(shownName, 0)
                 let accessing = url.startAccessingSecurityScopedResource()
                 var failed = false
+                var fileUnreachable = false
                 do {
                     try FileSender.send(filePath: url.path, peer: peer, secret: secret) { sent, total in
                         let fraction = total > 0 ? Double(sent) / Double(total) : 0
@@ -313,13 +316,18 @@ final class MacModel {
                     }
                 } catch {
                     failed = true
+                    fileUnreachable = FileSender.isUnreachable(error)
+                    unreachable = unreachable || fileUnreachable
                 }
                 if accessing { url.stopAccessingSecurityScopedResource() }
                 if failed { failedFiles.append(file) }
                 await self?.recordSend(fileName: fileName, peerName: peerName, bytes: file.bytes,
-                                       bookmark: file.bookmark, failed: failed)
+                                       bookmark: file.bookmark, failed: failed,
+                                       failure: SendFailureMessage.text(platform: platform, peerName: peerName,
+                                                                        unreachable: fileUnreachable, failed: 1, total: 1))
             }
-            await self?.finishSend(names: files.map(\.url.lastPathComponent), failed: failedFiles, peerName: peerName)
+            await self?.finishSend(names: files.map(\.url.lastPathComponent), failed: failedFiles, peerName: peerName,
+                                   platform: platform, unreachable: unreachable)
         }
     }
 
@@ -328,13 +336,15 @@ final class MacModel {
         sendPhase = .sending(fileName: shownName, progress: fraction)
     }
 
-    private func recordSend(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failed: Bool) {
-        let failure = failed ? "Couldn't reach \(peerName) — check it's on the same Wi-Fi, then retry." : nil
+    private func recordSend(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failed: Bool,
+                            failure message: String) {
+        let failure = failed ? message : nil
         history = historyStore.add(TransferRecord(fileName: fileName, peerName: peerName, bytes: bytes, date: Date(),
                                                   succeeded: !failed, detail: failure, bookmark: bookmark))
     }
 
-    private func finishSend(names: [String], failed: [StagedFile], peerName: String) {
+    private func finishSend(names: [String], failed: [StagedFile], peerName: String,
+                            platform: DevicePlatform, unreachable: Bool) {
         sendingTarget = nil
         if failed.isEmpty {
             let summary = SendBatch.summary(names)
@@ -347,9 +357,8 @@ final class MacModel {
         } else {
             // Keep only the failures, so Retry resends just those.
             stagedFiles = failed
-            let message = names.count == 1
-                ? "Couldn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
-                : "\(failed.count) of \(names.count) files didn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
+            let message = SendFailureMessage.text(platform: platform, peerName: peerName, unreachable: unreachable,
+                                                  failed: failed.count, total: names.count)
             sendPhase = .failed(fileName: SendBatch.summary(failed.map(\.url.lastPathComponent)), message: message)
         }
     }

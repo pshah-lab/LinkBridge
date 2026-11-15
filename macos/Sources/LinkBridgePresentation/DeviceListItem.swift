@@ -70,7 +70,11 @@ public struct DeviceListItem: Identifiable, Equatable {
             } else if peer.deviceId == nil {
                 subtitle = "Needs a LinkBridge update"
             } else {
-                subtitle = "Pair from the \(platform == .android ? "Android" : "other") app (coming soon)"
+                switch platform {
+                case .iphone: subtitle = "Pair from the iPhone app"
+                case .android: subtitle = "Pair from the Android app (coming soon)"
+                default: subtitle = "Pair from the other app (coming soon)"
+                }
             }
             return DeviceListItem(id: peer.deviceId?.uuidString ?? peer.endpoint, deviceId: peer.deviceId,
                                   name: peer.deviceName, platform: platform, isPaired: paired, isNearby: true,
@@ -111,5 +115,17 @@ public enum DeviceSelection {
         if let preferred, sendable.contains(where: { $0.deviceId == preferred }) { return preferred }
         if let current, sendable.contains(where: { $0.deviceId == current }) { return current }
         return sendable.first?.deviceId ?? current
+    }
+}
+
+/// The sentence shown when a send fails. A pure function so the wording can be pinned by checks.
+public enum SendFailureMessage {
+    /// `unreachable` means the connection was refused or timed out (see `FileSender.isUnreachable`).
+    public static func text(platform: DevicePlatform, peerName: String, unreachable: Bool,
+                            failed: Int, total: Int) -> String {
+        if unreachable && platform == .iphone { return "Open LinkBridge on the iPhone" }
+        return total <= 1
+            ? "Couldn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
+            : "\(failed) of \(total) files didn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
     }
 }
