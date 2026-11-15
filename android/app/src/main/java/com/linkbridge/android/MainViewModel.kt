@@ -1,6 +1,7 @@
 package com.linkbridge.android
 
 import android.app.Application
+import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -16,11 +17,23 @@ import com.linkbridge.android.presentation.bannerFor
 import com.linkbridge.android.presentation.peerFailureMessage
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import com.linkbridge.android.offline.HotspotFailure
+import com.linkbridge.android.offline.HotspotState
+import com.linkbridge.android.offline.OFFLINE_HELLO_PORT
+import com.linkbridge.android.offline.OfflineLinkPayload
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -36,6 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Turns the hub, the stores and the pairing flow into one [UiState]. All mutable state is
  * touched on the main thread; store and network calls run on [io].
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(
     private val hub: HubPort,
     private val stores: Stores,
@@ -45,7 +59,8 @@ class MainViewModel(
     private val appScope: CoroutineScope,
     private val io: CoroutineDispatcher,
     private val clock: () -> Long,
-    private val zone: ZoneId = ZoneId.systemDefault()
+    private val zone: ZoneId = ZoneId.systemDefault(),
+    private val sdkInt: Int = Build.VERSION.SDK_INT
 ) : ViewModel() {
 
     private val trusted = MutableStateFlow<List<TrustedPeer>>(emptyList())
@@ -69,6 +84,154 @@ class MainViewModel(
         notice
     ) { send, other, identity, message -> buildState(send, other, identity, message) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, UiState())
+
+    // ---- Offline link ----
+
+    private val offlineScreenOpen = MutableStateFlow(false)
+    private val offlinePermissionDenied = MutableStateFlow(false)
+    /** The hotspot state whose message the user already saw or caused, so it isn't shown again. */
+    private val offlineDismissed = MutableStateFlow<HotspotState?>(null)
+    /** When the idle clock last restarted: the hotspot came up, or a transfer ended. */
+    private val offlineIdleSince = MutableStateFlow(clock())
+
+    /** Whether the hotspot's idle timer is paused; the one place that decides it. */
+    private val offlineBusy: StateFlow<Boolean> =
+        combine(state, hub.sendState, ::isOfflineBusy)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** True once no peer has been seen for [NO_PEERS_MS]. */
+    private val noPeersForAWhile: Flow<Boolean> = hub.peers.map { it.isEmpty() }.distinctUntilChanged()
+        .transformLatest { empty ->
+            if (empty) {
+                emit(false)
+                delay(NO_PEERS_MS)
+                emit(true)
+            } else {
+                emit(false)
+            }
+        }
+
+    /** The clock, refreshed every [COUNTDOWN_TICK_MS] while the link is up (and only then). */
+    private val offlineNow: Flow<Long> = hub.hotspotState.flatMapLatest { hotspot ->
+        if (hotspot is HotspotState.Active) {
+            flow {
+                while (true) {
+                    emit(clock())
+                    delay(COUNTDOWN_TICK_MS)
+                }
+            }
+        } else {
+            flowOf(clock())
+        }
+    }
+
+    val offline: StateFlow<OfflineUi> = combine(
+        combine(hub.hotspotState, hub.offlineEndpoint, noPeersForAWhile, offlineScreenOpen, ::OfflineInputs),
+        combine(offlinePermissionDenied, offlineDismissed, offlineNow, offlineIdleSince, offlineBusy, ::OfflineMoreInputs),
+        ::buildOffline
+    ).stateIn(viewModelScope, SharingStarted.Eagerly, OfflineUi())
+
+    private class OfflineInputs(
+        val hotspot: HotspotState,
+        val endpoint: OfflineEndpoint?,
+        val noPeers: Boolean,
+        val screenOpen: Boolean
+    )
+
+    private class OfflineMoreInputs(
+        val permissionDenied: Boolean,
+        val dismissed: HotspotState?,
+        val now: Long,
+        val idleSince: Long,
+        val busy: Boolean
+    )
+
+    /** Starts the hotspot. The caller has asked for (and been granted) Nearby devices. */
+    fun startOffline() {
+        if (sdkInt < MIN_SDK_FOR_OFFLINE) return
+        offlinePermissionDenied.value = false
+        offlineDismissed.value = null
+        offlineScreenOpen.value = true
+        hub.startHotspot()
+    }
+
+    /** The user refused Nearby devices; the card offers Open Settings. */
+    fun offlinePermissionDenied() {
+        offlinePermissionDenied.value = true
+    }
+
+    fun stopOffline() {
+        offlineScreenOpen.value = false
+        // The user chose this: no "Offline link stopped" notice.
+        offlineDismissed.value = HotspotState.Stopped(bySystem = false)
+        hub.stopHotspot()
+    }
+
+    fun openOfflineScreen() {
+        offlineScreenOpen.value = true
+    }
+
+    /** Hides the screen; the link keeps running and the card reopens it. */
+    fun closeOfflineScreen() {
+        offlineScreenOpen.value = false
+    }
+
+    fun dismissOfflineMessage() {
+        offlinePermissionDenied.value = false
+        offlineDismissed.value = hub.hotspotState.value
+    }
+
+    private fun buildOffline(a: OfflineInputs, b: OfflineMoreInputs): OfflineUi {
+        val supported = sdkInt >= MIN_SDK_FOR_OFFLINE
+        val hotspot = a.hotspot
+        val running = hotspot is HotspotState.Starting || hotspot is HotspotState.Active
+        val message = when {
+            running -> null
+            b.permissionDenied -> OFFLINE_PERMISSION_MESSAGE
+            hotspot == b.dismissed -> null
+            hotspot is HotspotState.Failed -> hotspotFailureMessage(hotspot.reason)
+            hotspot is HotspotState.Stopped -> OFFLINE_STOPPED_MESSAGE
+            else -> null
+        }
+        val screen = if (running && a.screenOpen) {
+            val active = hotspot as? HotspotState.Active
+            val endpoint = a.endpoint
+            val qr = if (active != null && endpoint != null) {
+                OfflineLinkPayload(
+                    ssid = active.ssid,
+                    passphrase = active.passphrase,
+                    address = endpoint.address,
+                    helloPort = OFFLINE_HELLO_PORT,
+                    record = endpoint.record
+                ).encode()
+            } else {
+                null
+            }
+            OfflineScreenUi(
+                qrText = qr,
+                ssid = active?.ssid,
+                passphrase = active?.passphrase,
+                address = if (qr != null) endpoint?.address?.hostAddress else null,
+                minutesLeftLabel = minutesLeftLabel(b.busy, b.now - b.idleSince)
+            )
+        } else {
+            null
+        }
+        return OfflineUi(
+            cardVisible = running || a.noPeers || message != null,
+            cardText = when {
+                running -> OFFLINE_CARD_ON_TEXT
+                !supported -> OFFLINE_CARD_UNSUPPORTED_TEXT
+                else -> OFFLINE_CARD_TEXT
+            },
+            cardEnabled = supported,
+            on = running,
+            screen = screen,
+            message = message,
+            openSettings = message != null && (b.permissionDenied ||
+                (hotspot as? HotspotState.Failed)?.reason == HotspotFailure.PERMISSION_DENIED)
+        )
+    }
 
     /** Bumped by every cancel or new pair, so a stale network result knows it was abandoned. */
     private var pairingGeneration = 0
@@ -102,6 +265,18 @@ class MainViewModel(
             }
         }
         viewModelScope.launch { hub.sendResults.collect(::onSendResult) }
+        viewModelScope.launch {
+            // Idempotent, so the hotspot learns the current flag again whenever its state changes.
+            combine(hub.hotspotState, offlineBusy) { hotspot, busy -> hotspot to busy }.collect { (hotspot, busy) ->
+                hub.setHotspotBusy(busy)
+                if (hotspot is HotspotState.Active && !busy) offlineIdleSince.value = clock()
+            }
+        }
+    }
+
+    override fun onCleared() {
+        // Nothing watches transfers once this is gone, so don't leave the idle timer paused.
+        hub.setHotspotBusy(false)
     }
 
     // ---- Devices ----
@@ -432,6 +607,9 @@ class MainViewModel(
         const val SENT_RESET_MS = 2_000L
         private const val NOT_RUNNING = "LinkBridge isn't running."
         const val RESTART_WAIT_MS = 5_000L
+        const val NO_PEERS_MS = 5_000L
+        const val COUNTDOWN_TICK_MS = 30_000L
+        const val MIN_SDK_FOR_OFFLINE = 33
 
         /** Process-wide; never cancelled. */
         val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

@@ -98,6 +98,8 @@ dependencies {
     // TLS-PSK between paired devices (Android's built-in TLS has no usable PSK support).
     implementation("org.bouncycastle:bctls-jdk18on:1.86.2")
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")
+    // QR code for the offline link (encoder only; no camera code).
+    implementation("com.google.zxing:core:3.5.3")
 
     testImplementation("junit:junit:4.13.2")
     // Real org.json for JVM tests (the android.jar copy is a stub that throws).

@@ -105,6 +105,7 @@ class LinkBridgeService : Service() {
             onApprovalRequested = ::requestApproval
         ).also { it.start() }
         LinkBridgeHub.service = this
+        LinkBridgeHub.hotspotOrNull?.let(::attachHotspot)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -136,6 +137,10 @@ class LinkBridgeService : Service() {
         // Decline while the hub still points here, so each request's notification is cancelled.
         center.declineAll()
         if (LinkBridgeHub.service === this) LinkBridgeHub.service = null
+        // The hotspot lives only as long as the service that serves it.
+        LinkBridgeHub.hotspotOrNull?.stop()
+        attachHotspot(null)
+        LinkBridgeHub.publishOfflineEndpoint(null)
         runCatching { discovery.stop() }
         runCatching { receiveServer.stop() }
         helloServer?.stop()
@@ -324,6 +329,7 @@ class LinkBridgeService : Service() {
         main.removeCallbacks(purgeHelloPeers)
         helloPeers.clear()
         publishMergedPeers()
+        LinkBridgeHub.publishOfflineEndpoint(address?.let { OfflineEndpoint(it, discovery.localRecord()) })
         if (address == null) return
         val server = OfflineHelloServer(
             bindAddress = address,

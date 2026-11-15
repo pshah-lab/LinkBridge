@@ -1,6 +1,7 @@
 package com.linkbridge.android
 
 import com.linkbridge.android.LinkBridgeHub.SendState
+import com.linkbridge.android.offline.HotspotState
 import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -52,6 +53,15 @@ internal class FakeHub : HubPort {
     }
 
     override fun rescan() { rescans += 1; onRescan() }
+    override val hotspotState = MutableStateFlow<HotspotState>(HotspotState.Idle)
+    override val offlineEndpoint = MutableStateFlow<OfflineEndpoint?>(null)
+    var hotspotStarts = 0
+    var hotspotStops = 0
+    val busyCalls = mutableListOf<Boolean>()
+    override fun startHotspot() { hotspotStarts += 1 }
+    override fun stopHotspot() { hotspotStops += 1 }
+    override fun setHotspotBusy(busy: Boolean) { busyCalls += busy }
+
     override fun startService() { serviceRunning = true }
     override fun stopService() { serviceRunning = false }
 }

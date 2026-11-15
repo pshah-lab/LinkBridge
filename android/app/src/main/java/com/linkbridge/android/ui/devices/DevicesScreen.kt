@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.linkbridge.android.OfflineUi
 import com.linkbridge.android.UiState
 import com.linkbridge.android.presentation.Banner
 import com.linkbridge.android.presentation.BannerAction
@@ -38,6 +39,8 @@ import com.linkbridge.android.presentation.DeviceListItem
 import com.linkbridge.android.presentation.DevicePlatform
 import com.linkbridge.android.ui.components.EmptyState
 import com.linkbridge.android.ui.components.StatusBanner
+import com.linkbridge.android.ui.offline.OfflineActions
+import com.linkbridge.android.ui.offline.OfflineCard
 import com.linkbridge.android.ui.theme.LinkBridgeTheme
 import com.linkbridge.android.ui.theme.backdrop
 import kotlinx.coroutines.delay
@@ -67,6 +70,8 @@ fun DevicesScreen(
     actions: DevicesActions,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     modifier: Modifier = Modifier,
+    offline: OfflineUi = OfflineUi(),
+    offlineActions: OfflineActions = OfflineActions(),
 ) {
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(refreshing) {
@@ -113,6 +118,9 @@ fun DevicesScreen(
             }
             state.banner?.let { banner ->
                 item(key = "banner") { StatusBanner(banner, actions.onBannerAction) }
+            }
+            if (offline.cardVisible) {
+                item(key = "offline") { OfflineCard(offline, offlineActions) }
             }
             if (state.devices.isEmpty()) {
                 item(key = "empty") {
@@ -187,6 +195,12 @@ private fun DevicesEmptyPreview() = DevicesPreview(PreviewData.empty)
 @ScreenPreviews
 @Composable
 private fun DevicesSearchingPreview() = DevicesPreview(PreviewData.searching)
+
+@ScreenPreviews
+@Composable
+private fun DevicesOfflineCardPreview() = LinkBridgeTheme(dynamicColor = false) {
+    DevicesScreen(PreviewData.empty, PreviewData.noActions, modifier = Modifier.backdrop(), offline = OfflineUi(cardVisible = true))
+}
 
 @ScreenPreviews
 @Composable
