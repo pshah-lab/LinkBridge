@@ -21,7 +21,7 @@ class HotspotBindingTest {
             abortReceives = { events += "abortReceives" },
             abortSends = { events += "abortSends" },
             interfaces = { interfaces },
-            stationAddress = { null },
+            stationAddresses = { emptyList() },
             schedule = { _, block ->
                 scheduled += block
                 Cancelable { scheduled -= block }

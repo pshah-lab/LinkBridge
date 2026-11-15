@@ -39,7 +39,11 @@ class ReceiveServer(
      * Decides, from the local address a connection arrived on, whether to serve it; a refused
      * connection is closed unread. Replaceable while running (the hotspot binds it to its own address).
      */
-    @Volatile var acceptFilter: (localAddress: InetAddress) -> Boolean = { true }
+    @Volatile var acceptFilter: (localAddress: InetAddress) -> Boolean = { true },
+    /** Where received files are written; a seam so tests need no MediaStore. */
+    private val fileStore: IncomingFileStore = MediaStoreIncomingFileStore(context),
+    /** The paired devices, a seam so tests need no credential storage. */
+    private val trustedPeers: () -> List<TrustedPeer> = { TrustedPeerStore(context).load() }
 ) {
     private val running = AtomicBoolean(false)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -66,13 +70,13 @@ class ReceiveServer(
                         track(client)
                         runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
                         if (!gate.submit(client, ::handleClient)) {
-                            Log.w(TAG, "Refused connection: receiver busy")
+                            quietly { Log.w(TAG, "Refused connection: receiver busy") }
                         }
                     }
                 }
             }.onFailure { error ->
                 if (running.get()) {
-                    Log.e(TAG, "Receive server failed", error)
+                    quietly { Log.e(TAG, "Receive server failed", error) }
                     onFailed(error.localizedMessage ?: "Unknown error")
                 }
             }
@@ -85,12 +89,12 @@ class ReceiveServer(
      * `onTransferFailed` reports [ABORTED_REASON]. The server keeps listening.
      */
     fun abortActive() {
-        liveSockets.removeAll { it.isClosed }
-        liveSockets.forEach { client ->
+        val snapshot = liveSockets.toList()
+        snapshot.forEach { client ->
             abortedSockets += client
             runCatching { client.close() }
         }
-        liveSockets.clear()
+        liveSockets.removeAll(snapshot.toSet()) // not clear(): a connection accepted meanwhile stays tracked
     }
 
     private fun acceptedByFilter(client: Socket): Boolean =
@@ -117,7 +121,7 @@ class ReceiveServer(
             SecureTransport.accept(socket) { identity -> pskFor(identity) }
         } catch (error: Exception) {
             abortedSockets -= socket
-            Log.w(TAG, "Rejected connection: TLS handshake failed (${error.javaClass.simpleName})")
+            quietly { Log.w(TAG, "Rejected connection: TLS handshake failed (${error.javaClass.simpleName})") }
             return null
         }
         val upload = try {
@@ -140,7 +144,7 @@ class ReceiveServer(
     }
 
     private fun pskFor(identity: String): ByteArray? =
-        TrustedPeerStore(context).load()
+        trustedPeers()
             .firstOrNull { SecureTransport.identity(it.deviceId) == identity }
             ?.authToken
             ?.let(SecureTransport::psk)
@@ -172,7 +176,7 @@ class ReceiveServer(
         val transferId = request.headers["x-linkbridge-transfer-id"]
         val encryption = request.headers["x-linkbridge-encryption"]
         val suppliedSignature = request.headers["x-linkbridge-signature"]
-        val trustedPeer = TrustedPeerStore(context).find(senderId)
+        val trustedPeer = senderId?.let { id -> trustedPeers().firstOrNull { it.deviceId == id } }
         val authToken = trustedPeer?.authToken
 
         if (senderId == null || timestamp == null || transferId == null || suppliedSignature == null || authToken == null) {
@@ -233,10 +237,9 @@ class ReceiveServer(
         senderName: String,
         wasAborted: () -> Boolean
     ) {
-        var savedUri: android.net.Uri? = null
+        var file: IncomingFile? = null
         var metadata: IncomingFileMetadata? = null
         runCatching {
-            val resolver = context.contentResolver
             val digest = MessageDigest.getInstance("SHA-256")
             var output: OutputStream? = null
             var received = 0L
@@ -260,17 +263,9 @@ class ReceiveServer(
                             throw TransferDeclinedException()
                         }
 
-                        val values = ContentValues().apply {
-                            put(MediaStore.Downloads.DISPLAY_NAME, parsed.fileName)
-                            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-                            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LinkBridge")
-                            put(MediaStore.Downloads.IS_PENDING, 1)
-                        }
-
-                        savedUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                            ?: error("Could not create Downloads item")
-                        output = resolver.openOutputStream(savedUri!!)
-                            ?: error("Could not open output stream")
+                        val created = fileStore.create(parsed.fileName)
+                        file = created
+                        output = created.output
                         metadata = parsed
                         return@decryptChunkedRecords
                     }
@@ -292,20 +287,18 @@ class ReceiveServer(
             // Verify before publishing: IS_PENDING keeps the file hidden from other apps until then.
             val sha256 = digest.digest().toHexString()
             if (!sha256.equals(finalMetadata.sha256, ignoreCase = true)) {
-                savedUri?.let { resolver.delete(it, null, null) }
+                file?.discard()
                 reply.writeJsonResponse(400, """{"error":"checksum_mismatch"}""")
                 return
             }
 
-            val values = ContentValues()
-            values.put(MediaStore.Downloads.IS_PENDING, 0)
-            savedUri?.let { resolver.update(it, values, null, null) }
+            file?.publish()
             onTransferCompleted(
-                ReceivedTransfer(finalMetadata.fileName, received, senderName, savedUri?.toString())
+                ReceivedTransfer(finalMetadata.fileName, received, senderName, file?.locator)
             )
             reply.writeJsonResponse(200, """{"status":"received","bytes":$received,"sha256":"$sha256"}""")
         }.onFailure { error ->
-            savedUri?.let { context.contentResolver.delete(it, null, null) }
+            file?.discard()
             if (error is TransferDeclinedException) {
                 reply.writeJsonResponse(403, """{"error":"transfer_declined"}""")
                 return
@@ -315,12 +308,17 @@ class ReceiveServer(
                 reply.writeJsonResponse(507, """{"error":"insufficient_storage"}""")
                 return
             }
-            Log.e(TAG, "Receive failed", error)
+            quietly { Log.e(TAG, "Receive failed", error) }
             val reason = if (wasAborted()) ABORTED_REASON else error.localizedMessage ?: "Unknown error"
             onTransferFailed(metadata?.fileName, reason)
             if (wasAborted()) return // the connection is closed; there is nobody to answer
             reply.writeJsonResponse(500, """{"error":"save_failed"}""")
         }
+    }
+
+    /** Logging must never break a transfer (android.util.Log is unavailable in JVM unit tests). */
+    private inline fun quietly(block: () -> Unit) {
+        try { block() } catch (_: RuntimeException) { }
     }
 
     private fun readHeaderBytes(input: BufferedInputStream): ByteArray {
@@ -419,4 +417,48 @@ private data class HttpRequestHeader(
 
 private fun ByteArray.toHexString(): String {
     return joinToString(separator = "") { byte -> "%02x".format(byte) }
+}
+
+/** One incoming file being written: invisible to other apps until [publish]; [discard] removes it. */
+interface IncomingFile {
+    val output: OutputStream
+    /** What history uses to open the saved file; null if there is none. */
+    val locator: String?
+    fun publish()
+    fun discard()
+}
+
+fun interface IncomingFileStore {
+    fun create(fileName: String): IncomingFile
+}
+
+/** Saves into Downloads/LinkBridge via MediaStore, pending until published. */
+class MediaStoreIncomingFileStore(private val context: Context) : IncomingFileStore {
+    override fun create(fileName: String): IncomingFile {
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/LinkBridge")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("Could not create Downloads item")
+        val stream = try {
+            resolver.openOutputStream(uri) ?: error("Could not open output stream")
+        } catch (error: Exception) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+        return object : IncomingFile {
+            override val output: OutputStream = stream
+            override val locator: String = uri.toString()
+            override fun publish() {
+                resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            }
+            override fun discard() {
+                resolver.delete(uri, null, null)
+            }
+        }
+    }
 }

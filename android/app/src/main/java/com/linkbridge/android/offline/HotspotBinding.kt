@@ -18,7 +18,8 @@ class HotspotBinding(
     private val abortReceives: () -> Unit,
     private val abortSends: () -> Unit,
     private val interfaces: () -> List<NetInterfaceInfo>,
-    private val stationAddress: () -> Inet4Address?,
+    /** Every station Wi-Fi address; empty when none or the lookup failed. */
+    private val stationAddresses: () -> Collection<Inet4Address>,
     private val schedule: (delayMs: Long, block: () -> Unit) -> Cancelable,
     private val prefixes: List<String> = DEFAULT_HOTSPOT_INTERFACE_PREFIXES,
 ) {
@@ -42,7 +43,7 @@ class HotspotBinding(
     }
 
     private fun bindToHotspotAddress(attemptsLeft: Int) {
-        val address = findHotspotAddress(interfaces(), stationAddress(), prefixes)
+        val address = findHotspotAddress(interfaces(), stationAddresses(), prefixes)
         if (address != null) {
             setAcceptFilter { it == address }
         } else if (attemptsLeft > 0) {

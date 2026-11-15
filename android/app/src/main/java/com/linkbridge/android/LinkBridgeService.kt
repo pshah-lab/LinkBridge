@@ -67,7 +67,7 @@ class LinkBridgeService : Service() {
             abortReceives = { receiveServer.abortActive() },
             abortSends = { controlClient.abortUploads() },
             interfaces = ::currentNetInterfaces,
-            stationAddress = ::stationWifiAddress,
+            stationAddresses = ::stationWifiAddresses,
             schedule = { delayMs, block ->
                 val task = Runnable(block)
                 main.postDelayed(task, delayMs)
@@ -184,17 +184,17 @@ class LinkBridgeService : Service() {
         hotspotObserver = scope.launch { hotspot.state.collect(hotspotBinding::onState) }
     }
 
-    /** The IPv4 address of the Wi-Fi network this phone is joined to, if any. */
+    /** The IPv4 addresses of every Wi-Fi network this phone is joined to; empty if none or unknown. */
     @Suppress("DEPRECATION") // allNetworks: the station Wi-Fi need not be the default network.
-    private fun stationWifiAddress(): Inet4Address? = runCatching {
+    private fun stationWifiAddresses(): List<Inet4Address> = runCatching {
         val manager = getSystemService(ConnectivityManager::class.java)
         manager.allNetworks.asSequence()
             .filter { manager.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
             .flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty().asSequence() }
             .map { it.address }
             .filterIsInstance<Inet4Address>()
-            .firstOrNull()
-    }.getOrNull()
+            .toList()
+    }.getOrDefault(emptyList()) // unknown: findHotspotAddress then ignores the bare wlan prefix
 
     fun rescan() {
         main.post {
