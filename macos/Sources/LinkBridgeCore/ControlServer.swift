@@ -153,10 +153,15 @@ public final class ControlServer {
         updateAdvertisement()
     }
 
+    /// Plain listener parameters: TCP, reachable over peer-to-peer (AWDL) as well as the LAN.
+    static func plainParameters() -> NWParameters {
+        DirectRoute.tcpParameters()
+    }
+
     private func startPlain(on requestedPort: NWEndpoint.Port, onReady: @escaping (UInt16?) -> Void) {
         let listener: NWListener
         do {
-            listener = try NWListener(using: .tcp, on: requestedPort)
+            listener = try NWListener(using: Self.plainParameters(), on: requestedPort)
         } catch {
             print("Control server: could not create listener: \(error)")
             onReady(nil)

@@ -34,9 +34,11 @@ public struct DeviceListItem: Identifiable, Equatable {
     public let isSendable: Bool
     public let canPair: Bool
     public let subtitle: String
+    /// Reached over peer-to-peer Wi-Fi with no shared network; the row shows "Direct".
+    public let isDirect: Bool
 
     public init(id: String, deviceId: UUID?, name: String, platform: DevicePlatform, isPaired: Bool, isNearby: Bool,
-                isSendable: Bool, canPair: Bool, subtitle: String) {
+                isSendable: Bool, canPair: Bool, subtitle: String, isDirect: Bool = false) {
         self.id = id
         self.deviceId = deviceId
         self.name = name
@@ -46,6 +48,7 @@ public struct DeviceListItem: Identifiable, Equatable {
         self.isSendable = isSendable
         self.canPair = canPair
         self.subtitle = subtitle
+        self.isDirect = isDirect
     }
 
     /// Nearby paired devices first, then nearby unpaired, then paired devices that are away;
@@ -72,7 +75,7 @@ public struct DeviceListItem: Identifiable, Equatable {
             return DeviceListItem(id: peer.deviceId?.uuidString ?? peer.endpoint, deviceId: peer.deviceId,
                                   name: peer.deviceName, platform: platform, isPaired: paired, isNearby: true,
                                   isSendable: paired && peer.secureEndpoint != nil, canPair: canPair,
-                                  subtitle: subtitle)
+                                  subtitle: subtitle, isDirect: peer.isDirect)
         }
 
         let awayItems = trusted.filter { !nearbyIds.contains($0.deviceId) }.map { peer -> DeviceListItem in

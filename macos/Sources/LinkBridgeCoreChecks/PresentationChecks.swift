@@ -30,6 +30,14 @@ private func record(succeeded: Bool, direction: TransferDirection = .sent, bookm
 }
 
 func runPresentationChecks() {
+    section("A peer reached over peer-to-peer shows as Direct") {
+        let id = UUID()
+        let direct = ResolvedPeer(deviceName: "Phone", deviceId: id, platform: "ios", host: "h", port: 1, tlsPort: 2, isDirect: true)
+        let items = DeviceListItem.merge(nearby: [direct, peer("Mac")], trusted: [trusted("Phone", id: id)], lastSeen: [:], now: fixedNow)
+        check(items.first { $0.deviceId == id }?.isDirect == true, "direct peer row is Direct")
+        check(items.first { $0.deviceId != id }?.isDirect == false, "network peer row is not Direct")
+    }
+
     section("Connection state") {
         let error = ConnectionState.derive(nearbyCount: 1, selected: item(sendable: true),
                                            sendPhase: .sending(fileName: "a", progress: 0.4), errorMessage: "Boom")

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 
 /// Initiator side of pairing (what the Android app does against the Mac), for
 /// apps that pair with a peer's plain port. See `PairingCode` for the protocol.
@@ -13,13 +14,30 @@ public final class PairingClient {
         public let peerName: String
     }
 
-    private let endpoint: String
+    /// Where the peer's plain port is: a `host:port` string, or a Bonjour service to resolve.
+    private enum Target {
+        case endpoint(String)
+        case service(NWEndpoint, port: UInt16)
+    }
+
+    private let target: Target
     private let session: URLSession
     private var pending: (peer: PublicDeviceIdentity, secret: String)?
 
     /// `endpoint` is the peer's plain `host:port` (`ResolvedPeer.endpoint`).
-    public init(endpoint: String) {
-        self.endpoint = endpoint
+    public convenience init(endpoint: String) {
+        self.init(target: .endpoint(endpoint))
+    }
+
+    /// Pairs with a discovered peer. A peer browsed over Bonjour is reached through its service,
+    /// so pairing also works over peer-to-peer Wi-Fi; URLSession can't pin that interface, so
+    /// those requests go over an `NWConnection`. Other peers use URLSession as before.
+    public convenience init(peer: ResolvedPeer) {
+        self.init(target: peer.service.map { .service($0, port: peer.port) } ?? .endpoint(peer.endpoint))
+    }
+
+    private init(target: Target) {
+        self.target = target
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 150 // per-request timeouts below are shorter
         config.timeoutIntervalForResource = 180
@@ -87,15 +105,29 @@ public final class PairingClient {
     }
 
     private func request(_ method: String, _ path: String, body: Data? = nil, timeout: TimeInterval = 15) async throws -> Data {
-        guard let url = URL(string: "http://\(endpoint)\(path)") else { throw PairingClientError.invalidEndpoint }
-        var request = URLRequest(url: url, timeoutInterval: timeout)
-        request.httpMethod = method
-        if let body {
-            request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let status: Int
+        let data: Data
+        switch target {
+        case let .endpoint(endpoint):
+            guard let url = URL(string: "http://\(endpoint)\(path)") else { throw PairingClientError.invalidEndpoint }
+            var request = URLRequest(url: url, timeoutInterval: timeout)
+            request.httpMethod = method
+            if let body {
+                request.httpBody = body
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+            let (responseData, response) = try await session.data(for: request)
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            data = responseData
+        case let .service(service, port):
+            (status, data) = try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global().async {
+                    continuation.resume(with: Result {
+                        try Self.directRequest(service: service, port: port, method: method, path: path, body: body, timeout: timeout)
+                    })
+                }
+            }
         }
-        let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...299).contains(status) else {
             let detail = String(decoding: data, as: UTF8.self)
             if detail.contains("pair_declined") { throw PairingClientError.declined }
@@ -104,6 +136,29 @@ public final class PairingClient {
             throw PairingClientError.httpStatus(status)
         }
         return data
+    }
+}
+
+extension PairingClient {
+    /// One HTTP/1.1 request to the peer's plain port over the interface its service resolved
+    /// on. The server answers with `Connection: close`. Blocks; call off the main thread.
+    private static func directRequest(service: NWEndpoint, port: UInt16, method: String, path: String,
+                                      body: Data?, timeout: TimeInterval) throws -> (Int, Data) {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw PairingClientError.invalidEndpoint }
+        let route = try DirectRoute.resolve(service)
+        let connection = NWConnection(host: route.host, port: nwPort,
+                                      using: DirectRoute.tcpParameters(requiredInterface: route.interface))
+        defer { connection.cancel() }
+        try FileSender.waitUntilReady(connection, queue: DispatchQueue(label: "linkbridge.pairingclient"))
+        var head = [
+            "\(method) \(path) HTTP/1.1",
+            "Host: \(FileSender.hostHeader(route.host))",
+            "Content-Length: \(body?.count ?? 0)",
+            "Connection: close"
+        ]
+        if body != nil { head.append("Content-Type: application/json") }
+        try FileSender.sendSync(connection, Data((head + ["", ""]).joined(separator: "\r\n").utf8) + (body ?? Data()))
+        return try FileSender.receiveResponse(connection, timeout: timeout)
     }
 }
 

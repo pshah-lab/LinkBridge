@@ -80,7 +80,7 @@ final class LinkBridgeModel: ObservableObject {
 
     func pair(with peer: ResolvedPeer) {
         guard pairingPeerId == nil else { return }
-        let client = PairingClient(endpoint: peer.endpoint)
+        let client = PairingClient(peer: peer)
         pairingClient = client
         pairingPeerId = peer.deviceId
         lastError = nil
@@ -149,7 +149,7 @@ final class LinkBridgeModel: ObservableObject {
         let files = selectedFiles
         guard !files.isEmpty, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
               let peer = nearby.first(where: { $0.deviceId != nil && $0.deviceId == selectedPeerId }),
-              let endpoint = peer.secureEndpoint, let id = peer.deviceId,
+              peer.secureEndpoint != nil, let id = peer.deviceId,
               let secret = trustedStore.find(deviceId: id)?.authToken else {
             lastError = "Pair with a nearby device first"
             return
@@ -169,7 +169,7 @@ final class LinkBridgeModel: ObservableObject {
                 let accessing = url.startAccessingSecurityScopedResource()
                 var failure: String?
                 do {
-                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
+                    try FileSender.send(filePath: url.path, peer: peer, secret: secret) { sent, total in
                         let fraction = total > 0 ? Double(sent) / Double(total) : 0
                         Task { @MainActor in self?.showProgress(shownName, fraction) }
                     }

@@ -54,7 +54,7 @@ public enum SecureTransport {
         for entry in entries {
             sec_protocol_options_add_pre_shared_key(options, dispatchData(entry.psk), dispatchData(Data(entry.identity.utf8)))
         }
-        return NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        return parameters(tls: tls)
     }
 
     /// Metadata object -> PSK identity, dropped with the connection. Main queue only.
@@ -72,7 +72,14 @@ public enum SecureTransport {
         let options = tls.securityProtocolOptions
         configure(options)
         sec_protocol_options_add_pre_shared_key(options, dispatchData(psk), dispatchData(Data(identity.utf8)))
-        return NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        return parameters(tls: tls)
+    }
+
+    /// TLS over TCP with peer-to-peer (AWDL) allowed, so transfers work with no Wi-Fi network.
+    private static func parameters(tls: NWProtocolTLS.Options) -> NWParameters {
+        let parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        parameters.includePeerToPeer = DirectRoute.peerToPeer
+        return parameters
     }
 
     private static func configure(_ options: sec_protocol_options_t) {

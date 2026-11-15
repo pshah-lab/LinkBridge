@@ -133,6 +133,13 @@ struct DeviceRow: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 4)
+            if item.isDirect {
+                Text("Direct")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Accent.action.color.opacity(0.2), in: .capsule)
+            }
             if item.isPaired {
                 Text("Paired")
                     .font(.caption2.weight(.semibold))

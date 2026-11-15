@@ -12,6 +12,11 @@ public final class PeerBrowser: NSObject {
     private var peers: [String: ResolvedPeer] = [:]
     /// Each advertiser's last address and TXT record, so it can be matched again after pairing.
     private var records: [String: (host: String, port: UInt16, txt: [String: Data])] = [:]
+    /// Each advertiser's Bonjour endpoint, used to reach it over peer-to-peer Wi-Fi too.
+    private var endpoints: [String: NWEndpoint] = [:]
+    /// Whether the first connection to each advertiser went over AWDL; probes still in flight.
+    private var direct: [String: Bool] = [:]
+    private var probes: [String: NWConnection] = [:]
     private let localDeviceId: UUID?
     private let localRid: String?
     private let trustedPeers: () -> [TrustedPeer]
@@ -26,7 +31,7 @@ public final class PeerBrowser: NSObject {
 
     public func start() {
         guard browser == nil else { return }
-        let browser = NWBrowser(for: .bonjour(type: ControlServer.serviceType, domain: nil), using: .tcp)
+        let browser = NWBrowser(for: .bonjour(type: ControlServer.serviceType, domain: nil), using: Self.browserParameters())
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             self?.update(results)
         }
@@ -34,13 +39,22 @@ public final class PeerBrowser: NSObject {
         self.browser = browser
     }
 
+    /// Browser parameters: TCP, finding advertisers over peer-to-peer (AWDL) as well as the LAN.
+    static func browserParameters() -> NWParameters {
+        DirectRoute.tcpParameters()
+    }
+
     public func stop() {
         browser?.cancel()
         browser = nil
         services.values.forEach { $0.stop() }
         services = [:]
+        probes.values.forEach { $0.cancel() }
+        probes = [:]
         peers = [:]
         records = [:]
+        endpoints = [:]
+        direct = [:]
         onChange([])
     }
 
@@ -56,21 +70,40 @@ public final class PeerBrowser: NSObject {
         for result in results {
             guard case let .service(name, type, domain, _) = result.endpoint else { continue }
             seen.insert(name)
+            endpoints[name] = result.endpoint
             if services[name] == nil {
                 let service = NetService(domain: domain, type: type, name: name)
+                service.includesPeerToPeer = DirectRoute.peerToPeer
                 service.delegate = self
                 services[name] = service
                 service.resolve(withTimeout: 10)
                 // Tags change when the advertiser pairs or unpairs; follow its TXT record.
                 service.startMonitoring()
+                probe(name: name, endpoint: result.endpoint)
             }
         }
         for name in services.keys where !seen.contains(name) {
             services.removeValue(forKey: name)?.stop()
+            probes.removeValue(forKey: name)?.cancel()
             peers.removeValue(forKey: name)
             records.removeValue(forKey: name)
+            endpoints.removeValue(forKey: name)
+            direct.removeValue(forKey: name)
         }
         publish()
+    }
+
+    /// Connects once to a new advertiser to learn whether it is reached over AWDL.
+    private func probe(name: String, endpoint: NWEndpoint) {
+        probes[name] = DirectRoute.probe(endpoint, queue: .main) { [weak self] result in
+            guard let self, self.probes.removeValue(forKey: name) != nil else { return }
+            guard case let .success(route) = result else { return }
+            self.direct[name] = DirectRoute.isDirect(route.interface)
+            if let record = self.records[name] {
+                self.match(name: name, record: record)
+                self.publish()
+            }
+        }
     }
 
     /// Records an advertiser and publishes it. Internal so the checks can feed records in.
@@ -96,7 +129,9 @@ public final class PeerBrowser: NSObject {
             platform: value("platform"),
             host: record.host,
             port: record.port,
-            tlsPort: value("tlsPort").flatMap(UInt16.init)
+            tlsPort: value("tlsPort").flatMap(UInt16.init),
+            service: endpoints[name],
+            isDirect: direct[name] ?? false
         )
     }
 

@@ -826,6 +826,82 @@ DispatchQueue.global().async {
         check(!FileManager.default.fileExists(atPath: inDownloads.path), "and not in Downloads/LinkBridge")
     }
 
+    section("parametersEnablePeerToPeer") {
+        let psk = Data(repeating: 7, count: 32)
+        check(SecureTransport.serverParameters(keys: [(identity: "a", psk: psk)]).includePeerToPeer, "TLS server parameters")
+        check(SecureTransport.serverParameters(keys: []).includePeerToPeer, "TLS server parameters with no peers")
+        check(SecureTransport.clientParameters(identity: "a", psk: psk).includePeerToPeer, "TLS client parameters")
+        check(ControlServer.plainParameters().includePeerToPeer, "plain listener parameters")
+        check(PeerBrowser.browserParameters().includePeerToPeer, "browser parameters")
+        check(DirectRoute.isDirect(nil) == false, "no interface is not direct")
+    }
+
+    section("sendsByServiceEndpoint") {
+        let identity = IdentityStore().loadOrCreate()
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        check(!secret.isEmpty, "self peer is trusted")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recv-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let (direct, plainPort) = startDecisionServer(pair: { _, done in done(true) }, receiveDirectory: tmp)
+        defer { DispatchQueue.main.sync { direct.stop() } }
+        let reloaded = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { direct.reloadTrustedPeers { reloaded.signal() } }
+        reloaded.wait()
+        let tlsPort = direct.securePort
+
+        // Other servers in this process advertise the same name; pick this one by its TLS port.
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: ControlServer.serviceType, domain: nil),
+                                using: PeerBrowser.browserParameters())
+        let found = DispatchSemaphore(value: 0)
+        var service: NWEndpoint?
+        browser.browseResultsChangedHandler = { results, _ in
+            guard service == nil else { return }
+            for result in results {
+                guard case let .bonjour(txt) = result.metadata, txt["tlsPort"] == String(tlsPort) else { continue }
+                service = result.endpoint
+                found.signal()
+                return
+            }
+        }
+        browser.start(queue: DispatchQueue(label: "checks.browser"))
+        defer { browser.cancel() }
+        check(found.wait(timeout: .now() + 10) == .success, "browser found the server's service")
+        guard let service else { return }
+
+        let route = try DirectRoute.resolve(service)
+        check(route.interface != nil, "route reports the interface it used")
+        let peer = ResolvedPeer(deviceName: identity.deviceName, deviceId: identity.deviceId, platform: "macos",
+                                host: "unused.invalid", port: plainPort, tlsPort: tlsPort, service: service,
+                                isDirect: DirectRoute.isDirect(route.interface))
+        check(!peer.isDirect, "loopback is not a direct link")
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("service-\(UUID().uuidString).bin")
+        let payload = Data((0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        try payload.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try FileSender.send(filePath: file.path, peer: peer, secret: secret)
+        check((try? Data(contentsOf: tmp.appendingPathComponent(file.lastPathComponent))) == payload, "file arrived via the service endpoint")
+
+        // Pairing over the same route uses the NWConnection HTTP path, not URLSession.
+        let original = TrustedPeerStore().find(deviceId: identity.deviceId)
+        let done = DispatchSemaphore(value: 0)
+        var paired: Result<TrustedPeer, Error>?
+        Task.detached {
+            do {
+                let client = PairingClient(peer: peer)
+                _ = try await client.begin()
+                paired = .success(try await client.finish())
+            } catch {
+                paired = .failure(error)
+            }
+            done.signal()
+        }
+        check(done.wait(timeout: .now() + 20) == .success, "pairing over the service endpoint finished in time")
+        check((try paired?.get())?.deviceId == identity.deviceId, "pairing over the service endpoint succeeded")
+        // Pairing with itself replaced the self peer's secret; later sections expect the old one.
+        if let original { TrustedPeerStore().save(original) }
+    }
+
     section("Slow or silent connections are closed and capped") {
         let requestTimeout = ControlServer.requestTimeout
         let idleTimeout = ControlServer.uploadIdleTimeout

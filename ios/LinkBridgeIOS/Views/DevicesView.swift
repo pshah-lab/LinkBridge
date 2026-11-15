@@ -40,6 +40,11 @@ struct DevicesView: View {
                     Text(item.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if item.isDirect {
+                        Text("Direct")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Accent.action.color)
+                    }
                 }
                 Spacer(minLength: 8)
                 trailing(item, selected: selected)
