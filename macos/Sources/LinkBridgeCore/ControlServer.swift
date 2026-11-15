@@ -66,10 +66,20 @@ public final class ControlServer {
     /// Same contract for incoming files.
     public typealias TransferDecision = (IncomingTransferRequest, @escaping (Bool) -> Void) -> Void
 
+    /// Where received files go by default: ~/Downloads/LinkBridge.
+    public static var defaultReceiveDirectory: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LinkBridge", isDirectory: true)
+    }
+
+    /// Folder that received files (and their partial files) are written to.
+    private let receiveDirectory: URL
+
     public init(
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
         preferredSecurePort: UInt16 = 49162,
+        receiveDirectory: URL = ControlServer.defaultReceiveDirectory,
         pairDecision: @escaping PairDecision,
         transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void = { _, _ in },
@@ -79,6 +89,7 @@ public final class ControlServer {
         self.identity = identity
         self.preferredPort = preferredPort
         self.preferredSecurePort = preferredSecurePort
+        self.receiveDirectory = receiveDirectory
         self.port = preferredPort
         self.securePort = preferredSecurePort
         self.pairDecision = pairDecision
@@ -93,12 +104,14 @@ public final class ControlServer {
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
         preferredSecurePort: UInt16 = 49162,
+        receiveDirectory: URL = ControlServer.defaultReceiveDirectory,
         pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in false },
         transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true },
         transferProgress: @escaping (Int64, Int64) -> Void = { _, _ in },
         transferCompleted: @escaping (IncomingTransferRequest) -> Void = { _ in }
     ) {
         self.init(identity: identity, preferredPort: preferredPort, preferredSecurePort: preferredSecurePort,
+                  receiveDirectory: receiveDirectory,
                   pairDecision: { request, done in done(pairApproval(request)) },
                   transferDecision: { request, done in done(transferApproval(request)) },
                   transferProgress: transferProgress,
@@ -109,7 +122,7 @@ public final class ControlServer {
     /// free port if taken, and advertises `_linkbridge._tcp` with both ports.
     /// `onReady` runs on the main queue with the plain port, or nil on failure.
     public func start(onReady: @escaping (UInt16?) -> Void = { _ in }) {
-        Self.removeLeftoverPartialFiles()
+        Self.removeLeftoverPartialFiles(in: receiveDirectory)
         startSecure(on: NWEndpoint.Port(rawValue: preferredSecurePort) ?? .any) { [weak self] securePort in
             guard let self, securePort != nil else { onReady(nil); return }
             self.startPlain(on: NWEndpoint.Port(rawValue: self.preferredPort) ?? .any, onReady: onReady)
@@ -200,11 +213,12 @@ public final class ControlServer {
         }
         self.secureListener = listener
 
-        listener.newConnectionHandler = { [transferDecision, transferProgress, transferReceived, transferWithdrawn, secureLimiter] connection in
+        listener.newConnectionHandler = { [receiveDirectory, transferDecision, transferProgress, transferReceived, transferWithdrawn, secureLimiter] connection in
             guard secureLimiter.admit(connection) else { return }
             connection.start(queue: .main)
             Self.handleSecure(
                 connection: connection,
+                receiveDirectory: receiveDirectory,
                 transferDecision: transferDecision,
                 transferProgress: transferProgress,
                 transferReceived: transferReceived,
@@ -260,6 +274,7 @@ public final class ControlServer {
     /// TLS-PSK connections from paired devices: transfers only.
     private static func handleSecure(
         connection: NWConnection,
+        receiveDirectory: URL,
         transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void,
         transferReceived: @escaping (IncomingTransferRequest, URL) -> Void,
@@ -277,6 +292,7 @@ public final class ControlServer {
                 handleUpload(
                     connection: connection,
                     head: head,
+                    receiveDirectory: receiveDirectory,
                     transferDecision: transferDecision,
                     transferProgress: transferProgress,
                     transferReceived: transferReceived,
@@ -607,6 +623,7 @@ public final class ControlServer {
     private static func handleUpload(
         connection: NWConnection,
         head: HTTPRequestHead,
+        receiveDirectory: URL,
         transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void,
         transferReceived: @escaping (IncomingTransferRequest, URL) -> Void,
@@ -678,8 +695,7 @@ public final class ControlServer {
         }
 
         do {
-            let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
+            let directory = receiveDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
             let decryptor = try ChunkedDecryptor(secret: authToken, scheme: encryption, transferId: transferUUID)
@@ -1011,9 +1027,7 @@ public final class ControlServer {
     }
 
     /// Deletes partial files left by a crash, quit or power loss during a transfer.
-    static func removeLeftoverPartialFiles() {
-        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
+    static func removeLeftoverPartialFiles(in directory: URL) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         for name in names where name.hasPrefix(partialFilePrefix) && name.hasSuffix(partialFileSuffix) {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))

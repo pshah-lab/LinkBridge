@@ -544,9 +544,11 @@ func startDecisionServer(
     pair: @escaping (IncomingPairRequest, @escaping (Bool) -> Void) -> Void,
     transfer: @escaping (IncomingTransferRequest, @escaping (Bool) -> Void) -> Void = { _, done in done(true) },
     received: @escaping (IncomingTransferRequest, URL) -> Void = { _, _ in },
-    withdrawn: @escaping (UUID) -> Void = { _ in }
+    withdrawn: @escaping (UUID) -> Void = { _ in },
+    receiveDirectory: URL = ControlServer.defaultReceiveDirectory
 ) -> (ControlServer, UInt16) {
     let server = ControlServer(identity: IdentityStore().loadOrCreate(), preferredPort: 0, preferredSecurePort: 0,
+                               receiveDirectory: receiveDirectory,
                                pairDecision: pair, transferDecision: transfer,
                                transferReceived: received, transferWithdrawn: withdrawn)
     let ready = DispatchSemaphore(value: 0)
@@ -800,6 +802,28 @@ DispatchQueue.global().async {
         check(downloads.path.hasPrefix(ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? "/nonexistent"), "wrote inside the throwaway home")
         let quarantine = (try? downloads.resourceValues(forKeys: [.quarantinePropertiesKey]))?.quarantineProperties
         check(quarantine?[kLSQuarantineAgentNameKey as String] as? String == "LinkBridge", "received file is quarantined")
+    }
+
+    section("receivesIntoInjectedDirectory") {
+        let identity = IdentityStore().loadOrCreate()
+        // Reuses the self-peer trusted by the section above, so later sections keep their secret.
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        check(!secret.isEmpty, "self peer is trusted")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recv-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let (injected, _) = startDecisionServer(pair: { _, done in done(false) }, receiveDirectory: tmp)
+        let reloaded = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { injected.reloadTrustedPeers { reloaded.signal() } }
+        reloaded.wait()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("injected-\(UUID().uuidString).bin")
+        let payload = Data((0..<2048).map { UInt8(truncatingIfNeeded: $0) })
+        try payload.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(injected.securePort)", secret: secret)
+        check((try? Data(contentsOf: tmp.appendingPathComponent(file.lastPathComponent))) == payload, "file landed in the injected directory")
+        let inDownloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)
+        check(!FileManager.default.fileExists(atPath: inDownloads.path), "and not in Downloads/LinkBridge")
     }
 
     section("Slow or silent connections are closed and capped") {
