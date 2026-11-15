@@ -9,6 +9,11 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- Status notification and Accept/Decline prompts for incoming files (runtime on API 33+). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Offline direct link: a local-only hotspot (no location permission needed). -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
 
     <application
         android:allowBackup="false"
