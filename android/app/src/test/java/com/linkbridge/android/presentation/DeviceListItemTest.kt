@@ -118,4 +118,25 @@ class DeviceListItemTest {
         assertSame(first, items[0].peer)
         assertEquals("Away", items[2].name)
     }
+
+    @Test
+    fun iosMapsToIphone() {
+        val item = DeviceListItem.merge(listOf(peer("Phone", platform = "ios")), emptyList()).single()
+        assertEquals(DevicePlatform.IPHONE, item.platform)
+        assertTrue(isServerPlatform("macos"))
+        assertTrue(isServerPlatform("ios"))
+        assertFalse(isServerPlatform("android"))
+        assertFalse(isServerPlatform(null))
+        assertEquals("Not paired", item.subtitle)
+        assertTrue(item.canPair)
+    }
+
+    @Test
+    fun iosPeerIsSendableWhenPaired() {
+        val trustedIphone = TrustedPeer("i-1", "Phone", "ios", "10.0.0.6", 49152, authToken = "t")
+        val item = DeviceListItem.merge(listOf(peer("Phone", "i-1", platform = "ios")), listOf(trustedIphone)).single()
+        assertTrue(item.isPaired)
+        assertTrue(item.isSendable)
+        assertFalse(item.canPair)
+    }
 }

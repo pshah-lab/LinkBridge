@@ -13,6 +13,7 @@ import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
 import com.linkbridge.android.presentation.SendPhase
 import com.linkbridge.android.presentation.bannerFor
+import com.linkbridge.android.presentation.peerFailureMessage
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -149,7 +150,7 @@ class MainViewModel(
                     pendingPair = PendingPair(peer, device, session)
                     pairing.value = PairingStep.Code(device.deviceName, PairingCode.display(session.code))
                 }
-                .onFailure { pairing.value = PairingStep.Failed(item.name, it.reason(), id) }
+                .onFailure { pairing.value = PairingStep.Failed(item.name, peerFailureMessage(peer.platform, it), id) }
         }
     }
 
@@ -187,7 +188,7 @@ class MainViewModel(
                         select(device.deviceId)
                         pairing.value = PairingStep.Paired(device.deviceName)
                     }
-                    .onFailure { pairing.value = PairingStep.Failed(device.deviceName, it.reason(), pending.peer.idOf()) }
+                    .onFailure { pairing.value = PairingStep.Failed(device.deviceName, peerFailureMessage(pending.peer.platform, it), pending.peer.idOf()) }
             }
         }
     }
@@ -209,8 +210,6 @@ class MainViewModel(
         this is PairingStep.Connecting || this is PairingStep.Code || this is PairingStep.Waiting
 
     private fun DiscoveredPeer.idOf() = deviceId ?: serviceName
-
-    private fun Throwable.reason() = localizedMessage ?: "Unknown error"
 
     // ---- Send ----
 

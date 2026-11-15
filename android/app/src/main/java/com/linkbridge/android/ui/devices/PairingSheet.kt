@@ -111,7 +111,7 @@ fun PairingSheetContent(step: PairingStep, actions: PairingActions, modifier: Mo
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.clearAndSetSemantics { contentDescription = spokenCode(current.code) },
                     )
-                    Body("If the Mac won't accept the code, cancel — someone may be intercepting the connection.")
+                    Body("If ${current.name} won't accept the code, cancel — someone may be intercepting the connection.")
                     Buttons {
                         TextButton(onClick = actions.onCancel) { Text("Cancel") }
                         Button(onClick = actions.onContinue) { Text("Continue") }

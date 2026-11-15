@@ -22,6 +22,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.linkbridge.android.presentation.ReceiveState
+import com.linkbridge.android.presentation.peerFailureMessage
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -171,7 +172,7 @@ class LinkBridgeService : Service() {
                     LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
                 }.onFailure { error ->
                     Log.e(TAG, "Send failed", error)
-                    val message = error.localizedMessage ?: "Unknown error"
+                    val message = peerFailureMessage(peer.platform, error)
                     LinkBridgeHub.recordHistory(
                         this,
                         TransferRecords.failedSend(
