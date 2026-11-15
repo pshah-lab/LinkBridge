@@ -25,7 +25,11 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.linkbridge.android.offline.Cancelable
 import com.linkbridge.android.offline.HotspotBinding
+import com.linkbridge.android.offline.OFFLINE_HELLO_PORT
+import com.linkbridge.android.offline.OfflineHelloServer
 import com.linkbridge.android.offline.OfflineHotspot
+import com.linkbridge.android.offline.mergePeers
+import com.linkbridge.android.offline.toPeer
 import com.linkbridge.android.offline.currentNetInterfaces
 import com.linkbridge.android.presentation.ReceiveState
 import com.linkbridge.android.presentation.peerFailureMessage
@@ -58,6 +62,9 @@ class LinkBridgeService : Service() {
     private lateinit var identity: DeviceIdentity
     private lateinit var discovery: DiscoveryService
     private lateinit var receiveServer: ReceiveServer
+    private var helloServer: OfflineHelloServer? = null
+    private var bonjourPeers: List<DiscoveredPeer> = emptyList()
+    private val helloPeers = linkedMapOf<String, DiscoveredPeer>()
     private var isForeground = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var hotspotObserver: Job? = null
@@ -68,6 +75,7 @@ class LinkBridgeService : Service() {
             abortSends = { controlClient.abortUploads() },
             interfaces = ::currentNetInterfaces,
             stationAddresses = ::stationWifiAddresses,
+            onAddress = ::onHotspotAddress,
             schedule = { delayMs, block ->
                 val task = Runnable(block)
                 main.postDelayed(task, delayMs)
@@ -128,6 +136,8 @@ class LinkBridgeService : Service() {
         if (LinkBridgeHub.service === this) LinkBridgeHub.service = null
         runCatching { discovery.stop() }
         runCatching { receiveServer.stop() }
+        helloServer?.stop()
+        helloServer = null
         // The send in flight keeps running (its socket I/O isn't interruptible) and reports its
         // real outcome when it ends, so it isn't marked failed here. Queued sends never start:
         // report each one, so the share sheet's tally can complete.
@@ -292,7 +302,44 @@ class LinkBridgeService : Service() {
     }
 
     private fun newDiscovery() = DiscoveryService(this, identity, CONTROL_PORT) { peers ->
-        LinkBridgeHub.publishPeers(peers)
+        bonjourPeers = peers
+        publishMergedPeers()
+    }
+
+    /** Bonjour peers plus those that said hello over the hotspot, one entry per device. */
+    private fun publishMergedPeers() {
+        if (stopped) return
+        val trusted by lazy { TrustedPeerStore(this).load() }
+        LinkBridgeHub.publishPeers(
+            mergePeers(bonjourPeers, helloPeers.values.toList()) { rid, tags -> DiscoveryTags.match(rid, tags, trusted) }
+        )
+    }
+
+    /** Runs the hello endpoint on the hotspot address while there is one (main thread). */
+    private fun onHotspotAddress(address: Inet4Address?) {
+        helloServer?.stop()
+        helloServer = null
+        if (helloPeers.isNotEmpty()) {
+            helloPeers.clear()
+            publishMergedPeers()
+        }
+        if (address == null) return
+        val server = OfflineHelloServer(
+            bindAddress = address,
+            localRecord = { discovery.localRecord() },
+            clock = System::currentTimeMillis,
+            onPeer = { record, source ->
+                val trusted = TrustedPeerStore(this).load()
+                val deviceId = DiscoveryTags.match(record.rid, record.tags, trusted)
+                main.post {
+                    if (helloServer == null) return@post
+                    helloPeers[record.rid] = record.toPeer(source, deviceId)
+                    publishMergedPeers()
+                }
+            },
+        )
+        if (server.start()) helloServer = server
+        else Log.w("LinkBridgeService", "Offline hello port ${OFFLINE_HELLO_PORT} is busy; hello disabled")
     }
 
     private fun canPostNotifications(): Boolean =

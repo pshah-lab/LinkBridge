@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.linkbridge.android.offline.DiscoveryRecord
 import java.net.InetAddress
 import java.net.NetworkInterface
 
@@ -18,7 +19,7 @@ class DiscoveryService(
     private val onPeersChanged: (List<DiscoveredPeer>) -> Unit = {}
 ) {
     /** Random per registration; see [DiscoveryTags]. */
-    private val rid = DiscoveryTags.randomRid()
+    internal val rid = DiscoveryTags.randomRid()
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val peers = linkedMapOf<String, DiscoveredPeer>()
@@ -86,7 +87,7 @@ class DiscoveryService(
             // No deviceId: a stable ID would let anyone on any network recognize this phone.
             // Paired devices recognize it by their tag instead; rescan() re-registers after pairing.
             setAttribute("rid", rid)
-            setAttribute("tags", DiscoveryTags.tags(trustedPeers().reversed().mapNotNull { it.authToken }, rid))
+            setAttribute("tags", currentTags())
             setAttribute("deviceName", identity.deviceName)
             setAttribute("platform", identity.platform)
             // Protocol 2: transfers use TLS-PSK on tlsPort (the receive server is TLS-only).
@@ -107,6 +108,20 @@ class DiscoveryService(
             Log.e(TAG, "Could not start discovery", it)
         }
     }
+
+    private fun currentTags() = DiscoveryTags.tags(trustedPeers().reversed().mapNotNull { it.authToken }, rid)
+
+    /** What this phone says about itself: the Bonjour record, for the offline hello. */
+    fun localRecord() = DiscoveryRecord(
+        rid = rid,
+        tags = currentTags(),
+        deviceName = identity.deviceName,
+        platform = identity.platform,
+        protocol = PROTOCOL_VERSION,
+        port = port,
+        tlsPort = port,
+        features = identity.features.joinToString(","),
+    )
 
     fun stop() {
         if (!isStarted) return
@@ -215,7 +230,9 @@ class DiscoveryService(
             platform = platform,
             host = hostAddress.hostAddress ?: return null,
             port = port,
-            tlsPort = tlsPort
+            tlsPort = tlsPort,
+            rid = advertisedRid,
+            tags = tags.orEmpty()
         )
     }
 
