@@ -1340,6 +1340,8 @@ DispatchQueue.global().async {
                                      port: 49152, tlsPort: 49153, features: "")
         let gateway = OfflineLinkPayload.parseIPv4("192.168.49.1")
         var helloHosts: [String] = []
+        var virtualNow = Date(timeIntervalSince1970: 1000)
+        let start = virtualNow
         func locator(gateway: IPv4Address?, bonjour: [ResolvedPeer] = [], failHello: Bool = false) -> OfflineLocator {
             OfflineLocator(gateway: { gateway },
                            hello: { host, _ in
@@ -1347,7 +1349,8 @@ DispatchQueue.global().async {
                                if failHello { throw OfflineHelloError.timedOut }
                                return theirs
                            },
-                           bonjourPeers: { bonjour })
+                           bonjourPeers: { bonjour },
+                           clock: { virtualNow }, sleep: { virtualNow = virtualNow.addingTimeInterval($0) })
         }
         let bonjourPeer = ResolvedPeer(deviceName: "Pixel", deviceId: nil, platform: "android", host: "pixel.local",
                                        port: 49152, tlsPort: 49153, rid: rid)
@@ -1357,6 +1360,38 @@ DispatchQueue.global().async {
         if case .found(let peer) = locator(gateway: gateway, bonjour: [bonjourPeer]).locate(localRecord: mine) {
             check(peer.host == "pixel.local" && helloHosts.isEmpty, "Bonjour peer wins and no hello is sent")
         } else { check(false, "Bonjour peer should be found") }
+
+        // The Bonjour wait runs on a virtual clock that only `sleep` advances.
+        var helloAt: [TimeInterval] = []
+        func waiting(bonjourAppearsAt: TimeInterval?) -> OfflineLocator {
+            OfflineLocator(gateway: { gateway }, hello: { _, _ in helloAt.append(virtualNow.timeIntervalSince(start)); return theirs },
+                           bonjourPeers: {
+                               if let at = bonjourAppearsAt, virtualNow.timeIntervalSince(start) >= at { return [bonjourPeer] }
+                               return []
+                           },
+                           clock: { virtualNow }, sleep: { virtualNow = virtualNow.addingTimeInterval($0) })
+        }
+        if case .found(let peer) = waiting(bonjourAppearsAt: 1).locate(localRecord: mine) {
+            check(peer.host == "pixel.local" && helloAt.isEmpty, "a Bonjour peer appearing at 1 s wins with no hello")
+        } else { check(false, "Bonjour peer at 1 s should be found") }
+        virtualNow = start; helloAt = []
+        if case .found = waiting(bonjourAppearsAt: nil).locate(localRecord: mine) {
+            check(helloAt.count == 1 && helloAt[0] >= 3, "with no Bonjour peer the hello is sent only after 3 s, got \(helloAt)")
+        } else { check(false, "hello after the wait should find the peer") }
+
+        // helloPeerKeepAlive
+        var book = HelloPeerBook()
+        let t0 = Date(timeIntervalSince1970: 5000)
+        let helloPeer = OfflinePeers.peer(from: theirs, host: "192.168.49.1", trusted: [])
+        book.record(helloPeer, at: t0)
+        check(book.peers.count == 1, "recorded peer is listed")
+        check(book.due(at: t0.addingTimeInterval(29)).isEmpty, "not due before 30 s")
+        check(book.due(at: t0.addingTimeInterval(30)).count == 1, "due at 30 s")
+        book.record(helloPeer, at: t0.addingTimeInterval(30))
+        check(book.peers.count == 1 && book.due(at: t0.addingTimeInterval(31)).isEmpty, "a refresh replaces the entry and resets the timer")
+        check(book.peers.count == 1, "the peer stays listed without the guide while refreshes succeed")
+        book.drop(helloPeer)
+        check(book.peers.isEmpty, "a failed refresh drops the peer")
 
         // locatorFallsBackToHelloAtGateway
         helloHosts = []

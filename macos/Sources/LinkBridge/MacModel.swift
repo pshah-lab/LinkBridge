@@ -83,10 +83,14 @@ final class MacModel {
     var showOfflineGuide = false
     private(set) var offlineJoin: OfflineJoinState = .searching
     @ObservationIgnored private var bonjourNearby: [ResolvedPeer] = []
-    @ObservationIgnored private var helloPeers: [(peer: ResolvedPeer, seen: Date)] = []
+    @ObservationIgnored private var helloBook = HelloPeerBook()
+    @ObservationIgnored private let bonjourSnapshot = PeerSnapshot()
+    @ObservationIgnored private var manualBusy = false
+    @ObservationIgnored private var refreshingHello = false
+    /// Why the last manual address failed; shown above the address field.
+    private(set) var offlineManualError: String?
     @ObservationIgnored private var noPeersSince: Date?
     @ObservationIgnored private var locating = false
-    private static let helloPeerLifetime: TimeInterval = 30
 
     /// Set when the user has turned notifications off for LinkBridge in System Settings.
     var notificationsDenied = false
@@ -215,11 +219,12 @@ final class MacModel {
 
     private func discovered(_ peers: [ResolvedPeer]) {
         bonjourNearby = peers
+        bonjourSnapshot.value = peers
         mergeNearby()
     }
 
     private func mergeNearby() {
-        let peers = OfflinePeers.merge(bonjour: bonjourNearby, hello: helloPeers.map(\.peer))
+        let peers = OfflinePeers.merge(bonjour: bonjourNearby, hello: helloBook.peers)
         nearby = peers
         let now = Date()
         for id in peers.compactMap(\.deviceId) { lastSeen[id] = now }
@@ -238,9 +243,7 @@ final class MacModel {
             noPeersSince = nil
             offlineCardVisible = false
         }
-        let before = helloPeers.count
-        helloPeers.removeAll { now.timeIntervalSince($0.seen) > Self.helloPeerLifetime }
-        if helloPeers.count != before { mergeNearby() }
+        refreshHelloPeers(now: now)
         // A receive that stops reporting progress has failed on the sender's side.
         if let receiving, Date().timeIntervalSince(receiving.updatedAt) > 15 { self.receiving = nil }
     }
@@ -249,41 +252,78 @@ final class MacModel {
 
     func openOfflineGuide() {
         offlineJoin = .searching
+        offlineManualError = nil
         showOfflineGuide = true
         showMainWindow()
     }
 
-    /// One locate pass for the open guide: Bonjour, then the hello at the gateway.
+    /// One locate pass for the open guide: waits up to 3 s for Bonjour, then the hello at the
+    /// gateway. Skipped while a pass or a manual connect is already running.
     func locateOffline() async {
-        await runLocate { locator, record in locator.locate(localRecord: record) }
-    }
-
-    func connectOfflineManually(_ address: String) async {
-        await runLocate { locator, record in locator.connectManually(address: address, localRecord: record) }
-    }
-
-    private func runLocate(_ work: @escaping @Sendable (OfflineLocator, DiscoveryRecord) -> LocateResult) async {
-        guard !locating, let record = server?.currentDiscoveryRecord() else { return }
+        guard !locating, !manualBusy, let record = server?.currentDiscoveryRecord() else { return }
         locating = true
         defer { locating = false }
-        let bonjour = bonjourNearby
-        let trusted = trustedStore.load()
+        let peers = bonjourSnapshot, trusted = trustedStore.load()
         let result = await Task.detached {
-            work(OfflineLocator.system(bonjourPeers: { bonjour }, trusted: { trusted }), record)
+            OfflineLocator.system(bonjourPeers: { peers.value }, trusted: { trusted }).locate(localRecord: record)
+        }.value
+        guard showOfflineGuide, !manualBusy else { return }
+        apply(result, manual: false)
+    }
+
+    /// Always runs: it waits for a poll pass in flight, and polling stands aside meanwhile.
+    func connectOfflineManually(_ address: String) async {
+        manualBusy = true
+        defer { manualBusy = false }
+        while locating { try? await Task.sleep(for: .milliseconds(100)) }
+        guard let record = server?.currentDiscoveryRecord() else { return }
+        let peers = bonjourSnapshot, trusted = trustedStore.load()
+        let result = await Task.detached {
+            OfflineLocator.system(bonjourPeers: { peers.value }, trusted: { trusted })
+                .connectManually(address: address, localRecord: record)
         }.value
         guard showOfflineGuide else { return }
+        apply(result, manual: true)
+    }
+
+    private func apply(_ result: LocateResult, manual: Bool) {
         switch result {
         case .found(let peer):
             if peer.service == nil {
-                helloPeers.removeAll { OfflinePeers.isSameDevice($0.peer, peer) }
-                helloPeers.append((peer, Date()))
+                helloBook.record(peer, at: Date())
                 mergeNearby()
             }
+            offlineManualError = nil
             offlineJoin = .found(peer.deviceName)
             if let id = peer.deviceId { select(id) }
             showOfflineGuide = false
         case .needsManualAddress:
+            if manual { offlineManualError = "Couldn't reach a LinkBridge device at that address." }
             offlineJoin = .needsManualAddress
+        }
+    }
+
+    /// Re-sends the hello to each hello-found peer that is due, whether or not the guide is open.
+    /// A peer that stops answering is dropped.
+    private func refreshHelloPeers(now: Date) {
+        let due = helloBook.due(at: now)
+        guard !due.isEmpty, !refreshingHello, let record = server?.currentDiscoveryRecord() else { return }
+        refreshingHello = true
+        let trusted = trustedStore.load()
+        Task {
+            for peer in due {
+                let result = await Task.detached {
+                    OfflineLocator.system(bonjourPeers: { [] }, trusted: { trusted })
+                        .connectManually(address: peer.host, localRecord: record)
+                }.value
+                if case .found(let fresh) = result {
+                    helloBook.record(fresh, at: Date())
+                } else {
+                    helloBook.drop(peer)
+                }
+            }
+            refreshingHello = false
+            mergeNearby()
         }
     }
 
@@ -472,5 +512,15 @@ final class MacModel {
     func openReceiveFolder() {
         try? FileManager.default.createDirectory(at: receiveFolder, withIntermediateDirectories: true)
         NSWorkspace.shared.open(receiveFolder)
+    }
+}
+
+/// Bonjour peers readable from the locator's background thread while it waits.
+final class PeerSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var peers: [ResolvedPeer] = []
+    var value: [ResolvedPeer] {
+        get { lock.withLock { peers } }
+        set { lock.withLock { peers = newValue } }
     }
 }

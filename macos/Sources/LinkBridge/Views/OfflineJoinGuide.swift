@@ -82,6 +82,10 @@ struct OfflineJoinGuide: View {
             }
         case .needsManualAddress:
             VStack(alignment: .leading, spacing: 8) {
+                if let error = model.offlineManualError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Accent.attention.color)
+                }
                 Text("No LinkBridge device on this network. Check the name on Android")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

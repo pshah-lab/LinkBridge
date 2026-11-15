@@ -4,6 +4,30 @@ import Network
 import SystemConfiguration
 #endif
 
+/// Peers found by hello rather than Bonjour. They stay listed while they keep answering:
+/// each is due for a fresh hello every `refreshInterval`, and is dropped when that fails.
+public struct HelloPeerBook {
+    public static let refreshInterval: TimeInterval = 30
+    private var entries: [(peer: ResolvedPeer, refreshedAt: Date)] = []
+
+    public init() {}
+
+    public var peers: [ResolvedPeer] { entries.map(\.peer) }
+
+    public mutating func record(_ peer: ResolvedPeer, at now: Date) {
+        entries.removeAll { OfflinePeers.isSameDevice($0.peer, peer) }
+        entries.append((peer, now))
+    }
+
+    public func due(at now: Date) -> [ResolvedPeer] {
+        entries.filter { now.timeIntervalSince($0.refreshedAt) >= Self.refreshInterval }.map(\.peer)
+    }
+
+    public mutating func drop(_ peer: ResolvedPeer) {
+        entries.removeAll { OfflinePeers.isSameDevice($0.peer, peer) }
+    }
+}
+
 public enum LocateResult {
     case found(ResolvedPeer)
     case needsManualAddress
@@ -18,18 +42,23 @@ public final class OfflineLocator {
     private let bonjourPeers: () -> [ResolvedPeer]
     private let trusted: () -> [TrustedPeer]
     private let clock: () -> Date
+    private let sleep: (TimeInterval) -> Void
 
     public init(gateway: @escaping () -> IPv4Address?,
                 hello: @escaping (NWEndpoint.Host, DiscoveryRecord) throws -> DiscoveryRecord,
                 bonjourPeers: @escaping () -> [ResolvedPeer],
                 trusted: @escaping () -> [TrustedPeer] = { [] },
-                clock: @escaping () -> Date = Date.init) {
+                clock: @escaping () -> Date = Date.init,
+                sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
         self.gateway = gateway
         self.hello = hello
         self.bonjourPeers = bonjourPeers
         self.trusted = trusted
         self.clock = clock
+        self.sleep = sleep
     }
+
+    static let pollInterval: TimeInterval = 0.25
 
     /// A locator wired to the real network: the system's default gateway and the plain-HTTP hello.
     public static func system(bonjourPeers: @escaping () -> [ResolvedPeer],
@@ -39,14 +68,16 @@ public final class OfflineLocator {
                        bonjourPeers: bonjourPeers, trusted: trusted)
     }
 
-    /// One pass. `timeout` is the budget for the whole pass: the hello is skipped when Bonjour
-    /// and the gateway lookup already used it up.
+    /// One pass: waits up to `timeout` for a Bonjour peer (polling every 250 ms), then tries the
+    /// hello at the gateway.
     public func locate(localRecord: DiscoveryRecord, timeout: TimeInterval = 3) -> LocateResult {
         let deadline = clock().addingTimeInterval(timeout)
-        if let peer = bonjourPeers().first { return .found(peer) }
-        guard let router = gateway(), OfflineLinkPayload.isPrivate(router), clock() < deadline else {
-            return .needsManualAddress
+        while true {
+            if let peer = bonjourPeers().first { return .found(peer) }
+            if clock() >= deadline { break }
+            sleep(Self.pollInterval)
         }
+        guard let router = gateway(), OfflineLinkPayload.isPrivate(router) else { return .needsManualAddress }
         return helloPeer(at: router, localRecord: localRecord)
     }
 
