@@ -116,6 +116,10 @@
     {
       "reason" : "valid base64 of non-JSON",
       "text" : "linkbridge-offline:1:bm90IGpzb24"
+    },
+    {
+      "reason" : "empty rid",
+      "text" : "linkbridge-offline:1:eyJhZGRyIjoiMTkyLjE2OC40My4xIiwiaGVsbG8iOjQ5MTU0LCJwYXNzIjoicGFzc3dvcmQxIiwicmVjb3JkIjp7ImRldmljZU5hbWUiOiJQIiwiZmVhdHVyZXMiOiJmaWxlLXRyYW5zZmVyIiwicGxhdGZvcm0iOiJhbmRyb2lkIiwicG9ydCI6NDkxNTIsInByb3RvY29sIjoyLCJyaWQiOiIiLCJ0YWdzIjoiIiwidGxzUG9ydCI6NDkxNTN9LCJzc2lkIjoiTmV0In0"
     }
   ],
   "valid" : [

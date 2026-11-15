@@ -214,4 +214,18 @@ class OfflineHotspotTest {
         time.advanceBy(IDLE_TIMEOUT_MS + 1)
         assertEquals(null, h.idleDeadline.value)
     }
+
+    @Test
+    fun failStopsTheHotspotAndAllowsARetry() {
+        val port = FakePort()
+        val time = FakeTime()
+        val h = activeHotspot(port, time)
+        h.fail(HotspotFailure.NO_ADDRESS)
+        assertEquals(HotspotState.Failed(HotspotFailure.NO_ADDRESS), h.state.value)
+        assertEquals(1, port.stops)
+        assertEquals(null, h.idleDeadline.value)
+        h.start()
+        assertEquals(HotspotState.Starting, h.state.value)
+        assertEquals(2, port.starts)
+    }
 }

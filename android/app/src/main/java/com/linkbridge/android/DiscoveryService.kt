@@ -15,11 +15,11 @@ class DiscoveryService(
     context: Context,
     private val identity: DeviceIdentity,
     private val port: Int,
+    /** Random per app launch (the service passes one in), so it survives a rescan; see [DiscoveryTags]. */
+    internal val rid: String = DiscoveryTags.randomRid(),
     private val trustedPeers: () -> List<TrustedPeer> = { TrustedPeerStore(context).load() },
     private val onPeersChanged: (List<DiscoveredPeer>) -> Unit = {}
 ) {
-    /** Random per registration; see [DiscoveryTags]. */
-    internal val rid = DiscoveryTags.randomRid()
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val peers = linkedMapOf<String, DiscoveredPeer>()
@@ -109,19 +109,10 @@ class DiscoveryService(
         }
     }
 
-    private fun currentTags() = DiscoveryTags.tags(trustedPeers().reversed().mapNotNull { it.authToken }, rid)
+    private fun currentTags() = localTags(rid, trustedPeers())
 
     /** What this phone says about itself: the Bonjour record, for the offline hello. */
-    fun localRecord() = DiscoveryRecord(
-        rid = rid,
-        tags = currentTags(),
-        deviceName = identity.deviceName,
-        platform = identity.platform,
-        protocol = PROTOCOL_VERSION,
-        port = port,
-        tlsPort = port,
-        features = identity.features.joinToString(","),
-    )
+    fun localRecord() = localDiscoveryRecord(identity, rid, port, trustedPeers())
 
     fun stop() {
         if (!isStarted) return
@@ -256,3 +247,19 @@ class DiscoveryService(
         const val PROTOCOL_VERSION = 2
     }
 }
+
+/** Newest pairings first, so the cap drops the oldest. */
+internal fun localTags(rid: String, trusted: List<TrustedPeer>): String =
+    DiscoveryTags.tags(trusted.reversed().mapNotNull { it.authToken }, rid)
+
+/** The Bonjour record as JSON fields, for the offline hello and the QR. */
+internal fun localDiscoveryRecord(identity: DeviceIdentity, rid: String, port: Int, trusted: List<TrustedPeer>) = DiscoveryRecord(
+    rid = rid,
+    tags = localTags(rid, trusted),
+    deviceName = identity.deviceName,
+    platform = identity.platform,
+    protocol = DiscoveryService.PROTOCOL_VERSION,
+    port = port,
+    tlsPort = port,
+    features = identity.features.joinToString(","),
+)

@@ -24,6 +24,8 @@ class HotspotBinding(
     private val prefixes: List<String> = DEFAULT_HOTSPOT_INTERFACE_PREFIXES,
     /** The hotspot address once known while Active; null in every other state. */
     private val onAddress: (Inet4Address?) -> Unit = {},
+    /** The address never appeared while Active; the owner should stop the hotspot and report a failure. */
+    private val onAddressNotFound: () -> Unit = {},
 ) {
     private var retry: Cancelable? = null
 
@@ -52,6 +54,8 @@ class HotspotBinding(
             onAddress(address)
         } else if (attemptsLeft > 0) {
             retry = schedule(ADDRESS_RETRY_DELAY_MS) { bindToHotspotAddress(attemptsLeft - 1) }
+        } else {
+            onAddressNotFound()
         }
     }
 }

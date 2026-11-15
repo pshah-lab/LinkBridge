@@ -7,6 +7,7 @@ const val OFFLINE_CARD_UNSUPPORTED_TEXT = "Needs Android 13 or later"
 const val OFFLINE_CARD_ON_TEXT = "Offline link is on"
 const val OFFLINE_PERMISSION_MESSAGE = "LinkBridge needs Nearby devices to start the link"
 const val OFFLINE_STOPPED_MESSAGE = "Offline link stopped"
+const val OFFLINE_NO_ADDRESS_MESSAGE = "Couldn't start offline link: try again"
 const val OFFLINE_HOTSPOT_BUSY_MESSAGE = "Couldn't start offline link: turn off Mobile Hotspot and try again"
 
 /** What the Devices card and the Offline link screen show. */
@@ -41,6 +42,7 @@ fun hotspotFailureMessage(reason: HotspotFailure): String = when (reason) {
     HotspotFailure.PERMISSION_DENIED -> OFFLINE_PERMISSION_MESSAGE
     HotspotFailure.UNSUPPORTED_OS -> OFFLINE_CARD_UNSUPPORTED_TEXT
     HotspotFailure.GENERIC -> "Couldn't start offline link. Try again"
+    HotspotFailure.NO_ADDRESS -> OFFLINE_NO_ADDRESS_MESSAGE
 }
 
 internal fun minutesLeftLabel(deadline: Long?, now: Long): String {

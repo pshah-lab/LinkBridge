@@ -89,6 +89,28 @@ class OfflineLinkTest {
         assertNull(DiscoveryRecord.fromJson(RECORD.replace("\"tlsPort\":49153", "\"tlsPort\":0")))
     }
 
+    @Test
+    fun emptyRidIsInvalid() {
+        assertNull(DiscoveryRecord.fromJson(RECORD.replace("\"rid\":\"000102030405060708090a0b0c0d0e0f\"", "\"rid\":\"\"")))
+    }
+
+    @Test
+    fun longDeviceNameIsShortenedToFitTheQr() {
+        val tags = List(DiscoveryRecord.MAX_TAGS) { "0011223344556677" }.joinToString(",")
+        // Emoji are surrogate pairs and 4 UTF-8 bytes: truncation must not split one.
+        val name = "Pixel " + "\uD83D\uDE00".repeat(300)
+        val record = DiscoveryRecord("000102030405060708090a0b0c0d0e0f", tags, name, "android", 2, 49152, 49152, "file-transfer,display-send")
+        val payload = OfflineLinkPayload("DIRECT-LB-Pixel", "hunter2hunter2", InetAddress.getByName("192.168.43.1") as Inet4Address, 49154, record)
+        val text = payload.encode()
+        assertTrue(text.toByteArray().size <= OfflineLinkPayload.MAX_TEXT_LENGTH)
+        val parsed = OfflineLinkPayload.parse(text)
+        assertNotNull(parsed)
+        val shortName = parsed!!.record.deviceName
+        assertTrue(shortName.length < name.length && name.startsWith(shortName))
+        assertTrue(!Character.isHighSurrogate(shortName.last()))
+        assertEquals(record.copy(deviceName = shortName), parsed.record)
+    }
+
     private companion object {
         const val RECORD = """{"deviceName":"P","features":"file-transfer","platform":"android","port":49152,"protocol":2,"rid":"000102030405060708090a0b0c0d0e0f","tags":"","tlsPort":49153}"""
     }

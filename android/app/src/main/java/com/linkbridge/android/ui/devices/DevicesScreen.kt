@@ -53,7 +53,7 @@ class DevicesActions(
     val onBannerAction: (BannerAction) -> Unit,
 )
 
-const val NO_DEVICES_TEXT = "No devices yet — open LinkBridge on your Mac on the same Wi-Fi."
+const val NO_DEVICES_TEXT = "No devices yet — open LinkBridge on your Mac or iPhone on the same Wi-Fi."
 
 /** Discovery has no "done" signal, so the refresh spinner shows for this long. */
 private const val REFRESH_SPIN_MS = 1_500L

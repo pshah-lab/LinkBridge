@@ -24,6 +24,8 @@ interface HotspotPortCallback {
 
 enum class HotspotFailure {
     NO_CHANNEL, TETHERING_ON, INCOMPATIBLE_MODE, NOT_ALLOWED, PERMISSION_DENIED, UNSUPPORTED_OS, GENERIC,
+    /** The hotspot came up but its address never appeared, so no QR could be shown. */
+    NO_ADDRESS,
 }
 
 sealed interface HotspotState {
@@ -108,6 +110,16 @@ class OfflineHotspot(
         cancelIdleTimer()
         busy = false // a stale flag must not disable the next session's idle timer
         _state.value = HotspotState.Stopped(bySystem = false)
+        port.stop()
+    }
+
+    /** Stops a starting or active hotspot and reports [reason], so the UI offers a retry. */
+    fun fail(reason: HotspotFailure) {
+        val current = _state.value
+        if (current != HotspotState.Starting && current !is HotspotState.Active) return
+        cancelIdleTimer()
+        busy = false
+        _state.value = HotspotState.Failed(reason)
         port.stop()
     }
 

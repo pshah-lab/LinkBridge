@@ -58,7 +58,7 @@ data class DiscoveryRecord(
                 features = o.opt("features") as? String ?: return null,
             )
             val tagCount = if (tags.isEmpty()) 0 else tags.split(',').size
-            if (record.port !in 1..65535 || (tlsPort != null && tlsPort !in 1..65535) || tagCount > MAX_TAGS) return null
+            if (record.rid.isEmpty() || record.port !in 1..65535 || (tlsPort != null && tlsPort !in 1..65535) || tagCount > MAX_TAGS) return null
             return record
         }
     }
@@ -77,7 +77,20 @@ data class OfflineLinkPayload(
     val helloPort: Int,
     val record: DiscoveryRecord,
 ) {
+    /**
+     * The QR text. Parsers reject text over [MAX_TEXT_LENGTH] bytes, so a long device name is
+     * shortened (whole code points) until the text fits.
+     */
     fun encode(): String {
+        var name = record.deviceName
+        while (true) {
+            val text = encodeWith(record.copy(deviceName = name))
+            if (text.length <= MAX_TEXT_LENGTH || name.isEmpty()) return text
+            name = name.substring(0, name.offsetByCodePoints(name.length, -1))
+        }
+    }
+
+    private fun encodeWith(record: DiscoveryRecord): String {
         val json = buildString {
             append('{')
             member("addr", quote(address.hostAddress ?: "")).append(',')
@@ -92,7 +105,7 @@ data class OfflineLinkPayload(
 
     companion object {
         const val PREFIX = "linkbridge-offline:1:"
-        private const val MAX_TEXT_LENGTH = 1024
+        const val MAX_TEXT_LENGTH = 1024
         private val TOP_KEYS = setOf("ssid", "pass", "addr", "hello", "record")
 
         /** Null for anything that is not a well-formed, in-limits payload. */

@@ -63,6 +63,12 @@ class LinkBridgeService : Service() {
 
     private lateinit var identity: DeviceIdentity
     private lateinit var discovery: DiscoveryService
+    /**
+     * One rid for this service's lifetime, like the Mac's per-launch rid. A rescan after pairing
+     * re-registers with fresh tags but the same rid, so a QR shown earlier still names this phone.
+     */
+    private val discoveryRid = DiscoveryTags.randomRid()
+    private var hotspotAddress: Inet4Address? = null
     private lateinit var receiveServer: ReceiveServer
     private var helloServer: OfflineHelloServer? = null
     private var bonjourPeers: List<DiscoveredPeer> = emptyList()
@@ -71,6 +77,7 @@ class LinkBridgeService : Service() {
     private var isForeground = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var hotspotObserver: Job? = null
+    private var attachedHotspot: OfflineHotspot? = null
     private var busyDriver: HotspotBusyDriver? = null
     private val hotspotBinding by lazy {
         HotspotBinding(
@@ -80,6 +87,9 @@ class LinkBridgeService : Service() {
             interfaces = ::currentNetInterfaces,
             stationAddresses = ::stationWifiAddresses,
             onAddress = ::onHotspotAddress,
+            onAddressNotFound = {
+                attachedHotspot?.fail(com.linkbridge.android.offline.HotspotFailure.NO_ADDRESS)
+            },
             schedule = { delayMs, block ->
                 val task = Runnable(block)
                 main.postDelayed(task, delayMs)
@@ -198,6 +208,7 @@ class LinkBridgeService : Service() {
         hotspotObserver = null
         busyDriver?.stop()
         busyDriver = null
+        attachedHotspot = hotspot
         if (hotspot == null) {
             hotspotBinding.onState(com.linkbridge.android.offline.HotspotState.Idle)
             return
@@ -231,6 +242,8 @@ class LinkBridgeService : Service() {
         main.post {
             runCatching { discovery.stop() }
             discovery = newDiscovery().also { it.start() }
+            // Fresh tags (after a pair or unpair) for the QR and the hello replies.
+            hotspotAddress?.let { LinkBridgeHub.publishOfflineEndpoint(OfflineEndpoint(it, discovery.localRecord())) }
         }
     }
 
@@ -322,7 +335,7 @@ class LinkBridgeService : Service() {
         stopSelf()
     }
 
-    private fun newDiscovery() = DiscoveryService(this, identity, CONTROL_PORT) { peers ->
+    private fun newDiscovery() = DiscoveryService(this, identity, CONTROL_PORT, rid = discoveryRid) { peers ->
         bonjourPeers = peers
         publishMergedPeers()
     }
@@ -343,6 +356,7 @@ class LinkBridgeService : Service() {
         main.removeCallbacks(purgeHelloPeers)
         helloPeers.clear()
         publishMergedPeers()
+        hotspotAddress = address
         LinkBridgeHub.publishOfflineEndpoint(address?.let { OfflineEndpoint(it, discovery.localRecord()) })
         if (address == null) return
         val server = OfflineHelloServer(
@@ -443,7 +457,7 @@ class LinkBridgeService : Service() {
         )
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_REQUESTS, "Incoming files", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Asks before saving a file sent from your Mac"
+                description = "Asks before saving a file sent from your Mac or iPhone"
             }
         )
     }

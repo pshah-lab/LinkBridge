@@ -177,8 +177,8 @@ private fun Message(text: String, center: Boolean = false) {
     )
 }
 
-private const val PAIR_FIRST_TEXT = "Pair a Mac in LinkBridge first"
-private const val LOOKING_TEXT = "Looking for your Mac on this Wi-Fi…"
+private const val PAIR_FIRST_TEXT = "Pair a Mac or iPhone in LinkBridge first"
+private const val LOOKING_TEXT = "Looking for your Mac or iPhone on this Wi-Fi…"
 
 // ---- Previews ----
 

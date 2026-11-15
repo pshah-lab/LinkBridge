@@ -15,6 +15,7 @@ class HotspotBindingTest {
         val events = mutableListOf<String>()
         var interfaces: List<NetInterfaceInfo> = emptyList()
         val scheduled = mutableListOf<() -> Unit>()
+        var notFound = 0
 
         val binding = HotspotBinding(
             setAcceptFilter = { filter = it },
@@ -22,6 +23,7 @@ class HotspotBindingTest {
             abortSends = { events += "abortSends" },
             interfaces = { interfaces },
             stationAddresses = { emptyList() },
+            onAddressNotFound = { notFound++ },
             schedule = { _, block ->
                 scheduled += block
                 Cancelable { scheduled -= block }
@@ -72,5 +74,18 @@ class HotspotBindingTest {
         f.binding.onState(HotspotState.Failed(HotspotFailure.NO_CHANNEL))
         f.binding.onState(HotspotState.Idle)
         assertTrue(f.events.isEmpty())
+    }
+
+    @Test
+    fun reportsNotFoundAfterTheLastRetry() {
+        val f = Fixture()
+        f.binding.onState(HotspotState.Active("DIRECT-lb", "secret123"))
+        repeat(10) {
+            assertEquals(0, f.notFound)
+            f.scheduled.removeAt(0).invoke()
+        }
+        assertTrue(f.scheduled.isEmpty())
+        assertEquals(1, f.notFound)
+        assertFalse(f.filter(ip("192.168.43.1")))
     }
 }
