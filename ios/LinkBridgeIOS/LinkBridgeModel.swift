@@ -15,7 +15,8 @@ final class LinkBridgeModel: ObservableObject {
     @Published private(set) var trusted: [TrustedPeer] = []
     @Published private(set) var selectedPeerId: UUID?
     @Published var pairingPrompt: PairingPrompt?
-    @Published private(set) var pairingPeerId: UUID?
+    /// `DeviceListItem.id` of the device being paired.
+    @Published private(set) var pairingItemId: String?
     @Published private(set) var sendPhase: SendPhase = .idle
     /// Last pairing or send failure; cleared by the next user action.
     @Published private(set) var lastError: String?
@@ -128,10 +129,10 @@ final class LinkBridgeModel: ObservableObject {
     }
 
     func pair(with peer: ResolvedPeer) {
-        guard pairingPeerId == nil else { return }
+        guard pairingItemId == nil else { return }
         let client = PairingClient(peer: peer)
         pairingClient = client
-        pairingPeerId = peer.deviceId
+        pairingItemId = DeviceListItem.itemId(for: peer)
         lastError = nil
         Task {
             do {
@@ -171,7 +172,7 @@ final class LinkBridgeModel: ObservableObject {
 
     private func pairingFinished(error: String?) {
         pairingClient = nil
-        pairingPeerId = nil
+        pairingItemId = nil
         lastError = error
     }
 

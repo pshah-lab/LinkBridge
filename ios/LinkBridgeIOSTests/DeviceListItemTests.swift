@@ -42,10 +42,21 @@ private func trusted(_ name: String, id: UUID, platform: String = "macos") -> Tr
     #expect(!item.isSendable)
 }
 
-@Test func peerWithoutDeviceIdUsesEndpointIdAndCannotPair() {
-    let item = DeviceListItem.merge(nearby: [peer("Old Mac", id: nil)], trusted: [], lastSeen: [:], now: now)[0]
+@Test func peerWithoutDeviceIdOrTLSUsesEndpointIdAndCannotPair() {
+    let item = DeviceListItem.merge(nearby: [peer("Old Mac", id: nil, tlsPort: nil)], trusted: [], lastSeen: [:], now: now)[0]
     #expect(item.id == "10.0.0.5:49152")
+    #expect(item.subtitle == "Needs a LinkBridge update")
     #expect(!item.canPair)
+    #expect(!item.isSendable)
+}
+
+/// Protocol 3 Macs leave the device ID out of Bonjour; pairing reads it from `GET /device`.
+@Test func unpairedV3MacWithoutDeviceIdCanPair() {
+    let discovered = peer("New Mac", id: nil)
+    let item = DeviceListItem.merge(nearby: [discovered], trusted: [], lastSeen: [:], now: now)[0]
+    #expect(item.id == DeviceListItem.itemId(for: discovered))
+    #expect(item.subtitle == "Not paired")
+    #expect(item.canPair)
     #expect(!item.isSendable)
 }
 

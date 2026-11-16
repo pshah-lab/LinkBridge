@@ -39,7 +39,7 @@ struct LinkBridgeRootView: View {
         .sheet(isPresented: $showingSettings) { SettingsView(model: model) }
         .sheet(item: $model.pairingPrompt, onDismiss: {
             // Swiping the sheet away without confirming cancels pairing.
-            if model.pairingPeerId != nil && !confirmingPairing { model.cancelPairing() }
+            if model.pairingItemId != nil && !confirmingPairing { model.cancelPairing() }
             confirmingPairing = false
         }) { prompt in
             PairingSheet(prompt: prompt,

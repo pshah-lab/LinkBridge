@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Network
+import LinkBridgePresentation
 @testable import LinkBridgeCore
 
 // Checks for LinkBridgeCore. Run with `swift run LinkBridgeCoreChecks`.
@@ -702,6 +703,39 @@ DispatchQueue.global().async {
         let v3again = pairAsPhone(port: port, id: v3.deviceId, pairingVersion: 3)
         check(v3again.finalizeStatus == 200 && v3again.phoneSecret != v3.phoneSecret, "v3 re-pairing rotates the secret")
         check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3again.phoneSecret, "Mac keeps only the new secret")
+    }
+
+    section("Pairing: an unpaired v3 Mac (no device ID in Bonjour) pairs via /device") {
+        // What PeerBrowser reports for a protocol 3 Mac the phone has never paired with.
+        let discovered = ResolvedPeer(deviceName: "Check Mac", deviceId: nil, platform: "macos",
+                                      host: "127.0.0.1", port: port, tlsPort: server.securePort)
+        let row = DeviceListItem.merge(nearby: [discovered], trusted: [], lastSeen: [:], now: Date())[0]
+        check(row.canPair, "row offers Pair")
+        guard let target = [discovered].first(where: { DeviceListItem.itemId(for: $0) == row.id }) else {
+            check(false, "row maps back to the discovered peer"); return
+        }
+        // PairingClient runs as this machine's identity, so the Mac is both sides here;
+        // what matters is that the responder ID comes from /device, not discovery.
+        let macId = IdentityStore().loadOrCreate().deviceId
+        let client = PairingClient(endpoint: target.endpoint)
+        let done = DispatchSemaphore(value: 0)
+        var phoneCode: String?
+        var paired: TrustedPeer?
+        var failure: Error?
+        Task {
+            do {
+                phoneCode = try await client.begin().code
+                paired = try await client.finish()
+            } catch { failure = error }
+            done.signal()
+        }
+        check(done.wait(timeout: .now() + 30) == .success, "pairing finished in time")
+        check(failure == nil, "pairing succeeded, got \(String(describing: failure))")
+        check(phoneCode == macCode, "phone and Mac show the same code")
+        check(paired?.deviceId == macId, "responder ID taken from /device")
+        check(paired?.authToken != nil && TrustedPeerStore().find(deviceId: macId)?.authToken == paired?.authToken,
+              "both sides hold the same secret")
+        TrustedPeerStore().remove(deviceId: macId)
     }
 
     section("Pairing: decline path") {

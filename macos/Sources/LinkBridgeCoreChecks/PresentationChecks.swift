@@ -75,8 +75,13 @@ func runPresentationChecks() {
         let noTLS = DeviceListItem.merge(nearby: [peer("Mac", id: id, tlsPort: nil)], trusted: [trusted("Mac", id: id)],
                                          lastSeen: [:], now: fixedNow)[0]
         check(noTLS.subtitle == "Paired · needs a LinkBridge update" && !noTLS.isSendable, "paired without TLS needs update")
-        let old = DeviceListItem.merge(nearby: [peer("Old Mac", id: nil)], trusted: [], lastSeen: [:], now: fixedNow)[0]
-        check(old.id == "10.0.0.5:49152" && !old.canPair && !old.isSendable, "no device id uses endpoint id")
+        let old = DeviceListItem.merge(nearby: [peer("Old Mac", id: nil, tlsPort: nil)], trusted: [], lastSeen: [:], now: fixedNow)[0]
+        check(old.id == "10.0.0.5:49152" && !old.canPair && !old.isSendable
+              && old.subtitle == "Needs a LinkBridge update", "no device id or TLS port: needs an update")
+        // Protocol 3 Macs leave the device ID out of Bonjour; pairing reads it from /device.
+        let v3 = DeviceListItem.merge(nearby: [peer("New Mac", id: nil)], trusted: [], lastSeen: [:], now: fixedNow)[0]
+        check(v3.id == "10.0.0.5:49152" && v3.canPair && !v3.isSendable && v3.subtitle == "Not paired",
+              "unpaired v3 Mac without a device id can pair")
         let unpaired = DeviceListItem.merge(nearby: [peer("Mac")], trusted: [], lastSeen: [:], now: fixedNow)[0]
         check(unpaired.subtitle == "Not paired" && unpaired.canPair && unpaired.platform == .mac, "unpaired Mac can pair")
         let android = DeviceListItem.merge(nearby: [peer("Phone", platform: "android")], trusted: [],
