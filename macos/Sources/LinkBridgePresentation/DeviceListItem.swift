@@ -48,6 +48,12 @@ public struct DeviceListItem: Identifiable, Equatable {
         self.subtitle = subtitle
     }
 
+    /// The list row id for a nearby peer. Unpaired protocol-3 Macs advertise no device ID,
+    /// so they are keyed by their plain endpoint.
+    public static func itemId(for peer: ResolvedPeer) -> String {
+        peer.deviceId?.uuidString ?? peer.endpoint
+    }
+
     /// Nearby paired devices first, then nearby unpaired, then paired devices that are away;
     /// names sorted A→Z within each group.
     public static func merge(nearby: [ResolvedPeer], trusted: [TrustedPeer],
@@ -58,18 +64,20 @@ public struct DeviceListItem: Identifiable, Equatable {
         let nearbyItems = nearby.map { peer -> DeviceListItem in
             let platform = DevicePlatform(peer.platform)
             let paired = peer.deviceId.map(trustedIds.contains) ?? false
-            let canPair = !paired && platform == .mac && peer.deviceId != nil
+            // Since protocol 3 a Mac's TXT record has no device ID; the pairing client reads it
+            // from `GET /device`. A Mac with neither a device ID nor a TLS port is too old to pair.
+            let canPair = !paired && platform == .mac && (peer.deviceId != nil || peer.tlsPort != nil)
             let subtitle: String
             if paired {
                 subtitle = peer.secureEndpoint == nil ? "Paired · needs a LinkBridge update" : "Paired · Nearby"
             } else if canPair {
                 subtitle = "Not paired"
-            } else if peer.deviceId == nil {
+            } else if peer.deviceId == nil && peer.tlsPort == nil {
                 subtitle = "Needs a LinkBridge update"
             } else {
                 subtitle = "Pair from the \(platform == .android ? "Android" : "other") app (coming soon)"
             }
-            return DeviceListItem(id: peer.deviceId?.uuidString ?? peer.endpoint, deviceId: peer.deviceId,
+            return DeviceListItem(id: itemId(for: peer), deviceId: peer.deviceId,
                                   name: peer.deviceName, platform: platform, isPaired: paired, isNearby: true,
                                   isSendable: paired && peer.secureEndpoint != nil, canPair: canPair,
                                   subtitle: subtitle)
