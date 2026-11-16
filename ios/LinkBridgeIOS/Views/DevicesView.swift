@@ -56,12 +56,12 @@ struct DevicesView: View {
     @ViewBuilder
     private func trailing(_ item: DeviceListItem, selected: Bool) -> some View {
         if item.canPair {
-            if model.pairingPeerId == item.deviceId {
+            if model.pairingItemId == item.id {
                 ProgressView()
             } else {
                 Button("Pair") { pair(item) }
                     .buttonStyle(.glass)
-                    .disabled(model.pairingPeerId != nil)
+                    .disabled(model.pairingItemId != nil)
             }
         } else if selected {
             Image(systemName: "checkmark.circle.fill")
@@ -72,7 +72,7 @@ struct DevicesView: View {
     }
 
     private func pair(_ item: DeviceListItem) {
-        guard let peer = model.nearby.first(where: { $0.deviceId != nil && $0.deviceId == item.deviceId }) else { return }
+        guard let peer = model.nearby.first(where: { DeviceListItem.itemId(for: $0) == item.id }) else { return }
         model.pair(with: peer)
     }
 }
