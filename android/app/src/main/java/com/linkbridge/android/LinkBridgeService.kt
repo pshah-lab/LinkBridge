@@ -226,17 +226,27 @@ class LinkBridgeService : Service() {
         )
     }
 
-    /** The IPv4 addresses of every Wi-Fi network this phone is joined to; empty if none or unknown. */
+    /** The IPv4 addresses of every Wi-Fi network this phone is joined to; empty if none, null if unknown. */
     @Suppress("DEPRECATION") // allNetworks: the station Wi-Fi need not be the default network.
-    private fun stationWifiAddresses(): List<Inet4Address> = runCatching {
+    private fun stationWifiAddresses(): List<Inet4Address>? = runCatching {
         val manager = getSystemService(ConnectivityManager::class.java)
         manager.allNetworks.asSequence()
-            .filter { manager.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+            .filter { isStationWifi(manager.getNetworkCapabilities(it)) }
             .flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty().asSequence() }
             .map { it.address }
             .filterIsInstance<Inet4Address>()
             .toList()
-    }.getOrDefault(emptyList()) // unknown: findHotspotAddress then ignores the bare wlan prefix
+    }.getOrNull() // unknown: findHotspotAddress then ignores the bare wlan prefix
+
+    /**
+     * A Wi-Fi network this phone joined. From Android 15 the phone's own local-only hotspot is listed
+     * as a Wi-Fi network too, marked LOCAL_NETWORK; counting it would hide the hotspot's own address.
+     */
+    private fun isStationWifi(caps: NetworkCapabilities?): Boolean {
+        if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return false
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM ||
+            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK)
+    }
 
     fun rescan() {
         main.post {

@@ -64,8 +64,15 @@ class HotspotAddressTest {
     fun unknownStationNeverFallsBackToBareWlan() {
         // Only the station interface is present: without a station address it must not be mistaken for the AP.
         val interfaces = listOf(nic("wlan0", "192.168.1.20"))
-        assertNull(findHotspotAddress(interfaces, emptyList()))
-        assertEquals(ip("192.168.43.1"), findHotspotAddress(interfaces + nic("swlan0", "192.168.43.1"), emptyList()))
+        assertNull(findHotspotAddress(interfaces, null))
+        assertEquals(ip("192.168.43.1"), findHotspotAddress(interfaces + nic("swlan0", "192.168.43.1"), null))
+    }
+
+    @Test
+    fun notJoinedToWifiUsesBareWlanHotspot() {
+        // Seen on a OnePlus with Wi-Fi off: the local-only hotspot runs on wlan1 and there is no station.
+        val interfaces = listOf(nic("rmnet_data5", "192.0.0.2"), nic("tun0", "10.0.0.2"), nic("wlan1", "10.125.50.67"))
+        assertEquals(ip("10.125.50.67"), findHotspotAddress(interfaces, emptyList()))
     }
 
     @Test

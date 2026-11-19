@@ -24,20 +24,21 @@ private const val BARE_STATION_PREFIX = "wlan"
  * a station Wi-Fi address, on an interface whose name starts with one of [prefixes]. With several
  * candidates, the earliest prefix wins.
  *
- * [stationAddresses] empty means the station address is unknown (not joined, or the lookup failed).
- * Then the bare "wlan" prefix is ignored, because it would match the station LAN address and the
- * receiver would listen on the wrong network; only the specific prefixes can qualify.
+ * [stationAddresses] empty means the phone is joined to no Wi-Fi, so any "wlan" interface is the AP.
+ * null means the lookup failed: then the bare "wlan" prefix is ignored, because it could match the
+ * station LAN address and the receiver would listen on the wrong network; only the specific
+ * prefixes can qualify.
  */
 fun findHotspotAddress(
     interfaces: List<NetInterfaceInfo>,
-    stationAddresses: Collection<Inet4Address>,
+    stationAddresses: Collection<Inet4Address>?,
     prefixes: List<String> = DEFAULT_HOTSPOT_INTERFACE_PREFIXES,
 ): Inet4Address? {
-    val usable = if (stationAddresses.isEmpty()) prefixes.filter { it != BARE_STATION_PREFIX } else prefixes
+    val usable = if (stationAddresses == null) prefixes.filter { it != BARE_STATION_PREFIX } else prefixes
     for (prefix in usable) {
         for (candidate in interfaces) {
             if (!candidate.isUp || candidate.isLoopback || !candidate.name.startsWith(prefix)) continue
-            candidate.ipv4s.firstOrNull { it.isSiteLocalAddress && it !in stationAddresses }?.let { return it }
+            candidate.ipv4s.firstOrNull { it.isSiteLocalAddress && it !in stationAddresses.orEmpty() }?.let { return it }
         }
     }
     return null

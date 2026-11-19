@@ -19,7 +19,7 @@ class HotspotBinding(
     private val abortSends: () -> Unit,
     private val interfaces: () -> List<NetInterfaceInfo>,
     /** Every station Wi-Fi address; empty when none or the lookup failed. */
-    private val stationAddresses: () -> Collection<Inet4Address>,
+    private val stationAddresses: () -> Collection<Inet4Address>?,
     private val schedule: (delayMs: Long, block: () -> Unit) -> Cancelable,
     private val prefixes: List<String> = DEFAULT_HOTSPOT_INTERFACE_PREFIXES,
     /** The hotspot address once known while Active; null in every other state. */
