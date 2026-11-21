@@ -3,6 +3,7 @@ package com.linkbridge.android
 import android.content.Context
 import android.net.Uri
 import com.linkbridge.android.LinkBridgeHub.SendState
+import com.linkbridge.android.offline.HotspotState
 import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
 import kotlinx.coroutines.flow.SharedFlow
@@ -23,6 +24,16 @@ interface HubPort {
     fun rescan()
     fun startService()
     fun stopService()
+
+    /** The offline hotspot's state, and where its hello endpoint listens once known. */
+    val hotspotState: StateFlow<HotspotState>
+    val offlineEndpoint: StateFlow<OfflineEndpoint?>
+    fun startHotspot()
+    fun stopHotspot()
+    /** When the hotspot will stop for being idle (epoch ms); null while busy or off. */
+    val hotspotIdleDeadline: StateFlow<Long?>
+    /** Pairing is in progress, which keeps the hotspot from timing out; the service handles transfers. */
+    fun setPairingBusy(busy: Boolean)
 }
 
 /** Identity, trusted peers and history. Blocking; call off the main thread. */
@@ -55,6 +66,16 @@ class LinkBridgeHubPort(private val context: Context) : HubPort {
     override fun rescan() = LinkBridgeHub.rescan()
     override fun startService() = LinkBridgeHub.startService(context)
     override fun stopService() = LinkBridgeHub.stopService(context)
+
+    override val hotspotState get() = LinkBridgeHub.hotspot(context).state
+    override val offlineEndpoint get() = LinkBridgeHub.offlineEndpoint
+    override fun startHotspot() {
+        LinkBridgeService.start(context) // the service binds the receiver and runs the hello server
+        LinkBridgeHub.hotspot(context).start()
+    }
+    override fun stopHotspot() = LinkBridgeHub.hotspot(context).stop()
+    override val hotspotIdleDeadline get() = LinkBridgeHub.hotspot(context).idleDeadline
+    override fun setPairingBusy(busy: Boolean) { LinkBridgeHub.pairingInProgress.value = busy }
 }
 
 class AppStores(context: Context) : Stores {

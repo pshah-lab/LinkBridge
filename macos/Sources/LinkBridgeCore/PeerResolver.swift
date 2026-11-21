@@ -9,14 +9,27 @@ public struct ResolvedPeer {
     public let port: UInt16
     /// TLS-PSK port for transfers (protocol 2). Nil means the peer runs an older app.
     public let tlsPort: UInt16?
+    /// The Bonjour `.service` endpoint this peer was browsed as. When set, transfers and pairing
+    /// resolve it (`DirectRoute`) so they also work over peer-to-peer Wi-Fi. Nil for peers
+    /// learned another way (hello, QR code), which use `host` directly.
+    public let service: NWEndpoint?
+    /// True when the peer was last reached over Apple peer-to-peer Wi-Fi (AWDL), not a network.
+    public let isDirect: Bool
+    /// The advertiser's per-launch `rid`, when known. Ties one device's Bonjour and hello
+    /// sightings together when neither has a deviceId (not paired).
+    public let rid: String?
 
-    public init(deviceName: String, deviceId: UUID?, platform: String?, host: String, port: UInt16, tlsPort: UInt16?) {
+    public init(deviceName: String, deviceId: UUID?, platform: String?, host: String, port: UInt16, tlsPort: UInt16?,
+                service: NWEndpoint? = nil, isDirect: Bool = false, rid: String? = nil) {
         self.deviceName = deviceName
         self.deviceId = deviceId
         self.platform = platform
         self.host = host
         self.port = port
         self.tlsPort = tlsPort
+        self.service = service
+        self.isDirect = isDirect
+        self.rid = rid
     }
 
     public var endpoint: String {

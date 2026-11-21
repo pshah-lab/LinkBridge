@@ -35,4 +35,16 @@ class DiscoveryTagsTest {
         assertEquals(DiscoveryTags.MAX_TAGS, tags.split(',').size)
         assertTrue(("tags=$tags").toByteArray().size <= 255)
     }
+
+    @Test
+    fun localRecordKeepsItsRidAfterPairingAndCarriesTheNewTag() {
+        // The service keeps one rid for its lifetime; a rescan after pairing rebuilds the record.
+        val identity = DeviceIdentity(deviceId = "phone", deviceName = "Pixel")
+        val rid = DiscoveryTags.randomRid()
+        val before = localDiscoveryRecord(identity, rid, 49152, emptyList())
+        val after = localDiscoveryRecord(identity, rid, 49152, listOf(peer("mine", secret)))
+        assertEquals(before.rid, after.rid)
+        assertEquals("", before.tags)
+        assertEquals("mine", DiscoveryTags.match(after.rid, after.tags, listOf(peer("mine", secret))))
+    }
 }

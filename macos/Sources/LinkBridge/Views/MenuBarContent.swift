@@ -21,6 +21,8 @@ struct MenuBarContent: View {
                     }
                 }
 
+                if model.offlineCardVisible { OfflineJoinCard() }
+
                 ForEach(model.approvals.queue.notices) { notice in
                     Text(notice.title)
                         .font(.callout)

@@ -205,4 +205,47 @@ class MainViewModelPairingTest {
         assertNull(vm.state.value.pairing)
         assertTrue(pairing.calls.isEmpty())
     }
+
+    @Test
+    fun pairsWithIosPeer() = runTest(dispatcher) {
+        val iphone = unpairedMac.copy(serviceName = "LinkBridge-Phone", deviceName = "Phone", platform = "ios")
+        hub.peers.value = listOf(iphone)
+        pairing.device = Result.success(macIdentity.copy(deviceName = "Phone", platform = "ios"))
+        val vm = viewModel()
+
+        vm.pair(iphone.serviceName)
+        settle()
+
+        assertEquals(PairingStep.Code("Phone", "123 456"), vm.state.value.pairing)
+        assertEquals(listOf("fetch:LinkBridge-Phone", "begin:$MAC_ID"), pairing.calls)
+    }
+
+    @Test
+    fun unreachableIosPeerSaysOpenApp() = runTest(dispatcher) {
+        val iphone = unpairedMac.copy(serviceName = "LinkBridge-Phone", deviceName = "Phone", platform = "ios")
+        hub.peers.value = listOf(iphone)
+        pairing.device = Result.failure(java.net.ConnectException("Connection refused"))
+        val vm = viewModel()
+
+        vm.pair(iphone.serviceName)
+        settle()
+        assertEquals("Open LinkBridge on the iPhone", (vm.state.value.pairing as PairingStep.Failed).message)
+
+        pairing.device = Result.failure(java.net.SocketTimeoutException("timeout"))
+        vm.dismissPairing()
+        vm.pair(iphone.serviceName)
+        settle()
+        assertEquals("Open LinkBridge on the iPhone", (vm.state.value.pairing as PairingStep.Failed).message)
+    }
+
+    @Test
+    fun unreachableMacKeepsItsOwnMessage() = runTest(dispatcher) {
+        pairing.device = Result.failure(java.net.ConnectException("Connection refused"))
+        val vm = viewModel()
+
+        vm.pair(unpairedMac.serviceName)
+        settle()
+
+        assertEquals("Connection refused", (vm.state.value.pairing as PairingStep.Failed).message)
+    }
 }

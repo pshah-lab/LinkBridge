@@ -46,11 +46,11 @@ fun fabAction(phase: SendPhase): FabAction = when (phase) {
 fun sendTarget(devices: List<DeviceListItem>, selectedId: String?): DeviceListItem? =
     devices.firstOrNull { it.id == selectedId && it.isSendable }
 
-/** Send shows its screen (not the "Pair a Mac" empty state) with a target or while a send runs. */
+/** Send shows its screen (not the "Pair a Mac or iPhone" empty state) with a target or while a send runs. */
 fun showsSendScreen(target: DeviceListItem?, phase: SendPhase): Boolean =
     target != null || phase is SendPhase.Sending
 
-const val NO_TARGET_TEXT = "Pair a Mac to send files"
+const val NO_TARGET_TEXT = "Pair a Mac or iPhone to send files"
 const val NO_TARGET_ACTION = "Go to Devices"
 
 /** The pick zone's label: "Sending…" while a send runs, else who the file goes to. */

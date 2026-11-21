@@ -46,10 +46,22 @@ struct LinkBridgeRootView: View {
                          onConfirm: { confirmingPairing = true; model.confirmPairing() },
                          onCancel: { model.cancelPairing() })
         }
+        .modifier(IncomingApprovalPresenter(host: model.receiveHost))
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { model.startDiscovery() } else if phase == .background { model.stopDiscovery() }
+            if phase == .active {
+                model.startDiscovery()
+                model.receiveHost.sceneBecameActive()
+                // Back from the background: the Android may have dropped this iPhone's hello.
+                Task { await model.offlineJoin.refreshHelloPeer() }
+            } else if phase == .background {
+                model.stopDiscovery()
+                model.receiveHost.sceneLeftForeground()
+            }
         }
-        .onAppear { model.startDiscovery() }
+        .onAppear {
+            model.startDiscovery()
+            model.receiveHost.sceneBecameActive()
+        }
     }
 
     /// Shared frame for each tab: tinted backdrop, connection rail on top, Settings button.

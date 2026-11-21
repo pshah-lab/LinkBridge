@@ -66,10 +66,20 @@ public final class ControlServer {
     /// Same contract for incoming files.
     public typealias TransferDecision = (IncomingTransferRequest, @escaping (Bool) -> Void) -> Void
 
+    /// Where received files go by default: ~/Downloads/LinkBridge.
+    public static var defaultReceiveDirectory: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LinkBridge", isDirectory: true)
+    }
+
+    /// Folder that received files (and their partial files) are written to.
+    private let receiveDirectory: URL
+
     public init(
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
         preferredSecurePort: UInt16 = 49162,
+        receiveDirectory: URL = ControlServer.defaultReceiveDirectory,
         pairDecision: @escaping PairDecision,
         transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void = { _, _ in },
@@ -79,6 +89,7 @@ public final class ControlServer {
         self.identity = identity
         self.preferredPort = preferredPort
         self.preferredSecurePort = preferredSecurePort
+        self.receiveDirectory = receiveDirectory
         self.port = preferredPort
         self.securePort = preferredSecurePort
         self.pairDecision = pairDecision
@@ -93,12 +104,14 @@ public final class ControlServer {
         identity: DeviceIdentity,
         preferredPort: UInt16 = 49152,
         preferredSecurePort: UInt16 = 49162,
+        receiveDirectory: URL = ControlServer.defaultReceiveDirectory,
         pairApproval: @escaping (IncomingPairRequest) -> Bool = { _ in false },
         transferApproval: @escaping (IncomingTransferRequest) -> Bool = { _ in true },
         transferProgress: @escaping (Int64, Int64) -> Void = { _, _ in },
         transferCompleted: @escaping (IncomingTransferRequest) -> Void = { _ in }
     ) {
         self.init(identity: identity, preferredPort: preferredPort, preferredSecurePort: preferredSecurePort,
+                  receiveDirectory: receiveDirectory,
                   pairDecision: { request, done in done(pairApproval(request)) },
                   transferDecision: { request, done in done(transferApproval(request)) },
                   transferProgress: transferProgress,
@@ -109,18 +122,25 @@ public final class ControlServer {
     /// free port if taken, and advertises `_linkbridge._tcp` with both ports.
     /// `onReady` runs on the main queue with the plain port, or nil on failure.
     public func start(onReady: @escaping (UInt16?) -> Void = { _ in }) {
-        Self.removeLeftoverPartialFiles()
+        Self.removeLeftoverPartialFiles(in: receiveDirectory)
         startSecure(on: NWEndpoint.Port(rawValue: preferredSecurePort) ?? .any) { [weak self] securePort in
             guard let self, securePort != nil else { onReady(nil); return }
             self.startPlain(on: NWEndpoint.Port(rawValue: self.preferredPort) ?? .any, onReady: onReady)
         }
     }
 
+    /// Stops listening and drops open connections, so an upload in progress ends at once and
+    /// its partial file is deleted. Main queue.
     public func stop() {
         listener?.cancel()
         listener = nil
         secureListener?.cancel()
         secureListener = nil
+        plainLimiter.cancelAll()
+        secureLimiter.cancelAll()
+        // A cancelled upload also deletes its own file when its read fails; this makes sure
+        // nothing is left the moment stop returns.
+        Self.removeLeftoverPartialFiles(in: receiveDirectory)
     }
 
     /// TLS-PSK options are fixed when a listener starts, so restart the secure listener to
@@ -140,10 +160,15 @@ public final class ControlServer {
         updateAdvertisement()
     }
 
+    /// Plain listener parameters: TCP, reachable over peer-to-peer (AWDL) as well as the LAN.
+    static func plainParameters() -> NWParameters {
+        DirectRoute.tcpParameters()
+    }
+
     private func startPlain(on requestedPort: NWEndpoint.Port, onReady: @escaping (UInt16?) -> Void) {
         let listener: NWListener
         do {
-            listener = try NWListener(using: .tcp, on: requestedPort)
+            listener = try NWListener(using: Self.plainParameters(), on: requestedPort)
         } catch {
             print("Control server: could not create listener: \(error)")
             onReady(nil)
@@ -200,11 +225,12 @@ public final class ControlServer {
         }
         self.secureListener = listener
 
-        listener.newConnectionHandler = { [transferDecision, transferProgress, transferReceived, transferWithdrawn, secureLimiter] connection in
+        listener.newConnectionHandler = { [receiveDirectory, transferDecision, transferProgress, transferReceived, transferWithdrawn, secureLimiter] connection in
             guard secureLimiter.admit(connection) else { return }
             connection.start(queue: .main)
             Self.handleSecure(
                 connection: connection,
+                receiveDirectory: receiveDirectory,
                 transferDecision: transferDecision,
                 transferProgress: transferProgress,
                 transferReceived: transferReceived,
@@ -243,23 +269,32 @@ public final class ControlServer {
     public static let discoveryRid = DiscoveryTags.randomRid()
 
     private func advertisedService() -> NWListener.Service {
-        var txt = NWTXTRecord()
+        NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil,
+                           txtRecord: currentDiscoveryRecord().txtRecord)
+    }
+
+    /// This server's record with the ports it listens on now: what it advertises over Bonjour
+    /// and what its app sends in an offline hello.
+    public func currentDiscoveryRecord() -> DiscoveryRecord {
+        let secrets = trustedPeerStore.load().sorted { $0.pairedAt > $1.pairedAt }.compactMap(\.authToken)
+        return Self.discoveryRecord(identity: identity, secrets: secrets, port: port, tlsPort: securePort)
+    }
+
+    /// What this server tells peers about itself: the source of both the Bonjour TXT record and
+    /// the offline hello. `secrets` are the pairing secrets of trusted peers, newest first.
+    static func discoveryRecord(identity: DeviceIdentity, secrets: [String], port: UInt16, tlsPort: UInt16?,
+                                rid: String = ControlServer.discoveryRid) -> DiscoveryRecord {
         // No deviceId: a stable ID would let anyone on any network recognize this Mac.
         // Paired devices recognize it by their tag instead.
-        txt["rid"] = Self.discoveryRid
-        let secrets = trustedPeerStore.load().sorted { $0.pairedAt > $1.pairedAt }.compactMap(\.authToken)
-        txt["tags"] = DiscoveryTags.tags(secrets: secrets, rid: Self.discoveryRid)
-        txt["deviceName"] = identity.deviceName
-        txt["platform"] = identity.platform
-        txt["protocol"] = String(Self.protocolVersion)
-        txt["tlsPort"] = String(securePort)
-        txt["features"] = identity.features.joined(separator: ",")
-        return NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil, txtRecord: txt)
+        DiscoveryRecord(rid: rid, tags: DiscoveryTags.tags(secrets: secrets, rid: rid), deviceName: identity.deviceName,
+                        platform: identity.platform, protocolVersion: protocolVersion, port: port, tlsPort: tlsPort,
+                        features: identity.features.joined(separator: ","))
     }
 
     /// TLS-PSK connections from paired devices: transfers only.
     private static func handleSecure(
         connection: NWConnection,
+        receiveDirectory: URL,
         transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void,
         transferReceived: @escaping (IncomingTransferRequest, URL) -> Void,
@@ -277,6 +312,7 @@ public final class ControlServer {
                 handleUpload(
                     connection: connection,
                     head: head,
+                    receiveDirectory: receiveDirectory,
                     transferDecision: transferDecision,
                     transferProgress: transferProgress,
                     transferReceived: transferReceived,
@@ -607,6 +643,7 @@ public final class ControlServer {
     private static func handleUpload(
         connection: NWConnection,
         head: HTTPRequestHead,
+        receiveDirectory: URL,
         transferDecision: @escaping TransferDecision,
         transferProgress: @escaping (Int64, Int64) -> Void,
         transferReceived: @escaping (IncomingTransferRequest, URL) -> Void,
@@ -678,8 +715,7 @@ public final class ControlServer {
         }
 
         do {
-            let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
+            let directory = receiveDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
             let decryptor = try ChunkedDecryptor(secret: authToken, scheme: encryption, transferId: transferUUID)
@@ -1011,9 +1047,7 @@ public final class ControlServer {
     }
 
     /// Deletes partial files left by a crash, quit or power loss during a transfer.
-    static func removeLeftoverPartialFiles() {
-        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        let directory = downloads.appendingPathComponent("LinkBridge", isDirectory: true)
+    static func removeLeftoverPartialFiles(in directory: URL) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         for name in names where name.hasPrefix(partialFilePrefix) && name.hasSuffix(partialFileSuffix) {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
@@ -1058,7 +1092,7 @@ private final class Deadline {
 /// Called on the listener's queue (main), like all request handling.
 final class ConnectionLimiter {
     private let total: () -> Int
-    private var open: [ObjectIdentifier: String] = [:]
+    private var open: [ObjectIdentifier: (source: String, connection: NWConnection)] = [:]
 
     init(total: @escaping () -> Int) {
         self.total = total
@@ -1069,13 +1103,13 @@ final class ConnectionLimiter {
     /// Admits the connection and tracks it until it ends, or cancels it and returns false.
     func admit(_ connection: NWConnection) -> Bool {
         let source = ControlServer.sourceHost(of: connection)
-        let fromSource = open.values.filter { $0 == source }.count
+        let fromSource = open.values.filter { $0.source == source }.count
         guard open.count < total(), fromSource < ControlServer.maxConnectionsPerSource else {
             connection.cancel()
             return false
         }
         let key = ObjectIdentifier(connection)
-        open[key] = source
+        open[key] = (source, connection)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .cancelled:
@@ -1088,6 +1122,11 @@ final class ConnectionLimiter {
             }
         }
         return true
+    }
+
+    /// Cancels every open connection; each leaves the count when its cancel completes.
+    func cancelAll() {
+        open.values.forEach { $0.connection.cancel() }
     }
 }
 
@@ -1284,6 +1323,18 @@ public struct IncomingPairRequest {
     public let expiresAt: Date
     /// IP address the request came from, shown so the user can spot an unexpected one.
     public let sourceAddress: String
+
+    public init(id: UUID, deviceName: String, deviceId: UUID, platform: String, code: String,
+                replacesExisting: Bool, expiresAt: Date, sourceAddress: String) {
+        self.id = id
+        self.deviceName = deviceName
+        self.deviceId = deviceId
+        self.platform = platform
+        self.code = code
+        self.replacesExisting = replacesExisting
+        self.expiresAt = expiresAt
+        self.sourceAddress = sourceAddress
+    }
 }
 
 public struct IncomingTransferRequest {
@@ -1293,4 +1344,12 @@ public struct IncomingTransferRequest {
     public let senderId: UUID
     public let fileName: String
     public let bytes: Int
+
+    public init(id: UUID, senderName: String, senderId: UUID, fileName: String, bytes: Int) {
+        self.id = id
+        self.senderName = senderName
+        self.senderId = senderId
+        self.fileName = fileName
+        self.bytes = bytes
+    }
 }

@@ -21,7 +21,27 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import com.linkbridge.android.offline.Cancelable
+import com.linkbridge.android.offline.HelloPeerTable
+import com.linkbridge.android.offline.HotspotBinding
+import com.linkbridge.android.offline.HotspotBusyDriver
+import com.linkbridge.android.offline.OFFLINE_HELLO_PORT
+import com.linkbridge.android.offline.OfflineHelloServer
+import com.linkbridge.android.offline.OfflineHotspot
+import com.linkbridge.android.offline.mergePeers
+import com.linkbridge.android.offline.toPeer
+import com.linkbridge.android.offline.currentNetInterfaces
 import com.linkbridge.android.presentation.ReceiveState
+import com.linkbridge.android.presentation.peerFailureMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import java.net.Inet4Address
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -43,8 +63,40 @@ class LinkBridgeService : Service() {
 
     private lateinit var identity: DeviceIdentity
     private lateinit var discovery: DiscoveryService
+    /**
+     * One rid for this service's lifetime, like the Mac's per-launch rid. A rescan after pairing
+     * re-registers with fresh tags but the same rid, so a QR shown earlier still names this phone.
+     */
+    private val discoveryRid = DiscoveryTags.randomRid()
+    private var hotspotAddress: Inet4Address? = null
     private lateinit var receiveServer: ReceiveServer
+    private var helloServer: OfflineHelloServer? = null
+    private var bonjourPeers: List<DiscoveredPeer> = emptyList()
+    private val helloPeers = HelloPeerTable(clock = System::currentTimeMillis)
+    private val purgeHelloPeers = Runnable { publishMergedPeers() }
     private var isForeground = false
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var hotspotObserver: Job? = null
+    private var attachedHotspot: OfflineHotspot? = null
+    private var busyDriver: HotspotBusyDriver? = null
+    private val hotspotBinding by lazy {
+        HotspotBinding(
+            setAcceptFilter = { filter -> receiveServer.acceptFilter = filter },
+            abortReceives = { receiveServer.abortActive() },
+            abortSends = { controlClient.abortUploads() },
+            interfaces = ::currentNetInterfaces,
+            stationAddresses = ::stationWifiAddresses,
+            onAddress = ::onHotspotAddress,
+            onAddressNotFound = {
+                attachedHotspot?.fail(com.linkbridge.android.offline.HotspotFailure.NO_ADDRESS)
+            },
+            schedule = { delayMs, block ->
+                val task = Runnable(block)
+                main.postDelayed(task, delayMs)
+                Cancelable { main.removeCallbacks(task) }
+            },
+        )
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -65,6 +117,7 @@ class LinkBridgeService : Service() {
             onApprovalRequested = ::requestApproval
         ).also { it.start() }
         LinkBridgeHub.service = this
+        LinkBridgeHub.hotspotOrNull?.let(::attachHotspot)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -92,11 +145,18 @@ class LinkBridgeService : Service() {
 
     override fun onDestroy() {
         stopped = true
+        scope.cancel()
         // Decline while the hub still points here, so each request's notification is cancelled.
         center.declineAll()
         if (LinkBridgeHub.service === this) LinkBridgeHub.service = null
+        // The hotspot lives only as long as the service that serves it.
+        LinkBridgeHub.hotspotOrNull?.stop()
+        attachHotspot(null)
+        LinkBridgeHub.publishOfflineEndpoint(null)
         runCatching { discovery.stop() }
         runCatching { receiveServer.stop() }
+        helloServer?.stop()
+        helloServer = null
         // The send in flight keeps running (its socket I/O isn't interruptible) and reports its
         // real outcome when it ends, so it isn't marked failed here. Queued sends never start:
         // report each one, so the share sheet's tally can complete.
@@ -139,10 +199,61 @@ class LinkBridgeService : Service() {
         if (!stopped) LinkBridgeHub.publishReceiveState(update.state)
     }
 
+    /**
+     * Binds the receiver and sends to [hotspot]'s lifecycle (null detaches). The hotspot's UI owner
+     * creates it; call on the main thread.
+     */
+    fun attachHotspot(hotspot: OfflineHotspot?) {
+        hotspotObserver?.cancel()
+        hotspotObserver = null
+        busyDriver?.stop()
+        busyDriver = null
+        attachedHotspot = hotspot
+        if (hotspot == null) {
+            hotspotBinding.onState(com.linkbridge.android.offline.HotspotState.Idle)
+            return
+        }
+        hotspotObserver = scope.launch { hotspot.state.collect(hotspotBinding::onState) }
+        // Transfers are the service's, so it (not any screen) pauses the idle timer.
+        busyDriver = HotspotBusyDriver(
+            scope = scope,
+            receive = LinkBridgeHub.receiveState,
+            send = LinkBridgeHub.sendState,
+            approvals = LinkBridgeHub.pendingApprovals,
+            pairing = LinkBridgeHub.pairingInProgress,
+            hotspot = hotspot.state,
+            setBusy = hotspot::setBusy,
+        )
+    }
+
+    /** The IPv4 addresses of every Wi-Fi network this phone is joined to; empty if none, null if unknown. */
+    @Suppress("DEPRECATION") // allNetworks: the station Wi-Fi need not be the default network.
+    private fun stationWifiAddresses(): List<Inet4Address>? = runCatching {
+        val manager = getSystemService(ConnectivityManager::class.java)
+        manager.allNetworks.asSequence()
+            .filter { isStationWifi(manager.getNetworkCapabilities(it)) }
+            .flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty().asSequence() }
+            .map { it.address }
+            .filterIsInstance<Inet4Address>()
+            .toList()
+    }.getOrNull() // unknown: findHotspotAddress then ignores the bare wlan prefix
+
+    /**
+     * A Wi-Fi network this phone joined. From Android 15 the phone's own local-only hotspot is listed
+     * as a Wi-Fi network too, marked LOCAL_NETWORK; counting it would hide the hotspot's own address.
+     */
+    private fun isStationWifi(caps: NetworkCapabilities?): Boolean {
+        if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return false
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM ||
+            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK)
+    }
+
     fun rescan() {
         main.post {
             runCatching { discovery.stop() }
             discovery = newDiscovery().also { it.start() }
+            // Fresh tags (after a pair or unpair) for the QR and the hello replies.
+            hotspotAddress?.let { LinkBridgeHub.publishOfflineEndpoint(OfflineEndpoint(it, discovery.localRecord())) }
         }
     }
 
@@ -171,7 +282,7 @@ class LinkBridgeService : Service() {
                     LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
                 }.onFailure { error ->
                     Log.e(TAG, "Send failed", error)
-                    val message = error.localizedMessage ?: "Unknown error"
+                    val message = peerFailureMessage(peer.platform, error)
                     LinkBridgeHub.recordHistory(
                         this,
                         TransferRecords.failedSend(
@@ -234,8 +345,48 @@ class LinkBridgeService : Service() {
         stopSelf()
     }
 
-    private fun newDiscovery() = DiscoveryService(this, identity, CONTROL_PORT) { peers ->
-        LinkBridgeHub.publishPeers(peers)
+    private fun newDiscovery() = DiscoveryService(this, identity, CONTROL_PORT, rid = discoveryRid) { peers ->
+        bonjourPeers = peers
+        publishMergedPeers()
+    }
+
+    /** Bonjour peers plus those that said hello over the hotspot, one entry per device. */
+    private fun publishMergedPeers() {
+        if (stopped) return
+        val trusted by lazy { TrustedPeerStore(this).load() }
+        LinkBridgeHub.publishPeers(
+            mergePeers(bonjourPeers, helloPeers.peers()) { rid, tags -> DiscoveryTags.match(rid, tags, trusted) }
+        )
+    }
+
+    /** Runs the hello endpoint on the hotspot address while there is one (main thread). */
+    private fun onHotspotAddress(address: Inet4Address?) {
+        helloServer?.stop()
+        helloServer = null
+        main.removeCallbacks(purgeHelloPeers)
+        helloPeers.clear()
+        publishMergedPeers()
+        hotspotAddress = address
+        LinkBridgeHub.publishOfflineEndpoint(address?.let { OfflineEndpoint(it, discovery.localRecord()) })
+        if (address == null) return
+        val server = OfflineHelloServer(
+            bindAddress = address,
+            localRecord = { discovery.localRecord() },
+            clock = System::currentTimeMillis,
+            onPeer = { record, source ->
+                val trusted = TrustedPeerStore(this).load()
+                val deviceId = DiscoveryTags.match(record.rid, record.tags, trusted)
+                main.post {
+                    if (helloServer == null) return@post
+                    helloPeers.put(record.rid, record.toPeer(source, deviceId))
+                    publishMergedPeers()
+                    main.removeCallbacks(purgeHelloPeers)
+                    main.postDelayed(purgeHelloPeers, HELLO_PEER_TTL_MS + 1_000)
+                }
+            },
+        )
+        if (server.start()) helloServer = server
+        else Log.w("LinkBridgeService", "Offline hello port ${OFFLINE_HELLO_PORT} is busy; hello disabled")
     }
 
     private fun canPostNotifications(): Boolean =
@@ -316,13 +467,14 @@ class LinkBridgeService : Service() {
         )
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_REQUESTS, "Incoming files", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Asks before saving a file sent from your Mac"
+                description = "Asks before saving a file sent from your Mac or iPhone"
             }
         )
     }
 
     companion object {
         const val CONTROL_PORT = 49153
+        private const val HELLO_PEER_TTL_MS = 5 * 60_000L
         private const val TAG = "LinkBridgeService"
         private const val READY_TEXT = "Ready to send and receive on this Wi-Fi"
         private const val STOPPED_MESSAGE = "LinkBridge stopped"

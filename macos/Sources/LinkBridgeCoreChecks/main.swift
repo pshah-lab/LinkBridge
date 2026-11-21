@@ -112,6 +112,7 @@ section("Discovery: a device seen before pairing is recognized once paired") {
                                "deviceName": Data("Phone".utf8), "platform": Data("android".utf8), "tlsPort": Data("49162".utf8)]
     browser.ingest(name: "Phone", host: "10.0.0.9", port: 49152, txt: txt)
     check(published.first?.deviceId == nil, "unknown before pairing")
+    check(published.first?.rid == rid, "the Bonjour peer keeps its rid for de-duplication")
     trusted = [phone]
     TrustedPeerStore.notifyChanged()
     check(published.first?.deviceId == nil, "the browser itself doesn't listen; the app calls refresh()")
@@ -545,9 +546,11 @@ func startDecisionServer(
     pair: @escaping (IncomingPairRequest, @escaping (Bool) -> Void) -> Void,
     transfer: @escaping (IncomingTransferRequest, @escaping (Bool) -> Void) -> Void = { _, done in done(true) },
     received: @escaping (IncomingTransferRequest, URL) -> Void = { _, _ in },
-    withdrawn: @escaping (UUID) -> Void = { _ in }
+    withdrawn: @escaping (UUID) -> Void = { _ in },
+    receiveDirectory: URL = ControlServer.defaultReceiveDirectory
 ) -> (ControlServer, UInt16) {
     let server = ControlServer(identity: IdentityStore().loadOrCreate(), preferredPort: 0, preferredSecurePort: 0,
+                               receiveDirectory: receiveDirectory,
                                pairDecision: pair, transferDecision: transfer,
                                transferReceived: received, transferWithdrawn: withdrawn)
     let ready = DispatchSemaphore(value: 0)
@@ -587,6 +590,56 @@ func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = nil) ->
     let (retry, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce.base64EncodedString()])
     let (status, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString])
     return (status, code, phoneSecret, id, retry)
+}
+
+/// A tiny plain-HTTP server for the offline hello: records each request body and answers with
+/// `reply(body)` as (status line, response body, content-length override).
+final class HelloStub {
+    let listener: NWListener
+    let queue = DispatchQueue(label: "checks.hellostub")
+    let lock = NSLock()
+    private var bodies: [Data] = []
+    private var heads: [String] = []
+    var port: UInt16 { listener.port?.rawValue ?? 0 }
+    var receivedBodies: [Data] { lock.lock(); defer { lock.unlock() }; return bodies }
+    var receivedHeads: [String] { lock.lock(); defer { lock.unlock() }; return heads }
+
+    init(reply: @escaping (Data) -> (status: String, body: Data, contentLength: Int?)) {
+        listener = try! NWListener(using: .tcp, on: .any)
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+        listener.newConnectionHandler = { [self] connection in
+            connection.start(queue: queue)
+            var buffer = Data()
+            func read() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [self] data, _, isComplete, error in
+                    if let data { buffer.append(data) }
+                    let separator = Data("\r\n\r\n".utf8)
+                    if let end = buffer.range(of: separator) {
+                        let head = String(decoding: buffer[buffer.startIndex..<end.lowerBound], as: UTF8.self)
+                        let length = head.components(separatedBy: "\r\n").compactMap { line -> Int? in
+                            line.lowercased().hasPrefix("content-length:") ? Int(line.dropFirst(15).trimmingCharacters(in: .whitespaces)) : nil
+                        }.first ?? 0
+                        if buffer.count - (end.upperBound - buffer.startIndex) >= length {
+                            let body = Data(buffer[end.upperBound..<(end.upperBound + length)])
+                            lock.lock(); bodies.append(body); heads.append(head); lock.unlock()
+                            let r = reply(body)
+                            let out = "HTTP/1.1 \(r.status)\r\nContent-Type: application/json\r\nContent-Length: \(r.contentLength ?? r.body.count)\r\nConnection: close\r\n\r\n"
+                            connection.send(content: Data(out.utf8) + r.body, contentContext: .finalMessage, isComplete: true,
+                                            completion: .contentProcessed { _ in connection.cancel() })
+                            return
+                        }
+                    }
+                    if isComplete || error != nil { connection.cancel() } else { read() }
+                }
+            }
+            read()
+        }
+        listener.start(queue: queue)
+        _ = ready.wait(timeout: .now() + 5)
+    }
+
+    func stop() { listener.cancel() }
 }
 
 DispatchQueue.global().async {
@@ -836,6 +889,162 @@ DispatchQueue.global().async {
         check(quarantine?[kLSQuarantineAgentNameKey as String] as? String == "LinkBridge", "received file is quarantined")
     }
 
+    section("receivesIntoInjectedDirectory") {
+        let identity = IdentityStore().loadOrCreate()
+        // Reuses the self-peer trusted by the section above, so later sections keep their secret.
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        check(!secret.isEmpty, "self peer is trusted")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recv-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let (injected, _) = startDecisionServer(pair: { _, done in done(false) }, receiveDirectory: tmp)
+        let reloaded = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { injected.reloadTrustedPeers { reloaded.signal() } }
+        reloaded.wait()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("injected-\(UUID().uuidString).bin")
+        let payload = Data((0..<2048).map { UInt8(truncatingIfNeeded: $0) })
+        try payload.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(injected.securePort)", secret: secret)
+        check((try? Data(contentsOf: tmp.appendingPathComponent(file.lastPathComponent))) == payload, "file landed in the injected directory")
+        let inDownloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)
+        check(!FileManager.default.fileExists(atPath: inDownloads.path), "and not in Downloads/LinkBridge")
+    }
+
+    section("testPartialFileRemovedOnStop") {
+        // The iPhone stops its server when the app leaves the foreground, mid-transfer or not.
+        let identity = IdentityStore().loadOrCreate()
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        check(!secret.isEmpty, "self peer is trusted")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("stop-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        var partsAtStop: [String] = []
+        var stopping: ControlServer?
+        let stoppable = ControlServer(
+            identity: identity, preferredPort: 0, preferredSecurePort: 0, receiveDirectory: tmp,
+            pairDecision: { _, done in done(false) },
+            transferDecision: { _, done in done(true) },
+            transferProgress: { received, total in
+                // First write of the body: the partial file exists and most bytes are still to come.
+                guard let server = stopping, received < total else { return }
+                stopping = nil
+                partsAtStop = ((try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []).filter { $0.hasSuffix(".part") }
+                server.stop()
+            }
+        )
+        let ready = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            stopping = stoppable
+            stoppable.start { _ in ready.signal() }
+        }
+        ready.wait()
+        defer { DispatchQueue.main.sync { stoppable.stop() } }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("slow-\(UUID().uuidString).bin")
+        try Data(count: Security.chunkSize * 4).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var sendError: Error?
+        let sent = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            do { try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(stoppable.securePort)", secret: secret) } catch { sendError = error }
+            sent.signal()
+        }
+        check(sent.wait(timeout: .now() + 30) == .success, "send finished in time")
+        check(partsAtStop.count == 1, "a partial file existed when stop was called, got \(partsAtStop)")
+        let left = DispatchQueue.main.sync { (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? [] }
+        check(left.isEmpty, "no partial or finished file left after stop, got \(left)")
+        check(sendError != nil, "the sender's send throws")
+    }
+
+    section("parametersEnablePeerToPeer") {
+        let psk = Data(repeating: 7, count: 32)
+        check(SecureTransport.serverParameters(keys: [(identity: "a", psk: psk)]).includePeerToPeer, "TLS server parameters")
+        check(SecureTransport.serverParameters(keys: []).includePeerToPeer, "TLS server parameters with no peers")
+        check(SecureTransport.clientParameters(identity: "a", psk: psk).includePeerToPeer, "TLS client parameters")
+        check(ControlServer.plainParameters().includePeerToPeer, "plain listener parameters")
+        check(PeerBrowser.browserParameters().includePeerToPeer, "browser parameters")
+        check(DirectRoute.isDirect(nil) == false, "no interface is not direct")
+    }
+
+    section("sendsByServiceEndpoint") {
+        let identity = IdentityStore().loadOrCreate()
+        let secret = TrustedPeerStore().find(deviceId: identity.deviceId)?.authToken ?? ""
+        check(!secret.isEmpty, "self peer is trusted")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("recv-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let (direct, plainPort) = startDecisionServer(pair: { _, done in done(true) }, receiveDirectory: tmp)
+        defer { DispatchQueue.main.sync { direct.stop() } }
+        let reloaded = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { direct.reloadTrustedPeers { reloaded.signal() } }
+        reloaded.wait()
+        let tlsPort = direct.securePort
+
+        // Other servers in this process advertise the same name; pick this one by its TLS port.
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: ControlServer.serviceType, domain: nil),
+                                using: PeerBrowser.browserParameters())
+        let found = DispatchSemaphore(value: 0)
+        var service: NWEndpoint?
+        browser.browseResultsChangedHandler = { results, _ in
+            guard service == nil else { return }
+            for result in results {
+                guard case let .bonjour(txt) = result.metadata, txt["tlsPort"] == String(tlsPort) else { continue }
+                service = result.endpoint
+                found.signal()
+                return
+            }
+        }
+        browser.start(queue: DispatchQueue(label: "checks.browser"))
+        defer { browser.cancel() }
+        check(found.wait(timeout: .now() + 10) == .success, "browser found the server's service")
+        guard let service else { return }
+
+        let route = try DirectRoute.resolve(service)
+        check(route.interface != nil, "route reports the interface it used")
+        let peer = ResolvedPeer(deviceName: identity.deviceName, deviceId: identity.deviceId, platform: "macos",
+                                host: "unused.invalid", port: plainPort, tlsPort: tlsPort, service: service,
+                                isDirect: DirectRoute.isDirect(route.interface))
+        check(!peer.isDirect, "loopback is not a direct link")
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("service-\(UUID().uuidString).bin")
+        let payload = Data((0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        try payload.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try FileSender.send(filePath: file.path, peer: peer, secret: secret)
+        check((try? Data(contentsOf: tmp.appendingPathComponent(file.lastPathComponent))) == payload, "file arrived via the service endpoint")
+
+        // A service that never resolves falls back to the peer's network address.
+        let resolveTimeout = DirectRoute.resolveTimeout
+        DirectRoute.resolveTimeout = 1
+        defer { DirectRoute.resolveTimeout = resolveTimeout }
+        let dead = NWEndpoint.service(name: "gone-\(UUID().uuidString)", type: ControlServer.serviceType, domain: "local.", interface: nil)
+        let stale = ResolvedPeer(deviceName: identity.deviceName, deviceId: identity.deviceId, platform: "macos",
+                                 host: "127.0.0.1", port: plainPort, tlsPort: tlsPort, service: dead)
+        check((try? DirectRoute.resolve(dead, timeout: 1)) == nil, "dead service does not resolve")
+        let fallbackFile = FileManager.default.temporaryDirectory.appendingPathComponent("fallback-\(UUID().uuidString).bin")
+        try payload.write(to: fallbackFile)
+        defer { try? FileManager.default.removeItem(at: fallbackFile) }
+        try FileSender.send(filePath: fallbackFile.path, peer: stale, secret: secret)
+        check((try? Data(contentsOf: tmp.appendingPathComponent(fallbackFile.lastPathComponent))) == payload, "file arrived via the host fallback")
+
+        // Pairing over the same route uses the NWConnection HTTP path, not URLSession.
+        let original = TrustedPeerStore().find(deviceId: identity.deviceId)
+        // Pairing with itself replaces the self peer's secret; later sections expect the old one.
+        defer { if let original { TrustedPeerStore().save(original) } }
+        let done = DispatchSemaphore(value: 0)
+        var paired: Result<TrustedPeer, Error>?
+        Task.detached {
+            do {
+                let client = PairingClient(peer: peer)
+                _ = try await client.begin()
+                paired = .success(try await client.finish())
+            } catch {
+                paired = .failure(error)
+            }
+            done.signal()
+        }
+        check(done.wait(timeout: .now() + 20) == .success, "pairing over the service endpoint finished in time")
+        check((try paired?.get())?.deviceId == identity.deviceId, "pairing over the service endpoint succeeded")
+    }
+
     section("Slow or silent connections are closed and capped") {
         let requestTimeout = ControlServer.requestTimeout
         let idleTimeout = ControlServer.uploadIdleTimeout
@@ -994,6 +1203,322 @@ DispatchQueue.global().async {
         firstDone.wait()
     }
 
+    section("offlineLinkVectors") {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let file = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("docs/test-vectors/offline-link.json"))) as! [String: Any]
+        let valid = file["valid"] as! [[String: Any]]
+        let invalid = file["invalid"] as! [[String: Any]]
+        check(valid.count >= 4, "at least 4 valid vectors")
+        check(invalid.count >= 9, "at least 9 invalid vectors")
+        for vector in valid {
+            let text = vector["text"] as! String
+            let note = vector["note"] as? String ?? text
+            let expected = vector["expected"] as! [String: Any]
+            guard let payload = OfflineLinkPayload.parse(text) else { check(false, "parses: \(note)"); continue }
+            check(payload.ssid == expected["ssid"] as? String, "ssid: \(note)")
+            check(payload.passphrase == expected["pass"] as? String, "pass: \(note)")
+            check(OfflineLinkPayload.format(payload.address) == expected["addr"] as? String, "addr: \(note)")
+            check(Int(payload.helloPort) == expected["hello"] as? Int, "hello: \(note)")
+            let expectedRecord = try JSONDecoder().decode(DiscoveryRecord.self, from: JSONSerialization.data(withJSONObject: expected["record"]!))
+            check(payload.record == expectedRecord, "record: \(note)")
+            check(payload.encoded() == text, "round-trips byte for byte: \(note)")
+            check(OfflineLinkPayload.parse(payload.encoded()) == payload, "re-parses: \(note)")
+        }
+        for vector in invalid {
+            check(OfflineLinkPayload.parse(vector["text"] as! String) == nil, "rejected: \(vector["reason"] ?? "")")
+        }
+    }
+
+    section("discoveryRecord matches the advertised TXT record") {
+        let identity = IdentityStore().loadOrCreate()
+        let record = ControlServer.discoveryRecord(identity: identity, secrets: ["secret"], port: 49152, tlsPort: 49153)
+        check(record.rid == ControlServer.discoveryRid && record.rid.count == 32, "rid is the per-launch rid")
+        check(record.tags == DiscoveryTags.tags(secrets: ["secret"], rid: record.rid), "tags from the secrets")
+        check(record.deviceName == identity.deviceName && record.platform == identity.platform, "identity fields")
+        check(record.protocolVersion == ControlServer.protocolVersion && record.port == 49152 && record.tlsPort == 49153, "ports and version")
+        let txt = record.txtRecord
+        check(txt["rid"] == record.rid && txt["tags"] == record.tags && txt["deviceName"] == record.deviceName, "TXT identity keys")
+        check(txt["platform"] == record.platform && txt["protocol"] == "2" && txt["tlsPort"] == "49153", "TXT protocol keys")
+        check(txt["features"] == identity.features.joined(separator: ",") && txt["port"] == nil, "TXT features, and no port key")
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as! [String: Any]
+        check(Set(json.keys) == ["rid", "tags", "deviceName", "platform", "protocol", "port", "tlsPort", "features"], "JSON keys are the TXT keys plus port")
+    }
+
+    section("helloExchangeRoundTrip") {
+        let mine = DiscoveryRecord(rid: "aa", tags: "t1", deviceName: "Mac", platform: "macos", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49153, features: "file-transfer")
+        let theirs = DiscoveryRecord(rid: "bb", tags: "", deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                     port: 49152, tlsPort: nil, features: "file-transfer")
+        let theirsJSON = try JSONEncoder().encode(theirs)
+
+        let ok = HelloStub { _ in ("200 OK", theirsJSON, nil) }
+        defer { ok.stop() }
+        let got = try OfflineHelloClient.exchange(host: "127.0.0.1", port: ok.port, record: mine)
+        check(got == theirs, "returns the server's record")
+        check(ok.receivedBodies.first.flatMap { try? JSONDecoder().decode(DiscoveryRecord.self, from: $0) } == mine, "server saw our record")
+        let head = ok.receivedHeads.first ?? ""
+        check(head.hasPrefix("POST /offline/hello HTTP/1.1"), "request line, got \(head)")
+        check(head.lowercased().contains("content-type: application/json"), "content type")
+
+        let big = Data(#"{"pad":""#.utf8) + Data(repeating: 0x61, count: 5000) + Data(#""}"#.utf8)
+        let oversized = HelloStub { _ in ("200 OK", big, nil) }
+        defer { oversized.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: oversized.port, record: mine)
+            check(false, "a body over 4 KB is rejected")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "oversized body rejected, got \(error)") }
+
+        for (status, expected) in [("429 Too Many Requests", OfflineHelloError.busy), ("400 Bad Request", .rejected),
+                                   ("500 Internal Server Error", .unexpectedStatus(500))] {
+            let stub = HelloStub { _ in (status, Data("{}".utf8), nil) }
+            defer { stub.stop() }
+            do {
+                _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: stub.port, record: mine)
+                check(false, "\(status) throws")
+            } catch { check(error as? OfflineHelloError == expected, "\(status) maps to \(expected), got \(error)") }
+        }
+
+        let garbage = HelloStub { _ in ("200 OK", Data("not json".utf8), nil) }
+        defer { garbage.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: garbage.port, record: mine)
+            check(false, "non-JSON body throws")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "non-JSON body rejected, got \(error)") }
+
+        let silent = HelloStub { _ in ("200 OK", theirsJSON, theirsJSON.count + 100) }
+        defer { silent.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: silent.port, record: mine, timeout: 1)
+            check(false, "a short body throws")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "short body rejected, got \(error)") }
+
+        let closedPort = HelloStub { _ in ("200 OK", Data(), nil) }
+        let deadPort = closedPort.port
+        closedPort.stop()
+        Thread.sleep(forTimeInterval: 0.2)
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: deadPort, record: mine, timeout: 2)
+            check(false, "a closed port throws")
+        } catch { check(error as? OfflineHelloError == .connectionFailed, "closed port fails, got \(error)") }
+    }
+
+    section("discoveryRecordIsValid") {
+        let good = DiscoveryRecord(rid: "bb", tags: "", deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49153, features: "file-transfer")
+        check(good.isValid, "a normal record is valid")
+        var noTls = good; noTls.tlsPort = nil
+        check(noTls.isValid, "no tlsPort (older app) is valid")
+        var zeroPort = good; zeroPort.port = 0
+        check(!zeroPort.isValid, "port 0 is invalid")
+        var zeroTls = good; zeroTls.tlsPort = 0
+        check(!zeroTls.isValid, "tlsPort 0 is invalid")
+        var emptyRid = good; emptyRid.rid = ""
+        check(!emptyRid.isValid, "empty rid is invalid")
+        var tags14 = good; tags14.tags = Array(repeating: "0011223344556677", count: 14).joined(separator: ",")
+        check(tags14.isValid, "14 tags are valid")
+        var tags15 = good; tags15.tags = Array(repeating: "0011223344556677", count: 15).joined(separator: ",")
+        check(!tags15.isValid, "15 tags are invalid")
+    }
+
+    section("helloRejectsHostileResponse") {
+        let mine = DiscoveryRecord(rid: "aa", tags: "", deviceName: "iPhone", platform: "ios", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49162, features: "file-transfer")
+        let hostile = DiscoveryRecord(rid: "bb", tags: Array(repeating: "0011223344556677", count: 15).joined(separator: ","),
+                                      deviceName: "Evil", platform: "android", protocolVersion: 2,
+                                      port: 0, tlsPort: 49153, features: "")
+        let stub = HelloStub { _ in ("200 OK", try! JSONEncoder().encode(hostile), nil) }
+        defer { stub.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: stub.port, record: mine)
+            check(false, "a hello response with port 0 and 15 tags is rejected")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "hostile response rejected, got \(error)") }
+
+        // Unknown keys are rejected, as on Android.
+        var withExtra = try JSONSerialization.jsonObject(with: JSONEncoder().encode(mine)) as! [String: Any]
+        withExtra["extra"] = 1
+        let extraBody = try JSONSerialization.data(withJSONObject: withExtra)
+        let extraStub = HelloStub { _ in ("200 OK", extraBody, nil) }
+        defer { extraStub.stop() }
+        do {
+            _ = try OfflineHelloClient.exchange(host: "127.0.0.1", port: extraStub.port, record: mine)
+            check(false, "a hello response with an unknown key is rejected")
+        } catch { check(error as? OfflineHelloError == .malformedResponse, "unknown key rejected, got \(error)") }
+    }
+
+    section("offlinePeersFromHelloAndMerge") {
+        let secret = Data(repeating: 7, count: 32).base64EncodedString()
+        let deviceId = UUID()
+        let trusted = [TrustedPeer(deviceId: deviceId, deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                   features: [], pairedAt: Date(), authToken: secret)]
+        let rid = "000102030405060708090a0b0c0d0e0f"
+        let record = DiscoveryRecord(rid: rid, tags: DiscoveryTags.tags(secrets: [secret], rid: rid), deviceName: "Pixel",
+                                     platform: "android", protocolVersion: 2, port: 49152, tlsPort: 49153, features: "")
+        let hello = OfflinePeers.peer(from: record, host: "192.168.49.1", trusted: trusted)
+        check(hello.host == "192.168.49.1" && hello.port == 49152 && hello.tlsPort == 49153, "hello peer at the QR address with the record's ports")
+        check(hello.service == nil && !hello.isDirect, "hello peer has no Bonjour service")
+        check(hello.deviceId == deviceId, "tags match the paired device")
+        check(hello.rid == rid, "hello peer keeps the rid")
+        let unpaired = OfflinePeers.peer(from: record, host: "192.168.49.1", trusted: [])
+        check(unpaired.deviceId == nil, "no deviceId without a pairing")
+
+        // Bonjour lists the same paired device: one row, and Bonjour's wins.
+        let bonjour = ResolvedPeer(deviceName: "Pixel", deviceId: deviceId, platform: "android", host: "pixel.local",
+                                   port: 49152, tlsPort: 49153, rid: "ffff")
+        let merged = OfflinePeers.merge(bonjour: [bonjour], hello: [hello])
+        check(merged.count == 1 && merged.first?.host == "pixel.local", "same deviceId: one peer, Bonjour's")
+        // Unpaired: no deviceId on either side; the rid ties them together.
+        let bonjourUnpaired = ResolvedPeer(deviceName: "Pixel", deviceId: nil, platform: "android", host: "pixel.local",
+                                           port: 49152, tlsPort: 49153, rid: rid)
+        check(OfflinePeers.merge(bonjour: [bonjourUnpaired], hello: [unpaired]).count == 1, "same rid: one peer")
+        let other = ResolvedPeer(deviceName: "Mac", deviceId: UUID(), platform: "macos", host: "mac.local",
+                                 port: 49152, tlsPort: 49162, rid: "eeee")
+        check(OfflinePeers.merge(bonjour: [other], hello: [unpaired]).count == 2, "different devices: both kept")
+        check(OfflinePeers.merge(bonjour: [], hello: [unpaired]).count == 1, "hello alone is listed")
+    }
+
+    section("offlineLocator") {
+        let rid = "000102030405060708090a0b0c0d0e0f"
+        let mine = DiscoveryRecord(rid: "aa", tags: "", deviceName: "Mac", platform: "macos", protocolVersion: 2,
+                                   port: 49152, tlsPort: 49162, features: "")
+        let theirs = DiscoveryRecord(rid: rid, tags: "", deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                     port: 49152, tlsPort: 49153, features: "")
+        let gateway = OfflineLinkPayload.parseIPv4("192.168.49.1")
+        var helloHosts: [String] = []
+        var virtualNow = Date(timeIntervalSince1970: 1000)
+        let start = virtualNow
+        func locator(gateway: IPv4Address?, bonjour: [ResolvedPeer] = [], failHello: Bool = false) -> OfflineLocator {
+            OfflineLocator(gateway: { gateway },
+                           hello: { host, _ in
+                               helloHosts.append("\(host)")
+                               if failHello { throw OfflineHelloError.timedOut }
+                               return theirs
+                           },
+                           bonjourPeers: { bonjour },
+                           clock: { virtualNow }, sleep: { virtualNow = virtualNow.addingTimeInterval($0) })
+        }
+        let bonjourPeer = ResolvedPeer(deviceName: "Pixel", deviceId: nil, platform: "android", host: "pixel.local",
+                                       port: 49152, tlsPort: 49153, rid: rid)
+
+        // locatorPrefersBonjour
+        helloHosts = []
+        if case .found(let peer) = locator(gateway: gateway, bonjour: [bonjourPeer]).locate(localRecord: mine) {
+            check(peer.host == "pixel.local" && helloHosts.isEmpty, "Bonjour peer wins and no hello is sent")
+        } else { check(false, "Bonjour peer should be found") }
+
+        // The Bonjour wait runs on a virtual clock that only `sleep` advances.
+        var helloAt: [TimeInterval] = []
+        func waiting(bonjourAppearsAt: TimeInterval?) -> OfflineLocator {
+            OfflineLocator(gateway: { gateway }, hello: { _, _ in helloAt.append(virtualNow.timeIntervalSince(start)); return theirs },
+                           bonjourPeers: {
+                               if let at = bonjourAppearsAt, virtualNow.timeIntervalSince(start) >= at { return [bonjourPeer] }
+                               return []
+                           },
+                           clock: { virtualNow }, sleep: { virtualNow = virtualNow.addingTimeInterval($0) })
+        }
+        if case .found(let peer) = waiting(bonjourAppearsAt: 1).locate(localRecord: mine) {
+            check(peer.host == "pixel.local" && helloAt.isEmpty, "a Bonjour peer appearing at 1 s wins with no hello")
+        } else { check(false, "Bonjour peer at 1 s should be found") }
+        virtualNow = start; helloAt = []
+        if case .found = waiting(bonjourAppearsAt: nil).locate(localRecord: mine) {
+            check(helloAt.count == 1 && helloAt[0] >= 3, "with no Bonjour peer the hello is sent only after 3 s, got \(helloAt)")
+        } else { check(false, "hello after the wait should find the peer") }
+
+        // helloPeerKeepAlive
+        var book = HelloPeerBook()
+        let t0 = Date(timeIntervalSince1970: 5000)
+        let helloPeer = OfflinePeers.peer(from: theirs, host: "192.168.49.1", trusted: [])
+        book.record(helloPeer, at: t0)
+        check(book.peers.count == 1, "recorded peer is listed")
+        check(book.due(at: t0.addingTimeInterval(29)).isEmpty, "not due before 30 s")
+        check(book.due(at: t0.addingTimeInterval(30)).count == 1, "due at 30 s")
+        book.record(helloPeer, at: t0.addingTimeInterval(30))
+        check(book.peers.count == 1 && book.due(at: t0.addingTimeInterval(31)).isEmpty, "a refresh replaces the entry and resets the timer")
+        check(book.peers.count == 1, "the peer stays listed without the guide while refreshes succeed")
+        book.drop(helloPeer)
+        check(book.peers.isEmpty, "a failed refresh drops the peer")
+
+        // helloPeerBookUpdatesAfterPairing: same Android at the same address, now with a tag
+        // (a deviceId) and even a new rid; the unpaired entry is replaced, not duplicated.
+        book.record(helloPeer, at: t0)
+        let secret = Data(repeating: 9, count: 32).base64EncodedString()
+        let androidId = UUID()
+        let pairedTrust = [TrustedPeer(deviceId: androidId, deviceName: "Pixel", platform: "android", protocolVersion: 2,
+                                       features: [], pairedAt: Date(), authToken: secret)]
+        var pairedRecord = theirs
+        pairedRecord.rid = "ffffffffffffffffffffffffffffffff"
+        pairedRecord.tags = DiscoveryTags.tags(secrets: [secret], rid: pairedRecord.rid)
+        let pairedPeer = OfflinePeers.peer(from: pairedRecord, host: "192.168.49.1", trusted: pairedTrust)
+        check(pairedPeer.deviceId == androidId, "paired hello peer has its deviceId")
+        book.record(pairedPeer, at: t0.addingTimeInterval(1))
+        check(book.peers.count == 1 && book.peers.first?.deviceId == androidId, "paired entry replaces the unpaired one")
+        let elsewhere = OfflinePeers.peer(from: DiscoveryRecord(rid: "dd", tags: "", deviceName: "Tab", platform: "android",
+                                                                protocolVersion: 2, port: 49152, tlsPort: 49153, features: ""),
+                                          host: "192.168.50.1", trusted: [])
+        book.record(elsewhere, at: t0)
+        check(book.peers.count == 2, "another device at another address is its own entry")
+        book.drop(pairedPeer)
+        check(book.peers.map(\.host) == ["192.168.50.1"], "drop removes only that address")
+
+        // locatorIgnoresOtherBonjourPeers: with AWDL on, a nearby Mac or iPhone, or a device
+        // already listed when the guide opened, is not the Android just joined.
+        let nearbyMac = ResolvedPeer(deviceName: "Studio", deviceId: nil, platform: "macos", host: "studio.local",
+                                     port: 49152, tlsPort: 49162, rid: "cc")
+        let nearbyPhone = ResolvedPeer(deviceName: "Phone", deviceId: nil, platform: "ios", host: "phone.local",
+                                       port: 49152, tlsPort: 49162, rid: "c1")
+        let listedAndroid = ResolvedPeer(deviceName: "Old", deviceId: nil, platform: "android", host: "old.local",
+                                         port: 49152, tlsPort: 49153, rid: "c2")
+        virtualNow = start
+        helloHosts = []
+        let baseline: Set<String> = [OfflineLocator.baselineKey(listedAndroid)]
+        if case .found(let peer) = locator(gateway: gateway, bonjour: [nearbyMac, nearbyPhone, listedAndroid])
+            .locate(localRecord: mine, baseline: baseline) {
+            check(peer.host == "192.168.49.1" && helloHosts == ["192.168.49.1"],
+                  "other platforms and baseline peers are skipped; the hello finds the Android, got \(peer.host)")
+        } else { check(false, "the hello should still find the Android") }
+        virtualNow = start
+        helloHosts = []
+        if case .found(let peer) = locator(gateway: gateway, bonjour: [nearbyMac, listedAndroid, bonjourPeer])
+            .locate(localRecord: mine, baseline: baseline) {
+            check(peer.host == "pixel.local" && helloHosts.isEmpty, "a new Bonjour Android is found, got \(peer.host)")
+        } else { check(false, "a new Bonjour Android should be found") }
+
+        // locatorFallsBackToHelloAtGateway
+        helloHosts = []
+        if case .found(let peer) = locator(gateway: gateway).locate(localRecord: mine) {
+            check(peer.host == "192.168.49.1" && peer.port == 49152 && peer.service == nil && peer.rid == rid,
+                  "hello peer at the gateway")
+            check(helloHosts == ["192.168.49.1"], "hello went to the gateway")
+        } else { check(false, "hello at the gateway should find the peer") }
+
+        // locatorNeedsManualWhenNoGateway
+        helloHosts = []
+        if case .needsManualAddress = locator(gateway: nil).locate(localRecord: mine) {
+            check(helloHosts.isEmpty, "no gateway: no hello")
+        } else { check(false, "no gateway should need a manual address") }
+        if case .needsManualAddress = locator(gateway: OfflineLinkPayload.parseIPv4("8.8.8.8")).locate(localRecord: mine) {
+            check(helloHosts.isEmpty, "public gateway: no hello")
+        } else { check(false, "a public gateway should need a manual address") }
+
+        // locatorNeedsManualWhenHelloFails
+        if case .needsManualAddress = locator(gateway: gateway, failHello: true).locate(localRecord: mine) {
+            check(helloHosts == ["192.168.49.1"], "hello was tried")
+        } else { check(false, "a failed hello should need a manual address") }
+
+        // manualRejectsPublicAddress
+        helloHosts = []
+        for text in ["8.8.8.8", "192.168.49", "192.168.049.1", "pixel.local", ""] {
+            if case .found = locator(gateway: nil).connectManually(address: text, localRecord: mine) {
+                check(false, "\(text) should be rejected")
+            } else { check(helloHosts.isEmpty, "\(text) rejected without a hello") }
+        }
+
+        // manualAcceptsPrivateAddress
+        if case .found(let peer) = locator(gateway: nil).connectManually(address: " 192.168.1.20 ", localRecord: mine) {
+            check(peer.host == "192.168.1.20" && helloHosts == ["192.168.1.20"], "manual private address reaches the hello")
+        } else { check(false, "a private address should be accepted") }
+    }
+
     section("Unpair removes a trusted peer") {
         let id = UUID()
         TrustedPeerStore().save(TrustedPeer(deviceId: id, deviceName: "Gone", platform: "android", protocolVersion: 2,
@@ -1007,6 +1532,9 @@ DispatchQueue.global().async {
         var macCode: String?
         let (pairServer, pairPort) = startServer(preferredPort: 0, approve: { true }, lastRequest: { macCode = $0.code })
         defer { DispatchQueue.main.sync { pairServer.stop() } }
+        let live = DispatchQueue.main.sync { (pairServer.currentDiscoveryRecord(), pairServer.securePort) }
+        check(live.0.port == pairPort && live.0.tlsPort == live.1 && live.0.rid == ControlServer.discoveryRid,
+              "currentDiscoveryRecord carries the ports the server listens on")
         let done = DispatchSemaphore(value: 0)
         var result: Result<(PairingClient.Started, TrustedPeer), Error>?
         Task.detached {

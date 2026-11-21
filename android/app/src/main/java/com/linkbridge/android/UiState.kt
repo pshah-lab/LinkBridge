@@ -14,7 +14,7 @@ import com.linkbridge.android.presentation.SendPhase
  */
 data class StagedFile(val uri: String, val name: String, val size: Long, val persistable: Boolean)
 
-/** The pairing sheet's state. [name] is the Mac's name. */
+/** The pairing sheet's state. [name] is the peer's name. */
 sealed interface PairingStep {
     val name: String
 

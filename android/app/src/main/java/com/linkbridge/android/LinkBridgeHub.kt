@@ -2,6 +2,14 @@ package com.linkbridge.android
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import com.linkbridge.android.offline.Cancelable
+import com.linkbridge.android.offline.DiscoveryRecord
+import com.linkbridge.android.offline.OfflineHotspot
+import com.linkbridge.android.offline.WifiManagerHotspotPort
+import java.net.Inet4Address
 import com.linkbridge.android.presentation.PendingApproval
 import com.linkbridge.android.presentation.ReceiveState
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -11,6 +19,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+
+/** Where the hotspot's hello endpoint listens and who this phone is: what the QR code carries. */
+data class OfflineEndpoint(val address: Inet4Address, val record: DiscoveryRecord)
 
 /**
  * In-process link between [LinkBridgeService] (which owns discovery, receiving and
@@ -43,6 +54,36 @@ object LinkBridgeHub {
 
     private val _historyVersion = MutableStateFlow(0)
     val historyVersion: StateFlow<Int> = _historyVersion.asStateFlow()
+
+    private val _offlineEndpoint = MutableStateFlow<OfflineEndpoint?>(null)
+    /** Set while the offline hotspot is up and its address is known. */
+    val offlineEndpoint: StateFlow<OfflineEndpoint?> = _offlineEndpoint.asStateFlow()
+
+    /** The UI is pairing a device; the one busy input the service can't see. */
+    val pairingInProgress = MutableStateFlow(false)
+
+    private var offlineHotspot: OfflineHotspot? = null
+
+    /** The process-wide offline hotspot, created on first use. Main thread only. */
+    fun hotspot(context: Context): OfflineHotspot = offlineHotspot ?: run {
+        val main = Handler(Looper.getMainLooper())
+        OfflineHotspot(
+            port = WifiManagerHotspotPort(context),
+            sdkInt = Build.VERSION.SDK_INT,
+            clock = System::currentTimeMillis,
+            schedule = { delayMs, block ->
+                val task = Runnable(block)
+                main.postDelayed(task, delayMs)
+                Cancelable { main.removeCallbacks(task) }
+            },
+        ).also {
+            offlineHotspot = it
+            service?.attachHotspot(it)
+        }
+    }
+
+    /** The hotspot if something created it; the service attaches it to its lifecycle. */
+    internal val hotspotOrNull: OfflineHotspot? get() = offlineHotspot
 
     /** The one approval resolver: in-app prompt, notification actions and timeout. */
     internal val approvals = ApprovalCenter(
@@ -93,6 +134,10 @@ object LinkBridgeHub {
 
     internal fun publishPeers(newPeers: List<DiscoveredPeer>) {
         _peers.value = newPeers
+    }
+
+    internal fun publishOfflineEndpoint(endpoint: OfflineEndpoint?) {
+        _offlineEndpoint.value = endpoint
     }
 
     internal fun publishReceiveState(state: ReceiveState) {

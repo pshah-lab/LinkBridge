@@ -97,7 +97,7 @@ fun SendScreen(
         return
     }
     val macName = target?.name ?: state.live.firstNotNullOfOrNull { (it as? LiveRow.Sending)?.peerName }
-        ?.takeIf { it.isNotEmpty() } ?: "your Mac"
+        ?.takeIf { it.isNotEmpty() } ?: "your Mac or iPhone"
     val layoutDirection = LocalLayoutDirection.current
     Box(modifier.fillMaxSize()) {
         Column(

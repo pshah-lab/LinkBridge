@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.linkbridge.android.offline.DiscoveryRecord
 import java.net.InetAddress
 import java.net.NetworkInterface
 
@@ -14,11 +15,11 @@ class DiscoveryService(
     context: Context,
     private val identity: DeviceIdentity,
     private val port: Int,
+    /** Random per app launch (the service passes one in), so it survives a rescan; see [DiscoveryTags]. */
+    internal val rid: String = DiscoveryTags.randomRid(),
     private val trustedPeers: () -> List<TrustedPeer> = { TrustedPeerStore(context).load() },
     private val onPeersChanged: (List<DiscoveredPeer>) -> Unit = {}
 ) {
-    /** Random per registration; see [DiscoveryTags]. */
-    private val rid = DiscoveryTags.randomRid()
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val peers = linkedMapOf<String, DiscoveredPeer>()
@@ -86,7 +87,7 @@ class DiscoveryService(
             // No deviceId: a stable ID would let anyone on any network recognize this phone.
             // Paired devices recognize it by their tag instead; rescan() re-registers after pairing.
             setAttribute("rid", rid)
-            setAttribute("tags", DiscoveryTags.tags(trustedPeers().reversed().mapNotNull { it.authToken }, rid))
+            setAttribute("tags", currentTags())
             setAttribute("deviceName", identity.deviceName)
             setAttribute("platform", identity.platform)
             // Protocol 2: transfers use TLS-PSK on tlsPort (the receive server is TLS-only).
@@ -107,6 +108,11 @@ class DiscoveryService(
             Log.e(TAG, "Could not start discovery", it)
         }
     }
+
+    private fun currentTags() = localTags(rid, trustedPeers())
+
+    /** What this phone says about itself: the Bonjour record, for the offline hello. */
+    fun localRecord() = localDiscoveryRecord(identity, rid, port, trustedPeers())
 
     fun stop() {
         if (!isStarted) return
@@ -215,7 +221,9 @@ class DiscoveryService(
             platform = platform,
             host = hostAddress.hostAddress ?: return null,
             port = port,
-            tlsPort = tlsPort
+            tlsPort = tlsPort,
+            rid = advertisedRid,
+            tags = tags.orEmpty()
         )
     }
 
@@ -239,3 +247,19 @@ class DiscoveryService(
         const val PROTOCOL_VERSION = 2
     }
 }
+
+/** Newest pairings first, so the cap drops the oldest. */
+internal fun localTags(rid: String, trusted: List<TrustedPeer>): String =
+    DiscoveryTags.tags(trusted.reversed().mapNotNull { it.authToken }, rid)
+
+/** The Bonjour record as JSON fields, for the offline hello and the QR. */
+internal fun localDiscoveryRecord(identity: DeviceIdentity, rid: String, port: Int, trusted: List<TrustedPeer>) = DiscoveryRecord(
+    rid = rid,
+    tags = localTags(rid, trusted),
+    deviceName = identity.deviceName,
+    platform = identity.platform,
+    protocol = DiscoveryService.PROTOCOL_VERSION,
+    port = port,
+    tlsPort = port,
+    features = identity.features.joinToString(","),
+)

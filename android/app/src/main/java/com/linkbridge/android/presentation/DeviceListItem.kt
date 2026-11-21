@@ -16,6 +16,24 @@ enum class DevicePlatform {
     }
 }
 
+/** Platforms that run a LinkBridge control server we can pair with and send to: Mac and iPhone. */
+fun isServerPlatform(platform: String?): Boolean = platform == "macos" || platform == "ios"
+
+/** Shown when an iPhone cannot be reached: it only listens while LinkBridge is open on it. */
+const val OPEN_LINKBRIDGE_ON_IPHONE = "Open LinkBridge on the iPhone"
+
+/**
+ * The text for a failed connection to a peer. A refused or timed-out connection to an iPhone means
+ * LinkBridge is not open in its foreground, so say that; everything else keeps the original message.
+ */
+fun peerFailureMessage(platform: String?, error: Throwable): String {
+    val unreachable = generateSequence(error) { it.cause }.take(8).any {
+        it is java.net.ConnectException || it is java.net.SocketTimeoutException
+    }
+    return if (platform == "ios" && unreachable) OPEN_LINKBRIDGE_ON_IPHONE
+    else error.localizedMessage ?: "Unknown error"
+}
+
 /**
  * One row in the Devices list: a nearby peer, a paired device, or both.
  *
@@ -54,7 +72,7 @@ data class DeviceListItem(
                 val platform = DevicePlatform.from(peer.platform)
                 val paired = peer.deviceId != null && peer.deviceId in trustedIds
                 val current = peer.tlsPort != null
-                val canPair = !paired && current && platform == DevicePlatform.MAC
+                val canPair = !paired && current && isServerPlatform(peer.platform)
                 val subtitle = when {
                     !current -> "Needs a LinkBridge update"
                     paired -> "Paired · Nearby"

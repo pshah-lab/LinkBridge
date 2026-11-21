@@ -1,3 +1,4 @@
+import Combine
 import LinkBridgePresentation
 import Foundation
 import LinkBridgeCore
@@ -24,6 +25,8 @@ final class LinkBridgeModel: ObservableObject {
     @Published private(set) var history: [TransferRecord] = []
 
     let identity = IdentityStore().loadOrCreate()
+    /// Accepts pairing and receives files while the app is open.
+    let receiveHost: ReceiveHost
     private let browser: PeerBrowser
     private let trustedStore = TrustedPeerStore()
     private var pairingClient: PairingClient?
@@ -32,22 +35,68 @@ final class LinkBridgeModel: ObservableObject {
     /// The device the user picked; survives backgrounding and brief drop-outs.
     private var preferredPeerId: UUID?
     private static let historyKey = "transferHistory"
+    /// What Bonjour found, and the Android found by the offline hello; `nearby` merges them.
+    private var bonjourPeers: [ResolvedPeer] = []
+    private var helloPeers: [ResolvedPeer] = []
+    private var offlinePhase: AnyCancellable?
+
+    /// Joining an Android offline link by its QR code.
+    private(set) lazy var offlineJoin = OfflineJoinFlow(
+        joiner: HotspotJoiner(),
+        hello: LiveOfflineHello(localRecord: { [weak self] in self?.receiveHost.discoveryRecord }),
+        browserPeers: { [weak self] in self?.bonjourPeers ?? [] },
+        clock: SystemJoinClock(),
+        trustedPeers: { [weak self] in self?.trusted ?? [] })
 
     init() {
         browser = PeerBrowser(localDeviceId: identity.deviceId)
+        let identity = identity
+        receiveHost = ReceiveHost(makeServer: { callbacks in
+            ControlServer(identity: identity, receiveDirectory: ReceiveHost.receiveDirectory,
+                          pairDecision: callbacks.pairDecision, transferDecision: callbacks.transferDecision,
+                          transferReceived: callbacks.transferReceived, transferWithdrawn: callbacks.transferWithdrawn)
+        })
         trusted = trustedStore.load()
         if let data = UserDefaults.standard.data(forKey: Self.historyKey),
            let saved = try? JSONDecoder().decode([TransferRecord].self, from: data) {
             history = saved
         }
+        receiveHost.onPaired = { [weak self] in
+            guard let self else { return }
+            // A device that paired with this iPhone is now trusted; its tags only match now.
+            self.trusted = self.trustedStore.load()
+            self.browser.refresh()
+            // An Android on the offline link only matches by its tags after asking it again.
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                await self.offlineJoin.refreshHelloPeer()
+            }
+        }
         browser.onChange = { [weak self] peers in
             guard let self else { return }
-            self.nearby = peers
-            let now = Date()
-            for id in peers.compactMap(\.deviceId) { self.lastSeen[id] = now }
-            self.selectedPeerId = DeviceSelection.resolve(current: self.selectedPeerId, preferred: self.preferredPeerId,
-                                                          items: self.deviceItems, isSending: self.isSending)
+            self.bonjourPeers = peers
+            self.updateNearby()
         }
+        // A session cut short by the app being killed left its network configured.
+        Task { [weak self] in await self?.offlineJoin.removeLeftoverNetworks() }
+        offlinePhase = offlineJoin.$phase.sink { [weak self] phase in
+            guard let self else { return }
+            // Bonjour peers are already listed; only a peer found by the hello is added.
+            if case .connected(let peer) = phase, peer.service == nil {
+                self.helloPeers = [peer]
+            } else {
+                self.helloPeers = []
+            }
+            self.updateNearby()
+        }
+    }
+
+    private func updateNearby() {
+        nearby = OfflinePeers.merge(bonjour: bonjourPeers, hello: helloPeers)
+        let now = Date()
+        for id in nearby.compactMap(\.deviceId) { lastSeen[id] = now }
+        selectedPeerId = DeviceSelection.resolve(current: selectedPeerId, preferred: preferredPeerId,
+                                                 items: deviceItems, isSending: isSending)
     }
 
     var deviceItems: [DeviceListItem] {
@@ -81,7 +130,7 @@ final class LinkBridgeModel: ObservableObject {
 
     func pair(with peer: ResolvedPeer) {
         guard pairingItemId == nil else { return }
-        let client = PairingClient(endpoint: peer.endpoint)
+        let client = PairingClient(peer: peer)
         pairingClient = client
         pairingItemId = DeviceListItem.itemId(for: peer)
         lastError = nil
@@ -103,6 +152,8 @@ final class LinkBridgeModel: ObservableObject {
             do {
                 let peer = try await client.finish()
                 trusted = trustedStore.load()
+                // The receive server must know the new device's key before it can send here.
+                receiveHost.reloadTrustedPeers()
                 // The Mac was discovered before it was paired; its tags only match now.
                 browser.refresh()
                 selectedPeerId = peer.deviceId
@@ -150,7 +201,7 @@ final class LinkBridgeModel: ObservableObject {
         let files = selectedFiles
         guard !files.isEmpty, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
               let peer = nearby.first(where: { $0.deviceId != nil && $0.deviceId == selectedPeerId }),
-              let endpoint = peer.secureEndpoint, let id = peer.deviceId,
+              peer.secureEndpoint != nil, let id = peer.deviceId,
               let secret = trustedStore.find(deviceId: id)?.authToken else {
             lastError = "Pair with a nearby device first"
             return
@@ -170,7 +221,7 @@ final class LinkBridgeModel: ObservableObject {
                 let accessing = url.startAccessingSecurityScopedResource()
                 var failure: String?
                 do {
-                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
+                    try FileSender.send(filePath: url.path, peer: peer, secret: secret) { sent, total in
                         let fraction = total > 0 ? Double(sent) / Double(total) : 0
                         Task { @MainActor in self?.showProgress(shownName, fraction) }
                     }

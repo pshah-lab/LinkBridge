@@ -153,3 +153,74 @@ Planned transport:
 - Android capture via `MediaProjection`.
 - macOS capture via `ScreenCaptureKit`.
 
+
+## Offline link
+
+When no shared Wi-Fi exists, an Android phone can run a hotspot and show a QR code that
+lets another device join it and find the phone without Bonjour. Shared vectors for both
+parsers: `docs/test-vectors/offline-link.json`.
+
+### QR payload
+
+```text
+linkbridge-offline:1:<base64url, no padding, of the UTF-8 JSON below>
+```
+
+```json
+{"ssid": "...", "pass": "...", "addr": "192.168.43.1", "hello": 49154, "record": { ...DiscoveryRecord... }}
+```
+
+Parsers return "invalid" (and the app shows nothing) unless all of these hold:
+
+- Total text is at most 1024 characters and starts with exactly `linkbridge-offline:1:`.
+- The tail is base64url with the URL-safe alphabet only: no `=` padding, no `+` or `/`.
+- The JSON has exactly the five top-level keys above, and `record` has no keys beyond those
+  below. Unknown keys anywhere are rejected.
+- `ssid` is 1 to 32 UTF-8 bytes. `pass` is 8 to 63 characters (Unicode scalar values).
+- `addr` is a strict dotted-quad IPv4 (four decimal parts, no leading zeros) in a private range:
+  10/8, 172.16/12 or 192.168/16.
+- `hello`, `record.port` and `record.tlsPort` (when present) are integers 1 to 65535.
+- `record.tags` has at most 14 comma-separated entries (empty string is none).
+- `record.rid` is not empty (both parsers; vector "empty rid").
+
+The encoder writes keys sorted and does not escape `/`; parsers must not depend on key order.
+Android's encoder shortens `record.deviceName` (whole code points) until the text fits 1024, so a
+long device name never produces a code the other side rejects.
+
+`record.rid` is random per app launch (Android: per `LinkBridgeService` lifetime), not per Bonjour
+registration, so a QR shown before pairing still names the phone after it. After a pair or unpair
+the phone republishes its record (fresh `tags`) for the QR and hello replies. An iPhone accepts a
+hello reply whose `rid` matches the QR, or whose tags match the device it is already connected to.
+
+### DiscoveryRecord
+
+JSON object whose keys are the Bonjour TXT keys (see Discovery): `rid`, `tags`, `deviceName`,
+`platform`, `protocol` (integer), `port`, `tlsPort` (optional), `features`. TXT carries no
+`port` because Bonjour does; in the record, `port` is the plain listener port.
+
+### Offline hello
+
+Plain HTTP on the hotspot network, no TLS and no authentication. It only exchanges discovery
+records; transfers still need pairing and TLS-PSK.
+
+```text
+POST /offline/hello HTTP/1.1          (default port 49154)
+Content-Type: application/json
+Content-Length: <required>
+
+<the caller's DiscoveryRecord>
+```
+
+- The response is `200` with `Content-Length` and the responder's `DiscoveryRecord` as JSON,
+  `400` for a malformed request, or `429` when the responder is busy.
+- Request and response bodies are at most 4096 bytes. A client rejects a response without
+  `Content-Length` or with a body over 4096 bytes, and a server rejects a request the same way.
+- The Swift client (`OfflineHelloClient.exchange`) gives up after 3 seconds in total by default.
+- The response is untrusted: the Swift client rejects a record outside the `record` limits above
+  (port or `tlsPort` 0, more than 14 tags, empty `rid`) as malformed.
+- Hello bodies (request and response) are a `DiscoveryRecord` with no other keys: both sides
+  reject unknown keys, as in the QR `record` (Android `DiscoveryRecord.fromObject`, Swift
+  `DiscoveryRecord.decodeUntrusted`).
+- Android forgets a hello peer 5 minutes after its last hello, so an iPhone says hello again
+  every 60 seconds while connected and when the app returns to the foreground. The Mac
+  re-sends the hello to each hello-found peer every 30 seconds.

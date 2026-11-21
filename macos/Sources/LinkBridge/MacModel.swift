@@ -30,6 +30,7 @@ final class MacModel {
         }
     }
 
+    /// Bonjour peers merged with peers found by the offline hello.
     private(set) var nearby: [ResolvedPeer] = []
     private(set) var trusted: [TrustedPeer] = []
     private(set) var lastSeen: [UUID: Date] = [:]
@@ -69,6 +70,29 @@ final class MacModel {
     @ObservationIgnored private var trustedObserver: NSObjectProtocol?
     /// File approvals by request ID, so an accepted file can show as "receiving".
     @ObservationIgnored private var fileRequests: [UUID: IncomingTransferRequest] = [:]
+
+    /// Where the guided join to an Android offline link stands.
+    enum OfflineJoinState: Equatable {
+        case searching
+        case found(String)
+        case needsManualAddress
+    }
+
+    /// True once no device has shown up for 5 s; shows the "Connect directly" card.
+    private(set) var offlineCardVisible = false
+    var showOfflineGuide = false
+    private(set) var offlineJoin: OfflineJoinState = .searching
+    @ObservationIgnored private var bonjourNearby: [ResolvedPeer] = []
+    @ObservationIgnored private var helloBook = HelloPeerBook()
+    /// Bonjour peers listed when the offline guide opened; none of them is the Android just joined.
+    @ObservationIgnored private var offlineBaseline: Set<String> = []
+    @ObservationIgnored private let bonjourSnapshot = PeerSnapshot()
+    @ObservationIgnored private var manualBusy = false
+    @ObservationIgnored private var refreshingHello = false
+    /// Why the last manual address failed; shown above the address field.
+    private(set) var offlineManualError: String?
+    @ObservationIgnored private var noPeersSince: Date?
+    @ObservationIgnored private var locating = false
 
     /// Set when the user has turned notifications off for LinkBridge in System Settings.
     var notificationsDenied = false
@@ -196,6 +220,13 @@ final class MacModel {
     }
 
     private func discovered(_ peers: [ResolvedPeer]) {
+        bonjourNearby = peers
+        bonjourSnapshot.value = peers
+        mergeNearby()
+    }
+
+    private func mergeNearby() {
+        let peers = OfflinePeers.merge(bonjour: bonjourNearby, hello: helloBook.peers)
         nearby = peers
         let now = Date()
         for id in peers.compactMap(\.deviceId) { lastSeen[id] = now }
@@ -206,8 +237,98 @@ final class MacModel {
 
     private func tick() {
         approvals.tick()
+        let now = Date()
+        if nearby.isEmpty {
+            if noPeersSince == nil { noPeersSince = now }
+            offlineCardVisible = now.timeIntervalSince(noPeersSince ?? now) >= 5
+        } else {
+            noPeersSince = nil
+            offlineCardVisible = false
+        }
+        refreshHelloPeers(now: now)
         // A receive that stops reporting progress has failed on the sender's side.
         if let receiving, Date().timeIntervalSince(receiving.updatedAt) > 15 { self.receiving = nil }
+    }
+
+    // MARK: - Offline link
+
+    func openOfflineGuide() {
+        offlineBaseline = Set(bonjourNearby.map(OfflineLocator.baselineKey))
+        offlineJoin = .searching
+        offlineManualError = nil
+        showOfflineGuide = true
+        showMainWindow()
+    }
+
+    /// One locate pass for the open guide: waits up to 3 s for Bonjour, then the hello at the
+    /// gateway. Skipped while a pass or a manual connect is already running.
+    func locateOffline() async {
+        guard !locating, !manualBusy, let record = server?.currentDiscoveryRecord() else { return }
+        locating = true
+        defer { locating = false }
+        let peers = bonjourSnapshot, trusted = trustedStore.load(), baseline = offlineBaseline
+        let result = await Task.detached {
+            OfflineLocator.system(bonjourPeers: { peers.value }, trusted: { trusted })
+                .locate(localRecord: record, baseline: baseline)
+        }.value
+        guard showOfflineGuide, !manualBusy else { return }
+        apply(result, manual: false)
+    }
+
+    /// Always runs: it waits for a poll pass in flight, and polling stands aside meanwhile.
+    func connectOfflineManually(_ address: String) async {
+        manualBusy = true
+        defer { manualBusy = false }
+        while locating { try? await Task.sleep(for: .milliseconds(100)) }
+        guard let record = server?.currentDiscoveryRecord() else { return }
+        let peers = bonjourSnapshot, trusted = trustedStore.load()
+        let result = await Task.detached {
+            OfflineLocator.system(bonjourPeers: { peers.value }, trusted: { trusted })
+                .connectManually(address: address, localRecord: record)
+        }.value
+        guard showOfflineGuide else { return }
+        apply(result, manual: true)
+    }
+
+    private func apply(_ result: LocateResult, manual: Bool) {
+        switch result {
+        case .found(let peer):
+            if peer.service == nil {
+                helloBook.record(peer, at: Date())
+                mergeNearby()
+            }
+            offlineManualError = nil
+            offlineJoin = .found(peer.deviceName)
+            if let id = peer.deviceId { select(id) }
+            showOfflineGuide = false
+        case .needsManualAddress:
+            if manual { offlineManualError = "Couldn't reach a LinkBridge device at that address." }
+            offlineJoin = .needsManualAddress
+        }
+    }
+
+    /// Re-sends the hello to each hello-found peer that is due, whether or not the guide is open.
+    /// A peer that stops answering is dropped.
+    private func refreshHelloPeers(now: Date) {
+        let due = helloBook.due(at: now)
+        guard !due.isEmpty, !refreshingHello, let record = server?.currentDiscoveryRecord() else { return }
+        refreshingHello = true
+        let trusted = trustedStore.load()
+        Task {
+            for peer in due {
+                let result = await Task.detached {
+                    OfflineLocator.system(bonjourPeers: { [] }, trusted: { trusted })
+                        .connectManually(address: peer.host, localRecord: record)
+                }.value
+                if case .found(let fresh) = result {
+                    helloBook.record(fresh, at: Date())
+                } else {
+                    helloBook.drop(peer)
+                }
+            }
+            refreshingHello = false
+            mergeNearby()
+        }
     }
 
     // MARK: - Approvals
@@ -286,12 +407,13 @@ final class MacModel {
         let files = stagedFiles
         guard !files.isEmpty, sendPhase.isActionEnabled(targetSendable: selectedItem?.isSendable == true),
               let peer = nearby.first(where: { $0.deviceId != nil && $0.deviceId == selectedPeerId }),
-              let endpoint = peer.secureEndpoint, let id = peer.deviceId,
+              peer.secureEndpoint != nil, let id = peer.deviceId,
               let secret = trustedStore.find(deviceId: id)?.authToken else {
             lastError = "Pair with a nearby device first"
             return
         }
         let peerName = peer.deviceName
+        let platform = DevicePlatform(peer.platform)
         lastError = nil
         sendingTarget = peerName
         sendPhase = .sending(fileName: SendBatch.progressName(files[0].url.lastPathComponent, index: 0, count: files.count),
@@ -299,6 +421,7 @@ final class MacModel {
 
         Task.detached { [weak self] in
             var failedFiles: [StagedFile] = []
+            var unreachable = false
             for (index, file) in files.enumerated() {
                 let url = file.url
                 let fileName = url.lastPathComponent
@@ -306,20 +429,26 @@ final class MacModel {
                 await self?.showProgress(shownName, 0)
                 let accessing = url.startAccessingSecurityScopedResource()
                 var failed = false
+                var fileUnreachable = false
                 do {
-                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
+                    try FileSender.send(filePath: url.path, peer: peer, secret: secret) { sent, total in
                         let fraction = total > 0 ? Double(sent) / Double(total) : 0
                         Task { @MainActor in self?.showProgress(shownName, fraction) }
                     }
                 } catch {
                     failed = true
+                    fileUnreachable = FileSender.isUnreachable(error)
+                    unreachable = unreachable || fileUnreachable
                 }
                 if accessing { url.stopAccessingSecurityScopedResource() }
                 if failed { failedFiles.append(file) }
                 await self?.recordSend(fileName: fileName, peerName: peerName, bytes: file.bytes,
-                                       bookmark: file.bookmark, failed: failed)
+                                       bookmark: file.bookmark, failed: failed,
+                                       failure: SendFailureMessage.text(platform: platform, peerName: peerName,
+                                                                        unreachable: fileUnreachable, failed: 1, total: 1))
             }
-            await self?.finishSend(names: files.map(\.url.lastPathComponent), failed: failedFiles, peerName: peerName)
+            await self?.finishSend(names: files.map(\.url.lastPathComponent), failed: failedFiles, peerName: peerName,
+                                   platform: platform, unreachable: unreachable)
         }
     }
 
@@ -328,13 +457,15 @@ final class MacModel {
         sendPhase = .sending(fileName: shownName, progress: fraction)
     }
 
-    private func recordSend(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failed: Bool) {
-        let failure = failed ? "Couldn't reach \(peerName) — check it's on the same Wi-Fi, then retry." : nil
+    private func recordSend(fileName: String, peerName: String, bytes: Int64, bookmark: Data?, failed: Bool,
+                            failure message: String) {
+        let failure = failed ? message : nil
         history = historyStore.add(TransferRecord(fileName: fileName, peerName: peerName, bytes: bytes, date: Date(),
                                                   succeeded: !failed, detail: failure, bookmark: bookmark))
     }
 
-    private func finishSend(names: [String], failed: [StagedFile], peerName: String) {
+    private func finishSend(names: [String], failed: [StagedFile], peerName: String,
+                            platform: DevicePlatform, unreachable: Bool) {
         sendingTarget = nil
         if failed.isEmpty {
             let summary = SendBatch.summary(names)
@@ -347,9 +478,8 @@ final class MacModel {
         } else {
             // Keep only the failures, so Retry resends just those.
             stagedFiles = failed
-            let message = names.count == 1
-                ? "Couldn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
-                : "\(failed.count) of \(names.count) files didn't reach \(peerName) — check it's on the same Wi-Fi, then retry."
+            let message = SendFailureMessage.text(platform: platform, peerName: peerName, unreachable: unreachable,
+                                                  failed: failed.count, total: names.count)
             sendPhase = .failed(fileName: SendBatch.summary(failed.map(\.url.lastPathComponent)), message: message)
         }
     }
@@ -386,5 +516,15 @@ final class MacModel {
     func openReceiveFolder() {
         try? FileManager.default.createDirectory(at: receiveFolder, withIntermediateDirectories: true)
         NSWorkspace.shared.open(receiveFolder)
+    }
+}
+
+/// Bonjour peers readable from the locator's background thread while it waits.
+final class PeerSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var peers: [ResolvedPeer] = []
+    var value: [ResolvedPeer] {
+        get { lock.withLock { peers } }
+        set { lock.withLock { peers = newValue } }
     }
 }

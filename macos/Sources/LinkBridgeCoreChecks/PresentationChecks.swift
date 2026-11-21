@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import LinkBridgeCore
 import LinkBridgePresentation
 
@@ -30,6 +31,14 @@ private func record(succeeded: Bool, direction: TransferDirection = .sent, bookm
 }
 
 func runPresentationChecks() {
+    section("A peer reached over peer-to-peer shows as Direct") {
+        let id = UUID()
+        let direct = ResolvedPeer(deviceName: "Phone", deviceId: id, platform: "ios", host: "h", port: 1, tlsPort: 2, isDirect: true)
+        let items = DeviceListItem.merge(nearby: [direct, peer("Mac")], trusted: [trusted("Phone", id: id)], lastSeen: [:], now: fixedNow)
+        check(items.first { $0.deviceId == id }?.isDirect == true, "direct peer row is Direct")
+        check(items.first { $0.deviceId != id }?.isDirect == false, "network peer row is not Direct")
+    }
+
     section("Connection state") {
         let error = ConnectionState.derive(nearbyCount: 1, selected: item(sendable: true),
                                            sendPhase: .sending(fileName: "a", progress: 0.4), errorMessage: "Boom")
@@ -77,8 +86,30 @@ func runPresentationChecks() {
         check(unpaired.subtitle == "Not paired" && unpaired.canPair && unpaired.platform == .mac, "unpaired Mac can pair")
         let android = DeviceListItem.merge(nearby: [peer("Phone", platform: "android")], trusted: [],
                                            lastSeen: [:], now: fixedNow)[0]
-        check(android.subtitle == "Pair from the Android app (coming soon)" && !android.canPair
+        check(android.subtitle == "Pair from the Android app" && !android.canPair
               && android.platform == .android, "unpaired Android explains direction")
+        // Current unpaired devices advertise no deviceId; only a missing tlsPort means an old app.
+        let tagOnlyAndroid = DeviceListItem.merge(nearby: [peer("Pixel", id: nil, platform: "android")], trusted: [],
+                                                  lastSeen: [:], now: fixedNow)[0]
+        check(tagOnlyAndroid.subtitle == "Pair from the Android app", "unpaired Android without deviceId is not an old app")
+        let tagOnlyIphone = DeviceListItem.merge(nearby: [peer("Phone", id: nil, platform: "ios")], trusted: [],
+                                                 lastSeen: [:], now: fixedNow)[0]
+        check(tagOnlyIphone.subtitle == "Pair from the iPhone app", "unpaired iPhone without deviceId is not an old app")
+        let oldAndroid = DeviceListItem.merge(nearby: [peer("Old", id: nil, platform: "android", tlsPort: nil)], trusted: [],
+                                              lastSeen: [:], now: fixedNow)[0]
+        check(oldAndroid.subtitle == "Needs a LinkBridge update", "no tlsPort is an old app")
+        let iphoneId = UUID()
+        let iphone = DeviceListItem.merge(nearby: [peer("Phone", id: iphoneId, platform: "ios")],
+                                          trusted: [trusted("Phone", id: iphoneId, platform: "ios")], lastSeen: [:], now: fixedNow)[0]
+        check(iphone.isSendable && iphone.platform == .iphone && !iphone.subtitle.contains("coming soon"), "paired iPhone is sendable")
+        let iphoneUnpaired = DeviceListItem.merge(nearby: [peer("Phone", platform: "ios")], trusted: [], lastSeen: [:], now: fixedNow)[0]
+        check(iphoneUnpaired.subtitle == "Pair from the iPhone app" && !iphoneUnpaired.canPair, "unpaired iPhone subtitle")
+        check(SendFailureMessage.text(platform: .iphone, peerName: "Phone", unreachable: true, failed: 1, total: 1)
+              == "Open LinkBridge on the iPhone", "macUnreachableIphoneMessage")
+        check(SendFailureMessage.text(platform: .android, peerName: "Pixel", unreachable: true, failed: 1, total: 1)
+              .hasPrefix("Couldn't reach Pixel"), "non-iPhone keeps generic message")
+        check(FileSender.isUnreachable(NWError.posix(.ECONNREFUSED)) && FileSender.isUnreachable(NWError.posix(.ETIMEDOUT))
+              && !FileSender.isUnreachable(NWError.posix(.EPERM)), "unreachable classifier")
         let seen = UUID(), never = UUID()
         let away = DeviceListItem.merge(nearby: [], trusted: [trusted("A Mac", id: seen), trusted("B Mac", id: never)],
                                         lastSeen: [seen: fixedNow.addingTimeInterval(-300)], now: fixedNow)

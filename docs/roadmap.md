@@ -83,5 +83,11 @@ Android (done, verified on device):
 
 - Auto-reconnect trusted devices.
 - Clipboard sync.
-- Local hotspot fallback when there is no shared Wi-Fi.
+- Local hotspot fallback when there is no shared Wi-Fi: implemented as the offline direct link
+  (Android local-only hotspot + QR + offline hello; Apple peer-to-peer). Pending device
+  verification.
+- Follow-up: Android 17 `ACCESS_LOCAL_NETWORK` permission for the hello and transfers.
+- Follow-up: Resume interrupted transfers (an offline link that drops mid-file starts over).
+- Follow-up: Device spike + manual matrix for offline link (Task 0 / Task 14): Android ↔ iPhone,
+  Android ↔ Mac, iPhone ↔ Mac over peer-to-peer, on real devices.
 - Menu bar mode on the Mac.

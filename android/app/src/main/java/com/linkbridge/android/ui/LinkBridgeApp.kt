@@ -1,6 +1,16 @@
 package com.linkbridge.android.ui
 
+import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.linkbridge.android.OfflineUi
+import com.linkbridge.android.ui.offline.OfflineActions
+import com.linkbridge.android.ui.offline.OfflineLinkScreen
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -101,6 +111,7 @@ class AppActions(
     /** Settings rows; its onBack is ignored (the frame owns navigation). */
     val settings: SettingsActions = SettingsActions(),
     val versionName: String = "",
+    val offline: OfflineActions = OfflineActions(),
 )
 
 /**
@@ -110,7 +121,12 @@ class AppActions(
 @Composable
 fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val offline by vm.offline.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    // Nearby devices is a runtime permission on API 33+, asked when the user taps "Start offline link".
+    val nearbyPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) vm.startOffline() else vm.offlinePermissionDenied()
+    }
     val pick = rememberFilePicker(onPicked = vm::stage)
     val actions = remember(vm, pick, context) {
         AppActions(
@@ -144,9 +160,24 @@ fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
                 onUnpair = vm::unpair,
             ),
             versionName = BuildConfig.VERSION_NAME,
+            offline = OfflineActions(
+                onCard = {
+                    when {
+                        vm.offline.value.on -> vm.openOfflineScreen()
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU -> Unit
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) ==
+                            PackageManager.PERMISSION_GRANTED -> vm.startOffline()
+                        else -> nearbyPermission.launch(Manifest.permission.NEARBY_WIFI_DEVICES)
+                    }
+                },
+                onStop = vm::stopOffline,
+                onCloseScreen = vm::closeOfflineScreen,
+                onOpenSettings = { openAppSettings(context) },
+                onDismissMessage = vm::dismissOfflineMessage,
+            ),
         )
     }
-    AppFrame(state, actions)
+    AppFrame(state, actions, offline)
 }
 
 /**
@@ -155,7 +186,7 @@ fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppFrame(state: UiState, actions: AppActions) {
+fun AppFrame(state: UiState, actions: AppActions, offline: OfflineUi = OfflineUi()) {
     // Null until decided: Send if a sendable device turns up shortly after launch, else Devices.
     var chosenTab by rememberSaveable { mutableStateOf<Tab?>(null) }
     var inSettings by rememberSaveable { mutableStateOf(false) }
@@ -244,10 +275,14 @@ fun AppFrame(state: UiState, actions: AppActions) {
                         onRescan = actions.devices.onRescan,
                         onBannerAction = actions.devices.onBannerAction,
                     ),
+                    offline = offline,
+                    offlineActions = actions.offline,
                 )
             }
         }
     }
+
+    offline.screen?.let { OfflineLinkScreen(it, actions.offline) }
 
     if (pairing != null) {
         PairingSheet(
@@ -271,6 +306,13 @@ fun AppFrame(state: UiState, actions: AppActions) {
             ApprovalSheet(approval, queued = state.approvals.size, onResolve = actions.onResolveApproval)
         }
     }
+}
+
+private fun openAppSettings(context: Context) {
+    context.startActivity(
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    )
 }
 
 /** ACTION_VIEW on [uri] with a read grant; false when no app can open it. */
@@ -301,6 +343,8 @@ private fun TabsFrame(
     sendActions: SendActions,
     historyActions: HistoryActions,
     devicesActions: DevicesActions,
+    offline: OfflineUi,
+    offlineActions: OfflineActions,
 ) {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     LaunchedEffect(tab) { scrollBehavior.state.contentOffset = 0f }
@@ -327,7 +371,7 @@ private fun TabsFrame(
                 .then(if (hazeState != null) Modifier.hazeSource(hazeState) else Modifier),
         ) {
             when (tab) {
-                Tab.DEVICES -> DevicesScreen(state, devicesActions, contentPadding = padding)
+                Tab.DEVICES -> DevicesScreen(state, devicesActions, contentPadding = padding, offline = offline, offlineActions = offlineActions)
                 Tab.SEND -> SendScreen(state, sendActions, contentPadding = padding)
                 Tab.HISTORY -> HistoryScreen(state, historyActions, contentPadding = padding)
             }
