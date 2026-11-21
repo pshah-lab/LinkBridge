@@ -481,7 +481,8 @@ public final class ControlServer {
         guard let peerPublicKey = peerIdentity.publicKey,
               let peerKey = try? PairingKeyStore.parsePublicKey(peerPublicKey),
               let sharedSecret = try? PairingKeyStore().sharedSecret(peerPublicKeyBase64: peerPublicKey),
-              let macKey = try? PairingKeyStore.parsePublicKey(identity.publicKey) else {
+              // The stored key, not the one cached in `identity`: the key sent must be the one ECDH used.
+              let macKey = try? PairingKeyStore.parsePublicKey(PairingKeyStore().publicKeyBase64) else {
             return jsonError("400 Bad Request", "missing_public_key")
         }
 
