@@ -96,7 +96,9 @@ public final class PeerBrowser: NSObject {
             platform: value("platform"),
             host: record.host,
             port: record.port,
-            tlsPort: value("tlsPort").flatMap(UInt16.init)
+            tlsPort: value("tlsPort").flatMap(UInt16.init),
+            level: ProtocolLevel.fromTXT(protocol: value("protocol"), minProtocol: value("minProtocol"),
+                                         hasTLSPort: value("tlsPort").flatMap(UInt16.init) != nil, hasDeviceId: deviceId != nil)
         )
     }
 

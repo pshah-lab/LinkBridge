@@ -10,6 +10,8 @@ public final class ControlServer {
     /// 2: transfers go over the TLS-PSK port advertised as `tlsPort`; the plain port only
     /// serves device info and pairing.
     public static let protocolVersion = 2
+    /// The oldest protocol this build still works with. See "Versions" in docs/protocol.md.
+    public static let minProtocolVersion = 2
 
     public private(set) var identity: DeviceIdentity
     /// Plain port (device info and pairing). Equals the preferred port unless it was taken.
@@ -252,6 +254,7 @@ public final class ControlServer {
         txt["deviceName"] = identity.deviceName
         txt["platform"] = identity.platform
         txt["protocol"] = String(Self.protocolVersion)
+        txt["minProtocol"] = String(Self.minProtocolVersion)
         txt["tlsPort"] = String(securePort)
         txt["features"] = identity.features.joined(separator: ",")
         return NWListener.Service(name: identity.deviceName, type: Self.serviceType, domain: nil, txtRecord: txt)

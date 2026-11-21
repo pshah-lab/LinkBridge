@@ -413,6 +413,7 @@ section("Credentials: an unreadable store is never overwritten or re-keyed") {
     check(keys.publicKeyBase64 == first, "and reused afterwards")
 }
 
+runProtocolCompatChecks()
 runPresentationChecks()
 runApprovalChecks()
 runHistoryStoreChecks()
