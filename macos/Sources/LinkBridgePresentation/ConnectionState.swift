@@ -4,6 +4,8 @@ import Foundation
 public enum ConnectionState: Equatable {
     case searching
     case noPairedDevice
+    /// The user picked a device that can't receive (away, unpaired, or needs pairing again).
+    case unavailable(deviceName: String)
     case ready(deviceName: String)
     case sending(deviceName: String, progress: Double)
     case error(message: String)
@@ -17,6 +19,8 @@ public enum ConnectionState: Equatable {
             return .sending(deviceName: selected.name, progress: progress)
         }
         if let selected, selected.isSendable { return .ready(deviceName: selected.name) }
+        // Name the pick: "No paired device nearby" was wrong when another paired device was ready.
+        if let selected { return .unavailable(deviceName: selected.name) }
         return nearbyCount == 0 ? .searching : .noPairedDevice
     }
 
@@ -24,6 +28,7 @@ public enum ConnectionState: Equatable {
         switch self {
         case .searching: "Looking for devices…"
         case .noPairedDevice: "No paired device nearby"
+        case .unavailable(let name): "\(name) can't receive right now"
         case .ready(let name), .sending(let name, _): name
         case .error(let message): message
         }
@@ -32,7 +37,7 @@ public enum ConnectionState: Equatable {
     public var dotLabel: String {
         switch self {
         case .ready, .sending: "Connected"
-        case .searching, .noPairedDevice: "Searching"
+        case .searching, .noPairedDevice, .unavailable: "Searching"
         case .error: "Error"
         }
     }
@@ -42,7 +47,7 @@ public enum ConnectionState: Equatable {
         switch self {
         case .ready, .sending: .signal
         case .error: .attention
-        case .searching, .noPairedDevice: nil
+        case .searching, .noPairedDevice, .unavailable: nil
         }
     }
 }

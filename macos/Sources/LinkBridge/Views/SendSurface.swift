@@ -24,6 +24,10 @@ struct SendSurface: View {
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { model.stage(urls) }
             }
+        } else if item.needsRepair, let deviceId = item.deviceId {
+            // Pairing always starts on the phone, so "pair again" is an instruction; Forget is here.
+            EmptyState(symbol: "exclamationmark.arrow.triangle.2.circlepath", message: Self.unavailableSentence(item),
+                       actionTitle: "Forget \(item.name)") { model.unpair(deviceId) }
         } else {
             EmptyState(symbol: item.platform.symbol, message: Self.unavailableSentence(item))
         }
@@ -73,6 +77,9 @@ struct SendSurface: View {
 
     /// Why a device in the sidebar can't receive, as one sentence. Pairing always starts on the phone.
     static func unavailableSentence(_ item: DeviceListItem) -> String {
+        if item.needsRepair {
+            return "\(item.name) no longer recognises this Mac. To pair again, open LinkBridge on \(item.name) and tap Pair. Or forget it here."
+        }
         if !item.isPaired {
             return item.platform == .android ? "Pair from the Android app." : "\(item.name) isn't paired with this Mac."
         }

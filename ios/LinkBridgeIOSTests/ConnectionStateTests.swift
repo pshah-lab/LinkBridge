@@ -39,8 +39,14 @@ private func item(sendable: Bool) -> DeviceListItem {
     #expect(state.dotAccent == nil)
 }
 
-@Test func nearbyButNoSendableSelectionIsNoPairedDevice() {
-    let state = ConnectionState.derive(nearbyCount: 2, selected: item(sendable: false), sendPhase: .idle, errorMessage: nil)
+@Test func nearbyButNoSelectionIsNoPairedDevice() {
+    let state = ConnectionState.derive(nearbyCount: 2, selected: nil, sendPhase: .idle, errorMessage: nil)
     #expect(state == .noPairedDevice)
     #expect(state.title == "No paired device nearby")
+}
+
+@Test func unsendableSelectionIsNamed() {
+    let state = ConnectionState.derive(nearbyCount: 2, selected: item(sendable: false), sendPhase: .idle, errorMessage: nil)
+    #expect(state == .unavailable(deviceName: "Mac"))
+    #expect(state.title == "Mac can't receive right now")
 }

@@ -34,9 +34,12 @@ public struct DeviceListItem: Identifiable, Equatable {
     public let isSendable: Bool
     public let canPair: Bool
     public let subtitle: String
+    /// We hold a pairing for this device, and it is nearby, but it no longer recognises us
+    /// (its discovery tags match none of our secrets, e.g. after a reinstall). One row, not two.
+    public let needsRepair: Bool
 
     public init(id: String, deviceId: UUID?, name: String, platform: DevicePlatform, isPaired: Bool, isNearby: Bool,
-                isSendable: Bool, canPair: Bool, subtitle: String) {
+                isSendable: Bool, canPair: Bool, subtitle: String, needsRepair: Bool = false) {
         self.id = id
         self.deviceId = deviceId
         self.name = name
@@ -46,6 +49,7 @@ public struct DeviceListItem: Identifiable, Equatable {
         self.isSendable = isSendable
         self.canPair = canPair
         self.subtitle = subtitle
+        self.needsRepair = needsRepair
     }
 
     /// The list row id for a nearby peer. Unpaired protocol-3 Macs advertise no device ID,
@@ -60,9 +64,22 @@ public struct DeviceListItem: Identifiable, Equatable {
                       lastSeen: [UUID: Date], now: Date) -> [DeviceListItem] {
         let trustedIds = Set(trusted.map(\.deviceId))
         let nearbyIds = Set(nearby.compactMap(\.deviceId))
+        // Paired devices not recognised nearby. A nearby peer with no matching tag but the same
+        // name and platform as one of these is most likely that device having lost its pairing.
+        var unmatched = trusted.filter { !nearbyIds.contains($0.deviceId) }
+        var repairIds = Set<UUID>()
 
         let nearbyItems = nearby.map { peer -> DeviceListItem in
             let platform = DevicePlatform(peer.platform)
+            if peer.deviceId == nil,
+               let index = unmatched.firstIndex(where: { $0.deviceName == peer.deviceName && DevicePlatform($0.platform) == platform }) {
+                let stale = unmatched.remove(at: index)
+                repairIds.insert(stale.deviceId)
+                return DeviceListItem(id: stale.deviceId.uuidString, deviceId: stale.deviceId, name: peer.deviceName,
+                                      platform: platform, isPaired: true, isNearby: true, isSendable: false,
+                                      canPair: platform == .mac && peer.tlsPort != nil, subtitle: "Needs pairing again",
+                                      needsRepair: true)
+            }
             let paired = peer.deviceId.map(trustedIds.contains) ?? false
             // Since protocol 3 a Mac's TXT record has no device ID; the pairing client reads it
             // from `GET /device`. A Mac with neither a device ID nor a TLS port is too old to pair.
@@ -83,7 +100,7 @@ public struct DeviceListItem: Identifiable, Equatable {
                                   subtitle: subtitle)
         }
 
-        let awayItems = trusted.filter { !nearbyIds.contains($0.deviceId) }.map { peer -> DeviceListItem in
+        let awayItems = trusted.filter { !nearbyIds.contains($0.deviceId) && !repairIds.contains($0.deviceId) }.map { peer -> DeviceListItem in
             let subtitle: String
             if let seen = lastSeen[peer.deviceId] {
                 let formatter = RelativeDateTimeFormatter()
