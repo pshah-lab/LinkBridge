@@ -1,3 +1,7 @@
 README.md
 .env*
-.gitignore
+node_modules
+dist
+dist-ssr
+AGENTS.md
+CLAUDE.md

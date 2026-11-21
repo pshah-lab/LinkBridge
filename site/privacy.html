@@ -1,69 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Privacy policy: LinkBridge</title>
   <meta name="description" content="LinkBridge collects no personal data. Files go directly between your own devices on your local network.">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#ffffff">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="site-head wrap">
-    <div class="bar glass">
-      <a class="brand" href="./" aria-label="LinkBridge home">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="7" width="17" height="13" rx="3.5" fill="none" stroke="currentColor" stroke-width="2.4"/><rect x="19" y="11" width="11" height="17" rx="3" fill="var(--accent)"/></svg>
-        LinkBridge
-      </a>
-      <nav aria-label="Main"><a class="btn" href="./#install">Download</a></nav>
-    </div>
-  </header>
-
-  <main class="wrap doc">
-    <article class="glass">
-      <h1>Privacy policy</h1>
-      <p class="updated">Last updated 21 November 2026</p>
-
-      <p>LinkBridge is an app for Mac, Android and iPhone that sends files between your own devices over your local Wi-Fi network. This policy covers the apps and this website.</p>
-
-      <h2>The apps collect no data</h2>
-      <p>LinkBridge has no account system and no servers. The apps don't collect, store or share any personal data with us or anyone else. They contain no analytics, advertising or crash-reporting tools.</p>
-
-      <h2>What stays on your devices</h2>
-      <ul>
-        <li><strong>Files you send and receive</strong> go directly from one of your devices to another over your local network. They are never uploaded to the internet. Received files are saved in Downloads › LinkBridge on your device.</li>
-        <li><strong>Pairing details</strong>: each device keeps a name, an ID and a shared secret for every device you pair with, so they can recognise each other and encrypt transfers. These stay on the device.</li>
-        <li><strong>Transfer history</strong>: the apps keep a list of recent transfers on the device so you can see what was sent.</li>
-      </ul>
-      <p>Uninstalling LinkBridge removes this information from that device, except for files you received.</p>
-
-      <h2>Permissions</h2>
-      <ul>
-        <li><strong>Local network</strong>: to find your other devices and send files to them.</li>
-        <li><strong>Notifications</strong> (Android): to let you accept files while the app is in the background.</li>
-      </ul>
-
-      <h2>This website</h2>
-      <p>This site uses no cookies, analytics or trackers. The company hosting it may keep standard server logs, such as IP addresses and the pages requested, to run and secure the service.</p>
-      <p>If you sign up as a tester, the signup form is run by Google Forms and your answers, including your email address, are handled under <a href="https://policies.google.com/privacy">Google's privacy policy</a>. We use that email only to add you to the LinkBridge test and to contact you about it, and delete it when testing ends or when you ask.</p>
-
-      <h2>Children</h2>
-      <p>LinkBridge doesn't collect data from anyone, including children.</p>
-
-      <h2>Changes</h2>
-      <p>If this policy changes, the new version will be posted on this page with a new date.</p>
-
-      <h2>Contact</h2>
-      <!-- PLACEHOLDER: confirm the contact address before publishing. -->
-      <p>Questions about privacy: <a href="mailto:privacy@pratham.si">privacy@pratham.si</a></p>
-    </article>
-  </main>
-
-  <footer class="site-foot">
-    <div class="wrap">
-      <span>© 2026 LinkBridge</span>
-      <nav aria-label="Footer"><a href="./">Home</a><a href="./#install">Download</a></nav>
-    </div>
-  </footer>
+  <div id="root"><!--app--></div>
+  <script type="module" src="/src/entry-privacy.jsx"></script>
 </body>
 </html>
