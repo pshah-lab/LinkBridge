@@ -1,6 +1,7 @@
 package com.linkbridge.android.presentation
 
 import com.linkbridge.android.DiscoveredPeer
+import com.linkbridge.android.ProtocolLevel
 import com.linkbridge.android.TrustedPeer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,11 +13,12 @@ import org.junit.Test
 /** Ported from the Mac "Device list merge" checks, with the Android identity rules from the spec. */
 class DeviceListItemTest {
     private fun peer(
-        name: String, deviceId: String? = null, platform: String? = "macos", tlsPort: Int? = 49162
+        name: String, deviceId: String? = null, platform: String? = "macos", tlsPort: Int? = 49162,
+        level: ProtocolLevel? = null
     ) = DiscoveredPeer(
         serviceName = "svc-$name", deviceId = deviceId, deviceName = name, platform = platform,
         host = "10.0.0.5", port = 49152, tlsPort = tlsPort
-    )
+    ).let { if (level == null) it else it.copy(level = level) }
 
     private fun trusted(name: String, deviceId: String) =
         TrustedPeer(deviceId, name, "macos", "10.0.0.5", 49152, authToken = null)
@@ -57,14 +59,34 @@ class DeviceListItemTest {
     @Test
     fun missingTlsPortNeedsAnUpdate() {
         val unpaired = DeviceListItem.merge(listOf(peer("Old Mac", tlsPort = null)), emptyList()).single()
-        assertEquals("Needs a LinkBridge update", unpaired.subtitle)
+        assertEquals("Update LinkBridge on Old Mac", unpaired.subtitle)
         assertFalse(unpaired.canPair)
         assertFalse(unpaired.isSendable)
 
         val paired = DeviceListItem.merge(listOf(peer("Old Mac", "o-1", tlsPort = null)), listOf(trusted("Old Mac", "o-1"))).single()
-        assertEquals("Needs a LinkBridge update", paired.subtitle)
+        assertEquals("Update LinkBridge on Old Mac", paired.subtitle)
         assertFalse(paired.canPair)
         assertFalse(paired.isSendable)
+    }
+
+    @Test
+    fun incompatibleProtocolsNameWhoMustUpdate() {
+        val tooOld = DeviceListItem.merge(listOf(peer("Mac", "m-1", level = ProtocolLevel(1, 1))), listOf(trusted("Mac", "m-1"))).single()
+        assertEquals("Update LinkBridge on Mac", tooOld.subtitle)
+        assertFalse(tooOld.isSendable)
+        assertTrue(tooOld.isPaired)
+
+        val tooOldUnpaired = DeviceListItem.merge(listOf(peer("Mac", level = ProtocolLevel(1, 1))), emptyList()).single()
+        assertEquals("Update LinkBridge on Mac", tooOldUnpaired.subtitle)
+        assertFalse(tooOldUnpaired.canPair)
+
+        val newer = DeviceListItem.merge(listOf(peer("Mac", "m-1", level = ProtocolLevel(3, 3))), listOf(trusted("Mac", "m-1"))).single()
+        assertEquals("Update LinkBridge on this device", newer.subtitle)
+        assertFalse(newer.isSendable)
+
+        val current = DeviceListItem.merge(listOf(peer("Mac", "m-1", level = ProtocolLevel(2, 2))), listOf(trusted("Mac", "m-1"))).single()
+        assertEquals("Paired · Nearby", current.subtitle)
+        assertTrue(current.isSendable)
     }
 
     @Test

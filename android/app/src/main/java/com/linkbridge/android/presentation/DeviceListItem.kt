@@ -1,6 +1,8 @@
 package com.linkbridge.android.presentation
 
+import com.linkbridge.android.Compatibility
 import com.linkbridge.android.DiscoveredPeer
+import com.linkbridge.android.ProtocolCompat
 import com.linkbridge.android.TrustedPeer
 
 enum class DevicePlatform {
@@ -53,10 +55,12 @@ data class DeviceListItem(
             val nearbyItems = nearby.map { peer ->
                 val platform = DevicePlatform.from(peer.platform)
                 val paired = peer.deviceId != null && peer.deviceId in trustedIds
-                val current = peer.tlsPort != null
+                val update = ProtocolCompat.message(ProtocolCompat.check(peer = peer.level), peer.deviceName)
+                    ?: if (peer.tlsPort == null) ProtocolCompat.message(Compatibility.PEER_TOO_OLD, peer.deviceName) else null
+                val current = update == null
                 val canPair = !paired && current && platform == DevicePlatform.MAC
                 val subtitle = when {
-                    !current -> "Needs a LinkBridge update"
+                    update != null -> update
                     paired -> "Paired · Nearby"
                     canPair -> "Not paired"
                     else -> "Pair from the Mac app"

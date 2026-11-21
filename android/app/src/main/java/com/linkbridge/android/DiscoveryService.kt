@@ -91,6 +91,7 @@ class DiscoveryService(
             setAttribute("platform", identity.platform)
             // Protocol 2: transfers use TLS-PSK on tlsPort (the receive server is TLS-only).
             setAttribute("protocol", PROTOCOL_VERSION.toString())
+            setAttribute("minProtocol", ProtocolLevel.MINIMUM.toString())
             setAttribute("tlsPort", this@DiscoveryService.port.toString())
             setAttribute("features", identity.features.joinToString(","))
         }
@@ -215,7 +216,11 @@ class DiscoveryService(
             platform = platform,
             host = hostAddress.hostAddress ?: return null,
             port = port,
-            tlsPort = tlsPort
+            tlsPort = tlsPort,
+            level = ProtocolLevel.fromTxt(
+                attributes["protocol"]?.decodeToString(), attributes["minProtocol"]?.decodeToString(),
+                hasTlsPort = tlsPort != null, hasDeviceId = deviceId != null
+            )
         )
     }
 
