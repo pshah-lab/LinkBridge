@@ -60,8 +60,12 @@ public struct DeviceListItem: Identifiable, Equatable {
 
     /// Nearby paired devices first, then nearby unpaired, then paired devices that are away;
     /// names sorted A→Z within each group.
+    /// `localName` names this device in update messages: "this Mac" or "this device".
+    /// True when this device and the other run incompatible LinkBridge protocols.
+    public var needsProtocolUpdate: Bool { subtitle.hasPrefix("Update LinkBridge on ") }
+
     public static func merge(nearby: [ResolvedPeer], trusted: [TrustedPeer],
-                      lastSeen: [UUID: Date], now: Date) -> [DeviceListItem] {
+                      lastSeen: [UUID: Date], now: Date, localName: String = ProtocolCompat.localName) -> [DeviceListItem] {
         let trustedIds = Set(trusted.map(\.deviceId))
         let nearbyIds = Set(nearby.compactMap(\.deviceId))
         // Paired devices not recognised nearby. A nearby peer with no matching tag but the same
@@ -81,22 +85,22 @@ public struct DeviceListItem: Identifiable, Equatable {
                                       needsRepair: true)
             }
             let paired = peer.deviceId.map(trustedIds.contains) ?? false
-            // Since protocol 3 a Mac's TXT record has no device ID; the pairing client reads it
-            // from `GET /device`. A Mac with neither a device ID nor a TLS port is too old to pair.
-            let canPair = !paired && platform == .mac && (peer.deviceId != nil || peer.tlsPort != nil)
+            let update = ProtocolCompat.message(ProtocolCompat.check(peer: peer.level), peerName: peer.deviceName, localName: localName)
+            // A current Mac's TXT record has no device ID; the pairing client reads it from `GET /device`.
+            let canPair = update == nil && !paired && platform == .mac && (peer.deviceId != nil || peer.tlsPort != nil)
             let subtitle: String
-            if paired {
+            if let update {
+                subtitle = update
+            } else if paired {
                 subtitle = peer.secureEndpoint == nil ? "Paired · needs a LinkBridge update" : "Paired · Nearby"
             } else if canPair {
                 subtitle = "Not paired"
-            } else if peer.deviceId == nil && peer.tlsPort == nil {
-                subtitle = "Needs a LinkBridge update"
             } else {
                 subtitle = "Pair from the \(platform == .android ? "Android" : "other") app (coming soon)"
             }
             return DeviceListItem(id: itemId(for: peer), deviceId: peer.deviceId,
                                   name: peer.deviceName, platform: platform, isPaired: paired, isNearby: true,
-                                  isSendable: paired && peer.secureEndpoint != nil, canPair: canPair,
+                                  isSendable: update == nil && paired && peer.secureEndpoint != nil, canPair: canPair,
                                   subtitle: subtitle)
         }
 

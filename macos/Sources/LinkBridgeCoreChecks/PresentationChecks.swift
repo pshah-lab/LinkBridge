@@ -13,8 +13,11 @@ private func item(_ id: UUID = UUID(), name: String = "Mac", sendable: Bool, nea
 }
 
 private func peer(_ name: String, id: UUID? = UUID(), platform: String? = "macos",
-                  host: String = "10.0.0.5", tlsPort: UInt16? = 49162) -> ResolvedPeer {
-    ResolvedPeer(deviceName: name, deviceId: id, platform: platform, host: host, port: 49152, tlsPort: tlsPort)
+                  host: String = "10.0.0.5", tlsPort: UInt16? = 49162, level: ProtocolLevel? = nil) -> ResolvedPeer {
+    // Without an explicit level, read it as a 0.2.x (or, without a TLS port, pre-protocol-2) TXT record.
+    ResolvedPeer(deviceName: name, deviceId: id, platform: platform, host: host, port: 49152, tlsPort: tlsPort,
+                 level: level ?? .fromTXT(protocol: tlsPort == nil ? nil : "2", minProtocol: nil,
+                                          hasTLSPort: tlsPort != nil, hasDeviceId: id != nil))
 }
 
 private func trusted(_ name: String, id: UUID, platform: String = "macos") -> TrustedPeer {
@@ -70,10 +73,20 @@ func runPresentationChecks() {
         check(paired.subtitle == "Paired · Nearby" && paired.isSendable && paired.isPaired && paired.isNearby, "paired + TLS is sendable")
         let noTLS = DeviceListItem.merge(nearby: [peer("Mac", id: id, tlsPort: nil)], trusted: [trusted("Mac", id: id)],
                                          lastSeen: [:], now: fixedNow)[0]
-        check(noTLS.subtitle == "Paired · needs a LinkBridge update" && !noTLS.isSendable, "paired without TLS needs update")
+        check(noTLS.subtitle == "Update LinkBridge on Mac" && !noTLS.isSendable && noTLS.needsProtocolUpdate, "paired without TLS needs update")
         let old = DeviceListItem.merge(nearby: [peer("Old Mac", id: nil, tlsPort: nil)], trusted: [], lastSeen: [:], now: fixedNow)[0]
         check(old.id == "10.0.0.5:49152" && !old.canPair && !old.isSendable
-              && old.subtitle == "Needs a LinkBridge update", "no device id or TLS port: needs an update")
+              && old.subtitle == "Update LinkBridge on Old Mac", "no device id or TLS port: needs an update")
+        let tooOld = ProtocolLevel(current: 1, minimum: 1), tooNew = ProtocolLevel(current: 3, minimum: 3)
+        let oldPaired = DeviceListItem.merge(nearby: [peer("Mac", id: id, level: tooOld)], trusted: [trusted("Mac", id: id)], lastSeen: [:], now: fixedNow)[0]
+        check(oldPaired.subtitle == "Update LinkBridge on Mac" && !oldPaired.isSendable && oldPaired.isPaired, "paired but too old: update it, can't send")
+        let oldUnpaired = DeviceListItem.merge(nearby: [peer("Mac", id: nil, level: tooOld)], trusted: [], lastSeen: [:], now: fixedNow)[0]
+        check(oldUnpaired.subtitle == "Update LinkBridge on Mac" && !oldUnpaired.canPair, "unpaired but too old: update it, can't pair")
+        let newer = DeviceListItem.merge(nearby: [peer("Mac", id: id, level: tooNew)], trusted: [trusted("Mac", id: id)], lastSeen: [:], now: fixedNow)[0]
+        check(newer.subtitle == "Update LinkBridge on this Mac" && !newer.isSendable, "peer needs a newer protocol: update this Mac")
+        let newerUnpaired = DeviceListItem.merge(nearby: [peer("Mac", id: nil, level: tooNew)], trusted: [], lastSeen: [:], now: fixedNow,
+                                                 localName: "this device")[0]
+        check(newerUnpaired.subtitle == "Update LinkBridge on this device" && !newerUnpaired.canPair, "local name is passed through")
         // Protocol 3 Macs leave the device ID out of Bonjour; pairing reads it from /device.
         let v3 = DeviceListItem.merge(nearby: [peer("New Mac", id: nil)], trusted: [], lastSeen: [:], now: fixedNow)[0]
         check(v3.id == "10.0.0.5:49152" && v3.canPair && !v3.isSendable && v3.subtitle == "Not paired",

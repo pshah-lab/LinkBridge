@@ -561,15 +561,15 @@ func request(port: UInt16, parameters: NWParameters, _ text: String) -> String {
 }
 
 /// A signed upload head for `deviceId`, with no body.
-func signedUploadHead(deviceId: UUID, secret: String, contentLength: Int = 1000) -> String {
+func signedUploadHead(deviceId: UUID, secret: String, contentLength: Int = 1000, extraHeaders: [String] = []) -> String {
     let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
     let transferId = UUID().uuidString
     let signature = Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: ["POST", "/transfer/upload", deviceId.uuidString, timestamp,
                                                                        transferId, Security.encryptionScheme, String(contentLength)].joined(separator: "\n"))!
-    return ["POST /transfer/upload HTTP/1.1", "Content-Length: \(contentLength)",
+    return (["POST /transfer/upload HTTP/1.1", "Content-Length: \(contentLength)",
             "X-LinkBridge-Device-Id: \(deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
             "X-LinkBridge-Transfer-Id: \(transferId)", "X-LinkBridge-Encryption: \(Security.encryptionScheme)",
-            "X-LinkBridge-Signature: \(signature)", "", ""].joined(separator: "\r\n")
+            "X-LinkBridge-Signature: \(signature)"] + extraHeaders + ["", ""]).joined(separator: "\r\n")
 }
 
 /// Starts a server on the completion-based initializer. `pair` / `transfer` decide how each request is answered.
@@ -791,6 +791,23 @@ DispatchQueue.global().async {
         check(request() == 200, "the same address can still replace its own request")
     }
 
+    section("Pairing refuses incompatible protocols and names who must update") {
+        func pairRequest(_ extra: [String: Any]) -> (Int, [String: Any]) {
+            post(port, "/pair/request", ["deviceId": UUID().uuidString, "deviceName": "Phone", "platform": "android",
+                                         "protocolVersion": 1, "features": [], "pairingVersion": 3,
+                                         "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()]
+                                         .merging(extra) { $1 })
+        }
+        let (old, oldBody) = pairRequest(["protocol": 1, "minProtocol": 1])
+        check(old == 426 && oldBody["error"] as? String == "update_required" && oldBody["update"] as? String == "sender", "too-old phone refused, got \(old) \(oldBody)")
+        let (new, newBody) = pairRequest(["protocol": 3, "minProtocol": 3])
+        check(new == 426 && newBody["update"] as? String == "receiver", "phone needing a newer Mac refused, got \(new) \(newBody)")
+        let (current, currentBody) = pairRequest([:])
+        check(current == 200 && currentBody["protocol"] as? Int == 2 && currentBody["minProtocol"] as? Int == 2, "0.2.x phone still pairs, got \(current) \(currentBody)")
+        let device = rawRequest(port: port, "GET /device HTTP/1.1\r\nHost: x\r\n\r\n")
+        check(device.contains(#""protocol":2"#) && device.contains(#""minProtocol":2"#), "/device reports its protocol levels")
+    }
+
     section("Renaming this Mac updates what pairing shows") {
         let before = IdentityStore().loadOrCreate()
         let renamed = IdentityStore().rename(before, to: "Desk\nMac")
@@ -859,6 +876,21 @@ DispatchQueue.global().async {
         } else {
             check(false, "needs a second paired device")
         }
+        // Senders on an incompatible protocol are refused before anyone is asked, naming who must update.
+        let selfTLS = SecureTransport.clientParameters(identity: SecureTransport.identity(for: identity.deviceId.uuidString),
+                                                       psk: SecureTransport.psk(fromSecret: secret)!)
+        var incompatible: [String] = []
+        DispatchQueue.main.sync { ControlServer.onIncompatibleSender = { incompatible.append($0) } }
+        let oldSender = request(port: server.securePort, parameters: selfTLS,
+                                signedUploadHead(deviceId: identity.deviceId, secret: secret, extraHeaders: ["X-LinkBridge-Protocol: 1", "X-LinkBridge-Min-Protocol: 1"]))
+        check(oldSender.hasPrefix("HTTP/1.1 426") && oldSender.contains(#""error":"update_required""#) && oldSender.contains(#""update":"sender""#),
+              "too-old sender refused, got \(oldSender.prefix(80))")
+        let newSender = request(port: server.securePort, parameters: selfTLS,
+                                signedUploadHead(deviceId: identity.deviceId, secret: secret, extraHeaders: ["X-LinkBridge-Protocol: 3", "X-LinkBridge-Min-Protocol: 3"]))
+        check(newSender.contains(#""update":"receiver""#), "sender needing a newer receiver refused, got \(newSender.prefix(80))")
+        DispatchQueue.main.sync {}
+        check(incompatible == ["Self"], "receiver told once per sender, got \(incompatible)")
+        DispatchQueue.main.sync { ControlServer.onIncompatibleSender = nil }
         try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(server.securePort)", secret: secret)
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)

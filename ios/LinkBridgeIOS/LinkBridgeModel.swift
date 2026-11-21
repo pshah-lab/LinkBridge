@@ -170,7 +170,7 @@ final class LinkBridgeModel: ObservableObject {
                 let accessing = url.startAccessingSecurityScopedResource()
                 var failure: String?
                 do {
-                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
+                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret, peerName: peer.deviceName) { sent, total in
                         let fraction = total > 0 ? Double(sent) / Double(total) : 0
                         Task { @MainActor in self?.showProgress(shownName, fraction) }
                     }

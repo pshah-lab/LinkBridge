@@ -16,6 +16,7 @@ public final class PairingClient {
     private let endpoint: String
     private let session: URLSession
     private var pending: (peer: PublicDeviceIdentity, secret: String)?
+    private var peerName = "the other device"
 
     /// `endpoint` is the peer's plain `host:port` (`ResolvedPeer.endpoint`).
     public init(endpoint: String) {
@@ -29,11 +30,18 @@ public final class PairingClient {
     public func begin() async throws -> Started {
         let identity = IdentityStore().loadOrCreate()
         let peer = try JSONDecoder().decode(PublicDeviceIdentity.self, from: try await request("GET", "/device"))
+        peerName = peer.deviceName
+        if let message = ProtocolCompat.message(ProtocolCompat.check(peer: peer.level), peerName: peer.deviceName,
+                                                localName: ProtocolCompat.localName) {
+            throw PairingClientError.updateRequired(message)
+        }
 
         let body = try JSONEncoder().encode(PublicDeviceIdentity(
             deviceId: identity.deviceId, deviceName: identity.deviceName, platform: identity.platform,
             protocolVersion: ControlServer.protocolVersion, features: identity.features, publicKey: identity.publicKey,
-            pairingVersion: PairingCode.pairingVersion
+            pairingVersion: PairingCode.pairingVersion,
+            protocolLevel: ControlServer.protocolVersion,
+            minProtocol: ControlServer.minProtocolVersion
         ))
         let reply = try JSONDecoder().decode(PairRequestReply.self, from: try await request("POST", "/pair/request", body: body))
         guard let commitmentText = reply.commitment, let commitment = Data(base64Encoded: commitmentText) else {
@@ -98,6 +106,10 @@ public final class PairingClient {
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...299).contains(status) else {
+            if status == 426, let compatibility = ProtocolCompat.rejection(fromBody: data),
+               let message = ProtocolCompat.message(compatibility, peerName: peerName, localName: ProtocolCompat.localName) {
+                throw PairingClientError.updateRequired(message)
+            }
             let detail = String(decoding: data, as: UTF8.self)
             if detail.contains("pair_declined") { throw PairingClientError.declined }
             if detail.contains("no_pending_pairing") { throw PairingClientError.expired }
@@ -121,6 +133,7 @@ private struct PairConfirmReply: Decodable {
 public enum PairingClientError: Error, LocalizedError {
     case invalidEndpoint, peerNeedsUpdate, commitmentMismatch, notStarted, declined, expired, busy
     case httpStatus(Int)
+    case updateRequired(String)
 
     public var errorDescription: String? {
         switch self {
@@ -132,6 +145,7 @@ public enum PairingClientError: Error, LocalizedError {
         case .expired: return "Pairing expired. Start again."
         case .busy: return "The other device is already showing a pairing request."
         case let .httpStatus(status): return "Pairing failed (HTTP \(status))."
+        case let .updateRequired(message): return message + " to pair."
         }
     }
 }

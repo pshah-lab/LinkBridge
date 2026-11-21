@@ -1,5 +1,6 @@
 import AppKit
 import LinkBridgePresentation
+import LinkBridgeCore
 import SwiftUI
 
 @main
@@ -45,6 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.notifications?.post(item)
         }
         model.approvals.onRemoved = { [weak self] id in self?.notifications?.withdraw(id: id) }
+        ControlServer.onIncompatibleSender = { [weak self] name in
+            MainActor.assumeIsolated { self?.notifications?.postUpdateRequired(senderName: name) }
+        }
         model.start()
         Task {
             await notifications?.requestAuthorization()

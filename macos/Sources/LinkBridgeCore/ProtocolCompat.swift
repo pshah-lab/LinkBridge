@@ -25,12 +25,11 @@ public struct ProtocolLevel: Equatable, Sendable {
         return ProtocolLevel(current: value, minimum: minimum)
     }
 
-    /// From `/device`, `/pair/request` or an upload. The older `protocolVersion` field is stale on
-    /// every platform, so a missing `protocol` is inferred from the pairing version.
-    public static func fromJSON(protocol current: Int?, minProtocol: Int?, pairingVersion: Int?) -> ProtocolLevel {
-        guard let current, current > 0 else {
-            return (pairingVersion ?? 1) >= 3 ? ProtocolLevel(current: 2, minimum: 2) : legacy
-        }
+    /// From `/device`, `/pair/request` or upload headers. The older `protocolVersion` field is stale
+    /// on every platform and is ignored. A missing `protocol` means protocol 2: TLS transfers shipped
+    /// before pairing v3, so even a v1-pairing phone may speak protocol 2.
+    public static func fromJSON(protocol current: Int?, minProtocol: Int?) -> ProtocolLevel {
+        guard let current, current > 0 else { return ProtocolLevel(current: 2, minimum: 2) }
         let minimum = minProtocol.flatMap { $0 > 0 ? $0 : nil } ?? min(2, current)
         return ProtocolLevel(current: current, minimum: minimum)
     }
@@ -45,6 +44,24 @@ public enum ProtocolCompat {
         if peer.current < local.minimum { return .peerTooOld }
         if local.current < peer.minimum { return .localTooOld }
         return .ok
+    }
+
+    /// Reads a `426 update_required` reply, from the point of view of the device that sent the request.
+    /// Nil for any other body, such as `tls_required`.
+    public static func rejection(fromBody body: Data) -> Compatibility? {
+        guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              json["error"] as? String == "update_required" else { return nil }
+        switch json["update"] as? String {
+        case "sender": return .localTooOld
+        case "receiver": return .peerTooOld
+        default: return nil
+        }
+    }
+
+    /// The `426 update_required` body a receiver sends, given `check(local: receiver, peer: sender)`.
+    public static func rejectionBody(_ compatibility: Compatibility, local: ProtocolLevel = .local) -> Data {
+        let update = compatibility == .localTooOld ? "receiver" : "sender"
+        return Data(#"{"error":"update_required","update":"\#(update)","protocol":\#(local.current),"minProtocol":\#(local.minimum)}"#.utf8)
     }
 
     /// `localName` is "this Mac" on macOS and "this device" on iOS.

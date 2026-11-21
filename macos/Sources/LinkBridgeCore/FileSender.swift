@@ -7,6 +7,7 @@ public enum FileSender {
         filePath: String,
         endpoint: String,
         secret: String,
+        peerName: String = "the other device",
         onProgress: @escaping (Int64, Int64) -> Void = { _, _ in }
     ) throws {
         let fileURL = URL(fileURLWithPath: filePath)
@@ -66,6 +67,8 @@ public enum FileSender {
             "X-LinkBridge-Transfer-Id: \(transferId)",
             "X-LinkBridge-Encryption: \(Security.encryptionScheme)",
             "X-LinkBridge-Signature: \(signature)",
+            "X-LinkBridge-Protocol: \(ControlServer.protocolVersion)",
+            "X-LinkBridge-Min-Protocol: \(ControlServer.minProtocolVersion)",
             "Connection: close",
             "",
             ""
@@ -86,15 +89,27 @@ public enum FileSender {
 
         let input = try FileHandle(forReadingFrom: encryptedURL)
         defer { try? input.close() }
-        while true {
-            let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
-            if chunk.isEmpty { break }
-            try sendSync(connection, chunk)
-            onProgress(Int64(input.offsetInFile), Int64(encryptedSize))
+        do {
+            while true {
+                let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                try sendSync(connection, chunk)
+                onProgress(Int64(input.offsetInFile), Int64(encryptedSize))
+            }
+        } catch {
+            // A receiver that refuses early may close before the body is sent; its reply says why.
+            if let (status, body) = try? receiveResponse(connection), status == 426,
+               let compatibility = ProtocolCompat.rejection(fromBody: body) {
+                throw SenderError.updateRequired(ProtocolCompat.message(compatibility, peerName: peerName, localName: ProtocolCompat.localName)!)
+            }
+            throw error
         }
 
         let (status, responseData) = try receiveResponse(connection)
         guard (200...299).contains(status) else {
+            if status == 426, let compatibility = ProtocolCompat.rejection(fromBody: responseData) {
+                throw SenderError.updateRequired(ProtocolCompat.message(compatibility, peerName: peerName, localName: ProtocolCompat.localName)!)
+            }
             if status == 426 { throw SenderError.peerNeedsUpdate }
             throw SenderError.httpStatus(status, responseData)
         }
@@ -197,6 +212,7 @@ private enum SenderError: Error, CustomStringConvertible {
     case connectionFailed(Error)
     case badResponse
     case peerNeedsUpdate
+    case updateRequired(String)
 
     var description: String {
         switch self {
@@ -216,6 +232,8 @@ private enum SenderError: Error, CustomStringConvertible {
             return "The phone sent an unreadable response"
         case .peerNeedsUpdate:
             return "Update LinkBridge on the phone: it needs the secure transfer version."
+        case let .updateRequired(message):
+            return message + "."
         }
     }
 }

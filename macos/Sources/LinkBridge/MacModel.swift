@@ -307,7 +307,7 @@ final class MacModel {
                 let accessing = url.startAccessingSecurityScopedResource()
                 var failed = false
                 do {
-                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret) { sent, total in
+                    try FileSender.send(filePath: url.path, endpoint: endpoint, secret: secret, peerName: peerName) { sent, total in
                         let fraction = total > 0 ? Double(sent) / Double(total) : 0
                         Task { @MainActor in self?.showProgress(shownName, fraction) }
                     }

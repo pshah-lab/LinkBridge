@@ -1,4 +1,5 @@
 import Foundation
+import LinkBridgeCore
 import LinkBridgePresentation
 import UserNotifications
 
@@ -64,6 +65,14 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         content.sound = .default
         content.userInfo = ["approvalId": item.id.uuidString]
         center.add(UNNotificationRequest(identifier: item.id.uuidString, content: content, trigger: nil))
+    }
+
+    /// A paired device on an incompatible LinkBridge tried to send a file and was refused.
+    func postUpdateRequired(senderName: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Couldn't receive from \(senderName)"
+        content.body = ProtocolCompat.message(.peerTooOld, peerName: senderName, localName: ProtocolCompat.localName)! + " to send files to this Mac."
+        center.add(UNNotificationRequest(identifier: "update-\(senderName)", content: content, trigger: nil))
     }
 
     func withdraw(id: UUID) {

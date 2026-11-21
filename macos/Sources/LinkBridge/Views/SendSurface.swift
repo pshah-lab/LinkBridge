@@ -77,6 +77,9 @@ struct SendSurface: View {
 
     /// Why a device in the sidebar can't receive, as one sentence. Pairing always starts on the phone.
     static func unavailableSentence(_ item: DeviceListItem) -> String {
+        if item.needsProtocolUpdate {
+            return "\(item.subtitle) to send between them."
+        }
         if item.needsRepair {
             return "\(item.name) no longer recognises this Mac. To pair again, open LinkBridge on \(item.name) and tap Pair. Or forget it here."
         }

@@ -24,6 +24,16 @@ struct PublicDeviceIdentity: Codable {
     let publicKey: String?
     /// Sent in /pair/request only; see `PairingCode.pairingVersion`.
     var pairingVersion: Int? = nil
+    /// Protocol levels; see "Versions" in docs/protocol.md. Missing from 0.2.x and older.
+    var protocolLevel: Int? = nil
+    var minProtocol: Int? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId, deviceName, platform, protocolVersion, features, publicKey, pairingVersion, minProtocol
+        case protocolLevel = "protocol"
+    }
+
+    var level: ProtocolLevel { .fromJSON(protocol: protocolLevel, minProtocol: minProtocol) }
 }
 
 public final class IdentityStore {

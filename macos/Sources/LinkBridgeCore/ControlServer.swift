@@ -52,6 +52,10 @@ public final class ControlServer {
     /// After the user declines a sender's file, its next uploads are refused for this long.
     static var declineCooldown: TimeInterval = 30
     /// Transfer ID -> sender ID of each upload waiting for the user.
+    /// Called on the main queue, with the sender's name, when a paired device on an incompatible
+    /// protocol tries to send. At most once per sender per hour.
+    public static var onIncompatibleSender: ((String) -> Void)?
+    private static var incompatibleNoticeAt: [UUID: Date] = [:]
     private static var awaitingApproval: [UUID: UUID] = [:]
     private static var declinedUntil: [UUID: Date] = [:]
     /// Open-connection caps, so one LAN host can't exhaust file descriptors.
@@ -337,7 +341,9 @@ public final class ControlServer {
                         platform: identity.platform,
                         protocolVersion: ControlServer.protocolVersion,
                         features: identity.features,
-                        publicKey: identity.publicKey
+                        publicKey: identity.publicKey,
+                        protocolLevel: ControlServer.protocolVersion,
+                        minProtocol: ControlServer.minProtocolVersion
                     )
                     responseBody = (try? JSONEncoder().encode(publicIdentity)) ?? Data()
                     status = "200 OK"
@@ -481,6 +487,10 @@ public final class ControlServer {
             return jsonError("400 Bad Request", "invalid_pair_request")
         }
         peerIdentity.deviceName = DeviceNames.sanitize(peerIdentity.deviceName)
+        let compatibility = ProtocolCompat.check(peer: .fromJSON(protocol: peerIdentity.protocolLevel, minProtocol: peerIdentity.minProtocol))
+        guard compatibility == .ok else {
+            return HTTPResponse(status: "426 Upgrade Required", body: ProtocolCompat.rejectionBody(compatibility))
+        }
         guard let peerPublicKey = peerIdentity.publicKey,
               let peerKey = try? PairingKeyStore.parsePublicKey(peerPublicKey),
               let sharedSecret = try? PairingKeyStore().sharedSecret(peerPublicKeyBase64: peerPublicKey),
@@ -506,7 +516,7 @@ public final class ControlServer {
         }
 
         let commitment = PairingCode.commitment(publicKey: macKeyData, nonce: nonce).base64EncodedString()
-        let json = #"{"status":"pending","publicKey":"\#(macKeyData.base64EncodedString())","commitment":"\#(commitment)","pairingVersion":\#(version)}"#
+        let json = #"{"status":"pending","publicKey":"\#(macKeyData.base64EncodedString())","commitment":"\#(commitment)","pairingVersion":\#(version),"protocol":\#(protocolVersion),"minProtocol":\#(minProtocolVersion)}"#
         return HTTPResponse(status: "200 OK", body: Data(json.utf8))
     }
 
@@ -670,6 +680,22 @@ public final class ControlServer {
             return
         }
 
+        // Before any prompt: a sender this build can't work with is told who must update.
+        let senderLevel = ProtocolLevel.fromJSON(protocol: head.headers["x-linkbridge-protocol"].flatMap { Int($0) },
+                                                 minProtocol: head.headers["x-linkbridge-min-protocol"].flatMap { Int($0) })
+        let compatibility = ProtocolCompat.check(peer: senderLevel)
+        guard compatibility == .ok else {
+            sendJSON(connection: connection, status: "426 Upgrade Required", body: ProtocolCompat.rejectionBody(compatibility))
+            let name = peer.deviceName
+            DispatchQueue.main.async {
+                let now = Date()
+                if let last = incompatibleNoticeAt[senderUUID], now.timeIntervalSince(last) < 3600 { return }
+                incompatibleNoticeAt[senderUUID] = now
+                onIncompatibleSender?(name)
+            }
+            return
+        }
+
         if let refusal = approvalRefusal(sender: senderUUID) {
             sendJSON(connection: connection, status: "429 Too Many Requests", body: Data(#"{"error":"\#(refusal)"}"#.utf8))
             return
@@ -820,7 +846,23 @@ public final class ControlServer {
                 askedForDecision = true
                 // Checked again here: another upload from this sender may have reached this
                 // point since the header was checked.
-                if let refusal = approvalRefusal(sender: senderUUID) {
+                // Before any prompt: a sender this build can't work with is told who must update.
+        let senderLevel = ProtocolLevel.fromJSON(protocol: head.headers["x-linkbridge-protocol"].flatMap { Int($0) },
+                                                 minProtocol: head.headers["x-linkbridge-min-protocol"].flatMap { Int($0) })
+        let compatibility = ProtocolCompat.check(peer: senderLevel)
+        guard compatibility == .ok else {
+            sendJSON(connection: connection, status: "426 Upgrade Required", body: ProtocolCompat.rejectionBody(compatibility))
+            let name = peer.deviceName
+            DispatchQueue.main.async {
+                let now = Date()
+                if let last = incompatibleNoticeAt[senderUUID], now.timeIntervalSince(last) < 3600 { return }
+                incompatibleNoticeAt[senderUUID] = now
+                onIncompatibleSender?(name)
+            }
+            return
+        }
+
+        if let refusal = approvalRefusal(sender: senderUUID) {
                     discard()
                     sendJSON(connection: connection, status: "429 Too Many Requests", body: Data(#"{"error":"\#(refusal)"}"#.utf8))
                     return
@@ -1151,6 +1193,13 @@ private struct PairRequestIdentity: Codable {
     let features: [String]
     let publicKey: String?
     let pairingVersion: Int?
+    let protocolLevel: Int?
+    let minProtocol: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId, deviceName, platform, protocolVersion, features, publicKey, pairingVersion, minProtocol
+        case protocolLevel = "protocol"
+    }
 }
 
 private struct PairConfirmBody: Codable {
