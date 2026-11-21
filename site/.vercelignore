@@ -1,0 +1,7 @@
+README.md
+.env*
+node_modules
+dist
+dist-ssr
+AGENTS.md
+CLAUDE.md
