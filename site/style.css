@@ -1,6 +1,6 @@
 /* LinkBridge site. Liquid Glass look to match the Apple apps. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --bg: #eef2fb;
   --bg-2: #dfe6f8;
   --ink: #141a2e;
@@ -21,32 +21,6 @@
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
   --rounded: ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0a0f1e;
-    --bg-2: #111a33;
-    --ink: #e8ecf8;
-    --muted: #a3acc8;
-    --accent: #7d95ff;
-    --accent-ink: #0a0f1e;
-    --signal: #4ad391;
-    --glass: rgba(34, 42, 70, 0.5);
-    --glass-strong: rgba(40, 50, 84, 0.72);
-    --edge: rgba(255, 255, 255, 0.14);
-    --line: rgba(232, 236, 248, 0.12);
-    --shadow: 0 1px 1px rgba(0, 0, 0, 0.2), 0 16px 40px -16px rgba(0, 0, 0, 0.7);
-    --blob-a: #2b3f9e;
-    --blob-b: #135a4a;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #0a0f1e; --bg-2: #111a33; --ink: #e8ecf8; --muted: #a3acc8; --accent: #7d95ff;
-  --accent-ink: #0a0f1e; --signal: #4ad391; --glass: rgba(34, 42, 70, 0.5);
-  --glass-strong: rgba(40, 50, 84, 0.72); --edge: rgba(255, 255, 255, 0.14);
-  --line: rgba(232, 236, 248, 0.12); --shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.7);
-  --blob-a: #2b3f9e; --blob-b: #135a4a;
-}
-
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 body {

@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LinkBridge: send files between your Mac and phone over Wi-Fi</title>
   <meta name="description" content="LinkBridge sends files directly between your Mac, Android phone and iPhone on the same Wi-Fi. Pair once with a six-digit code. No account, no cloud.">
-  <meta name="theme-color" content="#eef2fb" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0a0f1e" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#eef2fb">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -35,7 +34,7 @@
         <p class="lede">LinkBridge moves files straight from one device to the other on your network. No account, no cloud, no cable.</p>
         <div class="ctas">
           <!-- Release 0.2.0, verified on device 2026-11-21. -->
-          <a class="btn" href="download/LinkBridge-0.2.0-macOS-arm64.zip">Download for Mac<small>Apple silicon, macOS 26 or later</small></a>
+          <a class="btn" href="download/LinkBridge-0.2.0-macOS-arm64.dmg">Download for Mac<small>Apple silicon, macOS 26 or later</small></a>
           <a class="btn secondary" href="download/LinkBridge-0.2.0-android.apk">Download for Android<small>Android 12 or later</small></a>
         </div>
         <p class="fine">Free test builds, version 0.2.0. Not in the App Store or Google Play yet, so <a href="#install">a couple of install steps</a> apply.</p>
@@ -75,7 +74,6 @@
         <figure class="shot">
           <div class="frame glass">
             <picture>
-              <source srcset="img/android-send-dark.jpg" media="(prefers-color-scheme: dark)">
               <img src="img/android-send-light.jpg" width="454" height="1000" loading="lazy" alt="LinkBridge on Android: the Send screen with a PDF ready to send to a laptop.">
             </picture>
           </div>
@@ -84,7 +82,6 @@
         <figure class="shot">
           <div class="frame glass">
             <picture>
-              <source srcset="img/ios-dark-send.jpg" media="(prefers-color-scheme: dark)">
               <img src="img/ios-light-send.jpg" width="687" height="1000" loading="lazy" alt="LinkBridge on iPhone: the Send screen with a drop area to choose a file for a paired Mac.">
             </picture>
           </div>
@@ -140,7 +137,7 @@
           <h3>Mac</h3>
           <p class="req">Apple silicon Mac with macOS 26 or later. Intel Macs aren't supported.</p>
           <ol>
-            <li>Download the zip and open it, then move LinkBridge to your Applications folder.</li>
+            <li>Download the DMG and open it, then drag LinkBridge into the Applications folder.</li>
             <li>Open LinkBridge. macOS says it can't verify the app. Click <span class="ui">Done</span>.</li>
             <li>Open <span class="ui">System Settings › Privacy &amp; Security</span>, scroll to Security, and click <span class="ui">Open Anyway</span>. The button shows for about an hour after you tried to open the app.</li>
             <li>Enter your Mac password, then open LinkBridge again.</li>
@@ -148,7 +145,8 @@
           </ol>
           <p class="note">LinkBridge lives in the menu bar. Click its icon there to open it.</p>
           <p class="note">The Open Anyway step is needed because the test build isn't notarized by Apple. The Mac App Store version won't need it.</p>
-          <a class="btn" href="download/LinkBridge-0.2.0-macOS-arm64.zip">Download for Mac</a>
+          <a class="btn" href="download/LinkBridge-0.2.0-macOS-arm64.dmg">Download for Mac</a>
+          <p class="fine">Prefer a zip? <a href="download/LinkBridge-0.2.0-macOS-arm64.zip">Download the zip</a> and move LinkBridge to Applications.</p>
         </article>
         <article class="glass">
           <h3>Android</h3>
