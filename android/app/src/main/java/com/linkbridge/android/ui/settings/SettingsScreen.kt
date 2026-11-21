@@ -32,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +52,7 @@ import androidx.compose.ui.window.Dialog
 import com.linkbridge.android.DeviceIdentity
 import com.linkbridge.android.TrustedPeer
 import com.linkbridge.android.UiState
+import com.linkbridge.android.UpdateChecker
 import com.linkbridge.android.presentation.DevicePlatform
 import com.linkbridge.android.ui.devices.ScreenPreviews
 import com.linkbridge.android.ui.theme.LinkBridgeTheme
@@ -75,7 +77,10 @@ internal fun unpairQuestion(name: String): String = "Unpair $name? You'll need t
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(state: UiState, actions: SettingsActions, versionName: String, modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    state: UiState, actions: SettingsActions, versionName: String, modifier: Modifier = Modifier,
+    updates: UpdateChecker? = null,
+) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -108,6 +113,7 @@ fun SettingsScreen(state: UiState, actions: SettingsActions, versionName: String
             onReceiving = actions.onReceiving,
             onEnableNotifications = actions.onEnableNotifications,
             onUnpair = { unpairing = it },
+            updates = updates,
         )
     }
 
@@ -138,8 +144,10 @@ private fun SettingsContent(
     onReceiving: (Boolean) -> Unit,
     onEnableNotifications: () -> Unit,
     onUnpair: (deviceId: String) -> Unit,
+    updates: UpdateChecker? = null,
 ) {
     val colors = MaterialTheme.colorScheme
+    val updatesOn = updates?.enabled?.collectAsState()?.value ?: false
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -153,6 +161,28 @@ private fun SettingsContent(
         item(key = "phone") {
             Section("This phone") {
                 ThisPhoneRow(state.thisDevice, onCopyId)
+            }
+        }
+        if (updates != null) {
+            item(key = "updates") {
+                Section(null) {
+                    ListItem(
+                        headlineContent = { Text("Check for updates") },
+                        supportingContent = {
+                            Text(
+                                "Once a day LinkBridge asks linkbridge.pratham.si for the latest version number. " +
+                                    "It is a plain web request: no device names or IDs are sent, and nothing is downloaded for you."
+                            )
+                        },
+                        trailingContent = { Switch(checked = updatesOn, onCheckedChange = null) },
+                        colors = rowColors(),
+                        modifier = Modifier.toggleable(
+                            value = updatesOn,
+                            role = Role.Switch,
+                            onValueChange = { updates.setEnabled(it) },
+                        ),
+                    )
+                }
             }
         }
         item(key = "receiving") {

@@ -16,6 +16,12 @@ android {
         targetSdk = 36
         versionCode = 3
         versionName = "0.2.1"
+        // Website downloads only: scripts/build-android-release.sh passes -Plinkbridge.websiteBuild=true.
+        // Play builds must leave it off: Play bars apps that update themselves outside Play.
+        buildConfigField(
+            "boolean", "UPDATE_CHECK",
+            (providers.gradleProperty("linkbridge.websiteBuild").orNull == "true").toString()
+        )
     }
 
     val signingStoreFile = providers.gradleProperty("linkbridgeStoreFile").orNull
