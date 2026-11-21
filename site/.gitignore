@@ -1,3 +1,6 @@
 .vercel
 .env*
-download/
+public/download/
+node_modules/
+dist/
+dist-ssr/
