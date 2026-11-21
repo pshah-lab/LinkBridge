@@ -6,14 +6,16 @@ Built from origin/main `e6ef5b0`. Devices: OnePlus CPH2767 over USB and Wi-Fi, M
 
 | | Android APK | Mac zip |
 |---|---|---|
-| File | `android/app/build/outputs/apk/release/app-release.apk` | `dist/LinkBridge-0.2.0-macOS-arm64.zip` |
+| File | `android/app/build/outputs/apk/release/app-release.apk` | `dist/LinkBridge-0.2.0-macOS-arm64.dmg` (zip also built) |
 | Version | 0.2.0 (versionCode 2) | 0.2.0 (build 2), arm64 only, macOS 26+ |
-| Size | 9,966,671 bytes (9.5 MB) | 655,298 bytes |
-| SHA-256 | `3a3f3ed8988cf0b2582ad8ad8ecb64ab87e8dd878c2d3c868298e149ee73c14d` | `4fe2356608e4e07114831eeccc8abf56cb7b41ff8786c8b2c6d695be71a8c6f0` |
+| Size | 9,969,223 bytes (9.5 MB) | DMG 1,326,503 bytes; zip 920,214 bytes |
+| SHA-256 | `8c6d9df50e122d6ecc86ed10d53a38b8321380eb555885624bb3f6a3e986b165` | DMG `0b9b7eb1380ebf889f86e8ba9d7cda032f5c6f306c12f7f69f1d5c9f61d442f0`; zip `9503543efa6d9cd9c0f5900017a996d7560aecbdf940869ea4644713697ca34c` |
 | Signing | APK Signature Scheme v2, new key "LinkBridge Private Release", cert SHA-256 `ba867a924c51713f0d2999dd3dbeb1fad46bdb067d9f44cbc805e6aa5189965d` | ad-hoc, no Team ID |
 | SDK levels | targetSdk 36, minSdk 31, not debuggable | — |
 
 The release key is new (2026-11-21) because the Oct 16 keystore password was lost. The old file is kept at `~/.linkbridge/linkbridge-release.old-2026-10-16.jks`. Back up the new `.jks` and its passwords: every future APK update must be signed with this key.
+
+Artifacts were rebuilt the same day with the new app icon (no code changes). The end-to-end results below were recorded on the first builds; the rebuilt APK was installed as an update and stayed paired.
 
 ## Automated checks (on e6ef5b0)
 
