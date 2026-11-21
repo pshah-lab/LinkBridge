@@ -46,6 +46,16 @@ public enum ProtocolCompat {
         return .ok
     }
 
+    /// What a receiver tells its own user after refusing a sender; `compatibility` is
+    /// `check(local: receiver, peer: sender)`.
+    public static func receiverNotice(_ compatibility: Compatibility, senderName: String, localName: String) -> String? {
+        switch compatibility {
+        case .ok: return nil
+        case .peerTooOld: return "Update LinkBridge on \(senderName) to receive its files."
+        case .localTooOld: return "Update LinkBridge on \(localName) to receive files from \(senderName)."
+        }
+    }
+
     /// Reads a `426 update_required` reply, from the point of view of the device that sent the request.
     /// Nil for any other body, such as `tls_required`.
     public static func rejection(fromBody body: Data) -> Compatibility? {

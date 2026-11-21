@@ -348,7 +348,8 @@ private fun TabsFrame(
                         state, devicesActions, contentPadding = padding,
                         update = update,
                         onDownloadUpdate = {
-                            update?.let { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it.url))) }
+                            // No browser installed: nothing to open, but don't crash.
+                            update?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it.url))) } }
                         },
                         onDismissUpdate = { updates?.dismiss() },
                     )

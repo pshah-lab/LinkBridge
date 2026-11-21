@@ -181,7 +181,7 @@ class ReceiveServer(
             val last = incompatibleNoticeAt[senderId]
             if (last == null || noticeNow - last >= INCOMPATIBLE_NOTICE_INTERVAL_MS) {
                 incompatibleNoticeAt[senderId] = noticeNow
-                onTransferFailed(null, "${ProtocolCompat.message(Compatibility.PEER_TOO_OLD, trustedPeer.deviceName)} to receive its files.")
+                ProtocolCompat.receiverNotice(compatibility, trustedPeer.deviceName)?.let { onTransferFailed(null, it) }
             }
             return null
         }

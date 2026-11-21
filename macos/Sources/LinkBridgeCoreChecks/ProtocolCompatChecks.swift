@@ -38,5 +38,7 @@ func runProtocolCompatChecks() {
         check(ProtocolCompat.message(.peerTooOld, peerName: "Pixel", localName: "this Mac") == "Update LinkBridge on Pixel", "peer too old copy")
         check(ProtocolCompat.message(.localTooOld, peerName: "Pixel", localName: "this Mac") == "Update LinkBridge on this Mac", "local too old copy")
         check(ProtocolCompat.message(.ok, peerName: "Pixel", localName: "this Mac") == nil, "no message when compatible")
+        check(ProtocolCompat.receiverNotice(.peerTooOld, senderName: "Pixel", localName: "this Mac") == "Update LinkBridge on Pixel to receive its files.", "receiver notice: sender too old")
+        check(ProtocolCompat.receiverNotice(.localTooOld, senderName: "Pixel", localName: "this Mac") == "Update LinkBridge on this Mac to receive files from Pixel.", "receiver notice: this device too old")
     }
 }

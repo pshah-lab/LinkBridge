@@ -46,8 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.notifications?.post(item)
         }
         model.approvals.onRemoved = { [weak self] id in self?.notifications?.withdraw(id: id) }
-        ControlServer.onIncompatibleSender = { [weak self] name in
-            MainActor.assumeIsolated { self?.notifications?.postUpdateRequired(senderName: name) }
+        ControlServer.onIncompatibleSender = { [weak self] name, compatibility in
+            MainActor.assumeIsolated { self?.notifications?.postUpdateRequired(senderName: name, compatibility: compatibility) }
         }
         model.start()
         Task {

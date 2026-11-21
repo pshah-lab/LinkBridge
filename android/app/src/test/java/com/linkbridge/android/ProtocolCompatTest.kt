@@ -35,6 +35,8 @@ class ProtocolCompatTest {
         assertEquals("Update LinkBridge on Pixel", ProtocolCompat.message(Compatibility.PEER_TOO_OLD, "Pixel"))
         assertEquals("Update LinkBridge on this device", ProtocolCompat.message(Compatibility.LOCAL_TOO_OLD, "Pixel"))
         assertNull(ProtocolCompat.message(Compatibility.OK, "Pixel"))
+        assertEquals("Update LinkBridge on Pixel to receive its files.", ProtocolCompat.receiverNotice(Compatibility.PEER_TOO_OLD, "Pixel"))
+        assertEquals("Update LinkBridge on this device to receive files from Pixel.", ProtocolCompat.receiverNotice(Compatibility.LOCAL_TOO_OLD, "Pixel"))
     }
 
     @Test

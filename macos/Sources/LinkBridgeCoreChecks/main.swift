@@ -881,7 +881,7 @@ DispatchQueue.global().async {
         let selfTLS = SecureTransport.clientParameters(identity: SecureTransport.identity(for: identity.deviceId.uuidString),
                                                        psk: SecureTransport.psk(fromSecret: secret)!)
         var incompatible: [String] = []
-        DispatchQueue.main.sync { ControlServer.onIncompatibleSender = { incompatible.append($0) } }
+        DispatchQueue.main.sync { ControlServer.onIncompatibleSender = { name, compatibility in incompatible.append("\(name):\(compatibility)") } }
         let oldSender = request(port: server.securePort, parameters: selfTLS,
                                 signedUploadHead(deviceId: identity.deviceId, secret: secret, extraHeaders: ["X-LinkBridge-Protocol: 1", "X-LinkBridge-Min-Protocol: 1"]))
         check(oldSender.hasPrefix("HTTP/1.1 426") && oldSender.contains(#""error":"update_required""#) && oldSender.contains(#""update":"sender""#),
@@ -890,7 +890,7 @@ DispatchQueue.global().async {
                                 signedUploadHead(deviceId: identity.deviceId, secret: secret, extraHeaders: ["X-LinkBridge-Protocol: 3", "X-LinkBridge-Min-Protocol: 3"]))
         check(newSender.contains(#""update":"receiver""#), "sender needing a newer receiver refused, got \(newSender.prefix(80))")
         DispatchQueue.main.sync {}
-        check(incompatible == ["Self"], "receiver told once per sender, got \(incompatible)")
+        check(incompatible == ["Self:peerTooOld"], "receiver told once per sender, got \(incompatible)")
         DispatchQueue.main.sync { ControlServer.onIncompatibleSender = nil }
         try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(server.securePort)", secret: secret)
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]

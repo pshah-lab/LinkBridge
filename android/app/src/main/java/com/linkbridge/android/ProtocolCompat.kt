@@ -47,6 +47,13 @@ object ProtocolCompat {
         Compatibility.LOCAL_TOO_OLD -> "Update LinkBridge on this device"
     }
 
+    /** What a receiver tells its own user after refusing a sender; [compatibility] is `check(receiver, sender)`. */
+    fun receiverNotice(compatibility: Compatibility, senderName: String): String? = when (compatibility) {
+        Compatibility.OK -> null
+        Compatibility.PEER_TOO_OLD -> "Update LinkBridge on $senderName to receive its files."
+        Compatibility.LOCAL_TOO_OLD -> "Update LinkBridge on this device to receive files from $senderName."
+    }
+
     /** Reads a `426 update_required` body from the requester's side; null for anything else. */
     fun rejection(body: String): Compatibility? {
         val json = runCatching { JSONObject(body) }.getOrNull() ?: return null

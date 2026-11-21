@@ -54,7 +54,7 @@ public final class ControlServer {
     /// Transfer ID -> sender ID of each upload waiting for the user.
     /// Called on the main queue, with the sender's name, when a paired device on an incompatible
     /// protocol tries to send. At most once per sender per hour.
-    public static var onIncompatibleSender: ((String) -> Void)?
+    public static var onIncompatibleSender: ((String, Compatibility) -> Void)?
     private static var incompatibleNoticeAt: [UUID: Date] = [:]
     private static var awaitingApproval: [UUID: UUID] = [:]
     private static var declinedUntil: [UUID: Date] = [:]
@@ -691,7 +691,7 @@ public final class ControlServer {
                 let now = Date()
                 if let last = incompatibleNoticeAt[senderUUID], now.timeIntervalSince(last) < 3600 { return }
                 incompatibleNoticeAt[senderUUID] = now
-                onIncompatibleSender?(name)
+                onIncompatibleSender?(name, compatibility)
             }
             return
         }
@@ -846,23 +846,7 @@ public final class ControlServer {
                 askedForDecision = true
                 // Checked again here: another upload from this sender may have reached this
                 // point since the header was checked.
-                // Before any prompt: a sender this build can't work with is told who must update.
-        let senderLevel = ProtocolLevel.fromJSON(protocol: head.headers["x-linkbridge-protocol"].flatMap { Int($0) },
-                                                 minProtocol: head.headers["x-linkbridge-min-protocol"].flatMap { Int($0) })
-        let compatibility = ProtocolCompat.check(peer: senderLevel)
-        guard compatibility == .ok else {
-            sendJSON(connection: connection, status: "426 Upgrade Required", body: ProtocolCompat.rejectionBody(compatibility))
-            let name = peer.deviceName
-            DispatchQueue.main.async {
-                let now = Date()
-                if let last = incompatibleNoticeAt[senderUUID], now.timeIntervalSince(last) < 3600 { return }
-                incompatibleNoticeAt[senderUUID] = now
-                onIncompatibleSender?(name)
-            }
-            return
-        }
-
-        if let refusal = approvalRefusal(sender: senderUUID) {
+                if let refusal = approvalRefusal(sender: senderUUID) {
                     discard()
                     sendJSON(connection: connection, status: "429 Too Many Requests", body: Data(#"{"error":"\#(refusal)"}"#.utf8))
                     return
