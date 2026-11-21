@@ -414,6 +414,7 @@ section("Credentials: an unreadable store is never overwritten or re-keyed") {
 }
 
 runProtocolCompatChecks()
+runUpdateCheckChecks()
 runPresentationChecks()
 runApprovalChecks()
 runHistoryStoreChecks()

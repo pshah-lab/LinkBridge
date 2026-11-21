@@ -72,6 +72,8 @@ final class MacModel {
 
     /// Set when the user has turned notifications off for LinkBridge in System Settings.
     var notificationsDenied = false
+    /// Website builds only; nil in other builds.
+    let updates = UpdateChecker.makeIfWebsiteBuild()
 
     private static let selectedKey = "selectedDeviceId"
     static let notifyKey = "notifyIncoming"
@@ -142,6 +144,7 @@ final class MacModel {
 
     func start() {
         guard server == nil else { return }
+        updates?.start()
         let server = ControlServer(
             identity: identity,
             pairDecision: { [weak self] request, done in

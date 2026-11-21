@@ -41,6 +41,14 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if let updates = model.updates {
+                Section("Updates") {
+                    Toggle("Check for updates", isOn: Binding(get: { updates.enabled }, set: { updates.enabled = $0 }))
+                    Text("Once a day LinkBridge asks linkbridge.pratham.si for the latest version number. It is a plain web request: no device names or IDs are sent, and nothing is downloaded for you.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section("Paired devices") {
                 if model.trusted.isEmpty {
                     Text("No paired devices. Start pairing from LinkBridge on your phone.")

@@ -33,7 +33,12 @@ struct MainWindow: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .linkBridgeBackdrop()
-                .safeAreaInset(edge: .top) { serverBanner }
+                .safeAreaInset(edge: .top) {
+                    VStack(spacing: 0) {
+                        serverBanner
+                        updateBanner
+                    }
+                }
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -96,6 +101,29 @@ struct MainWindow: View {
         let next = ApprovalQueue.sheetItem(showing: sheetApproval, oldest: model.approvals.queue.oldest,
                                            windowIsKey: activeState == .key)
         if next != sheetApproval { sheetApproval = next }
+    }
+
+    @ViewBuilder
+    private var updateBanner: some View {
+        if let updates = model.updates, let release = updates.available {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(Accent.action.color)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("LinkBridge \(release.version) is available.")
+                    if !release.notes.isEmpty {
+                        Text(release.notes).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer()
+                Button("Download") { updates.openDownload() }
+                Button("Not now") { updates.dismiss() }
+            }
+            .padding(12)
+            .background(.background.secondary, in: .rect(cornerRadius: 12))
+            .padding([.horizontal, .top], 16)
+        }
     }
 
     @ViewBuilder
