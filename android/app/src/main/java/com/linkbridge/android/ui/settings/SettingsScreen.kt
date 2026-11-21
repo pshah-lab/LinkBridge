@@ -312,7 +312,7 @@ private fun SettingsPreview() {
                 notificationsOn = false,
             ),
             SettingsActions(),
-            versionName = "0.2.0",
+            versionName = "0.2.1",
         )
     }
 }
