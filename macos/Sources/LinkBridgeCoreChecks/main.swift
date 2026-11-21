@@ -347,6 +347,37 @@ section("Credentials: ad-hoc builds use the file, signed builds migrate it to th
     check(CredentialStore(backend: keychain).read(account: "peer.ABC") == "peer-secret", "store reads through its backend")
 }
 
+/// Thread-safe, and slow to report a missing key, to widen a check-then-create race.
+final class SlowSecrets: SecretBackend {
+    private var items: [String: String] = [:]
+    private let lock = NSLock()
+    private(set) var writes = 0
+    func lookup(account: String) -> SecretLookup {
+        lock.lock(); let value = items[account]; lock.unlock()
+        if value == nil { Thread.sleep(forTimeInterval: 0.03) }
+        return value.map(SecretLookup.found) ?? .notFound
+    }
+    func write(_ value: String, account: String) -> Bool {
+        lock.lock(); items[account] = value; writes += 1; lock.unlock()
+        return true
+    }
+    func delete(account: String) { lock.lock(); items[account] = nil; lock.unlock() }
+}
+
+section("Pairing key: concurrent first use creates one key") {
+    // On Android two first-launch callers each created a key; the phone sent one and used the
+    // other, so both sides stored different secrets. The Mac must not be able to do the same.
+    let backend = SlowSecrets()
+    let results = NSMutableArray()
+    DispatchQueue.concurrentPerform(iterations: 8) { _ in
+        let key = PairingKeyStore(credentials: CredentialStore(backend: backend)).publicKeyBase64
+        objc_sync_enter(results); results.add(key); objc_sync_exit(results)
+    }
+    let stored = PairingKeyStore(credentials: CredentialStore(backend: backend)).publicKeyBase64
+    check(backend.writes == 1, "one key written")
+    check(Set(results.compactMap { $0 as? String }) == [stored] && !stored.isEmpty, "every caller sees the stored key")
+}
+
 section("Credentials: an unreadable store is never overwritten or re-keyed") {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("creds-\(UUID().uuidString)/credentials.json")
     let file = FileSecretBackend(fileURL: url)

@@ -133,7 +133,7 @@ struct DeviceRow: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 4)
-            if item.isPaired {
+            if item.isPaired && !item.needsRepair {
                 Text("Paired")
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 6)

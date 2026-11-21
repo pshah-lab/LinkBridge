@@ -43,8 +43,13 @@ func runPresentationChecks() {
         let searching = ConnectionState.derive(nearbyCount: 0, selected: nil, sendPhase: .idle, errorMessage: nil)
         check(searching == .searching && searching.title == "Looking for devices…" && searching.dotLabel == "Searching"
               && searching.dotAccent == nil, "nothing nearby is searching")
-        let none = ConnectionState.derive(nearbyCount: 2, selected: item(sendable: false), sendPhase: .idle, errorMessage: nil)
-        check(none == .noPairedDevice && none.title == "No paired device nearby", "nearby but not sendable")
+        let none = ConnectionState.derive(nearbyCount: 2, selected: nil, sendPhase: .idle, errorMessage: nil)
+        check(none == .noPairedDevice && none.title == "No paired device nearby", "nearby but nothing sendable picked")
+        // Picking a device that can't receive names it, even when another paired device is ready.
+        let picked = ConnectionState.derive(nearbyCount: 2, selected: item(name: "SM-S711B", sendable: false),
+                                            sendPhase: .idle, errorMessage: nil)
+        check(picked == .unavailable(deviceName: "SM-S711B") && picked.title == "SM-S711B can't receive right now",
+              "nearby but the pick isn't sendable")
         let blink = item(sendable: false, nearby: false)
         check(ConnectionState.derive(nearbyCount: 0, selected: blink, sendPhase: .sending(fileName: "a", progress: 0.5),
                                      errorMessage: nil) == .sending(deviceName: "Mac", progress: 0.5),
@@ -79,6 +84,27 @@ func runPresentationChecks() {
                                            lastSeen: [:], now: fixedNow)[0]
         check(android.subtitle == "Pair from the Android app (coming soon)" && !android.canPair
               && android.platform == .android, "unpaired Android explains direction")
+        // A paired phone that lost its pairing (reinstall, or a pairing whose secrets differ): its
+        // tags match nothing, so it shows up without an ID. One row that says so, not two.
+        let phoneId = UUID()
+        let stale = DeviceListItem.merge(nearby: [peer("SM-S711B", id: nil, platform: "android", tlsPort: 49153)],
+                                         trusted: [trusted("SM-S711B", id: phoneId, platform: "android")],
+                                         lastSeen: [:], now: fixedNow)
+        check(stale.count == 1 && stale[0].needsRepair && stale[0].deviceId == phoneId && stale[0].isNearby
+              && !stale[0].isSendable && stale[0].subtitle == "Needs pairing again", "stale pairing merges into one row")
+        let other = DeviceListItem.merge(nearby: [peer("Pixel", id: nil, platform: "android")],
+                                         trusted: [trusted("SM-S711B", id: phoneId, platform: "android")],
+                                         lastSeen: [:], now: fixedNow)
+        check(other.count == 2 && other.allSatisfy { !$0.needsRepair }, "a different name is a different device")
+        let sameNameMac = DeviceListItem.merge(nearby: [peer("SM-S711B", id: nil)],
+                                               trusted: [trusted("SM-S711B", id: phoneId, platform: "android")],
+                                               lastSeen: [:], now: fixedNow)
+        check(sameNameMac.count == 2 && sameNameMac.allSatisfy { !$0.needsRepair }, "a different platform is a different device")
+        let fine = DeviceListItem.merge(nearby: [peer("SM-S711B", id: phoneId, platform: "android")],
+                                        trusted: [trusted("SM-S711B", id: phoneId, platform: "android")],
+                                        lastSeen: [:], now: fixedNow)
+        check(fine.count == 1 && !fine[0].needsRepair && fine[0].isSendable, "a recognised phone is not stale")
+
         let seen = UUID(), never = UUID()
         let away = DeviceListItem.merge(nearby: [], trusted: [trusted("A Mac", id: seen), trusted("B Mac", id: never)],
                                         lastSeen: [seen: fixedNow.addingTimeInterval(-300)], now: fixedNow)

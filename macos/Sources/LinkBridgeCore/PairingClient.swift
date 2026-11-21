@@ -40,8 +40,9 @@ public final class PairingClient {
             throw PairingClientError.peerNeedsUpdate
         }
         let peerKey = try PairingKeyStore.parsePublicKey(reply.publicKey).x963Representation
-        let localKey = try PairingKeyStore.parsePublicKey(identity.publicKey).x963Representation
         let keys = PairingKeyStore()
+        // The stored key, not the cached one: the key in the code must be the one ECDH uses.
+        let localKey = try PairingKeyStore.parsePublicKey(keys.publicKeyBase64).x963Representation
         let v3 = (reply.pairingVersion ?? 1) >= 3
         let shared = try keys.sharedSecret(peerPublicKeyBase64: reply.publicKey)
 

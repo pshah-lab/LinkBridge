@@ -14,13 +14,40 @@ import javax.crypto.KeyAgreement
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 
-class PairingKeyStore {
-    private val alias = "linkbridge.pairing"
+/** Where the pairing key pair lives. Generating replaces any stored key, as AndroidKeyStore does. */
+interface PairingKeyBackend {
+    fun load(): java.security.KeyPair?
+    fun generate(): java.security.KeyPair
+}
 
-    fun publicKeyBase64(): String {
+/** The app's backend: an EC key in AndroidKeyStore that never leaves it. */
+object AndroidKeyStoreBackend : PairingKeyBackend {
+    private const val ALIAS = "linkbridge.pairing"
+
+    override fun load(): java.security.KeyPair? {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (!store.containsAlias(ALIAS)) return null
+        return java.security.KeyPair(store.getCertificate(ALIAS).publicKey, store.getKey(ALIAS, null) as java.security.PrivateKey)
+    }
+
+    override fun generate(): java.security.KeyPair {
+        val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+        generator.initialize(
+            KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_AGREE_KEY)
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .build()
+        )
+        return generator.generateKeyPair()
+    }
+}
+
+class PairingKeyStore(private val backend: PairingKeyBackend = AndroidKeyStoreBackend) {
+    fun publicKeyBase64(): String = Base64.encodeToString(publicKeyBytes(), Base64.NO_WRAP)
+
+    /** The 65-byte uncompressed point of the stored key. */
+    fun publicKeyBytes(): ByteArray {
         val point = (keyPair().public as ECPublicKey).w
-        val raw = byteArrayOf(4) + point.affineX.toFixedBytes() + point.affineY.toFixedBytes()
-        return Base64.encodeToString(raw, Base64.NO_WRAP)
+        return byteArrayOf(4) + point.affineX.toFixedBytes() + point.affineY.toFixedBytes()
     }
 
     /** Pairing v1 secret: SHA-256 of the ECDH output. Kept for Macs that don't speak v3. */
@@ -56,18 +83,15 @@ class PairingKeyStore {
         }
     }
 
-    private fun keyPair(): java.security.KeyPair {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (store.containsAlias(alias)) {
-            return java.security.KeyPair(store.getCertificate(alias).publicKey, store.getKey(alias, null) as java.security.PrivateKey)
-        }
-        val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
-        generator.initialize(
-            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_AGREE_KEY)
-                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-                .build()
-        )
-        return generator.generateKeyPair()
+    /**
+     * Check-then-generate under one process-wide lock. The service and the view model both
+     * reach this on first launch; without the lock each generated a key, the Keystore kept the
+     * last, and a caller that read the first public key paired with a key it no longer held.
+     */
+    private fun keyPair(): java.security.KeyPair = synchronized(LOCK) { backend.load() ?: backend.generate() }
+
+    private companion object {
+        val LOCK = Any()
     }
 }
 

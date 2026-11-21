@@ -20,7 +20,10 @@ class IdentityStore(private val context: Context) {
     private val credentials = CredentialStore(context, "identity")
     private val pairingKeys = PairingKeyStore()
 
-    fun loadOrCreate(): DeviceIdentity {
+    /** Locked: the service and the view model both call this on first launch. */
+    fun loadOrCreate(): DeviceIdentity = synchronized(LOCK) { load() }
+
+    private fun load(): DeviceIdentity {
         val existingId = preferences.getString("device_id", null)
         val deviceId = existingId ?: UUID.randomUUID().toString().also {
             preferences.edit().putString("device_id", it).apply()
@@ -36,6 +39,10 @@ class IdentityStore(private val context: Context) {
             authToken = authToken,
             publicKey = pairingKeys.publicKeyBase64()
         )
+    }
+
+    private companion object {
+        val LOCK = Any()
     }
 
     private fun generateToken(): String {

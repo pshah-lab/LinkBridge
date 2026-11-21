@@ -32,7 +32,8 @@ class ControlClient {
     /** [responderId] is the Mac's device ID from [fetchDevice]; v3 puts it in the code. */
     fun beginPairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity, responderId: String): Result<PairingSession> {
         return runCatching {
-            val localKeyBase64 = localIdentity.publicKey ?: pairingKeys.publicKeyBase64()
+            // Read from the Keystore, not the cached identity: the key sent must be the one ECDH uses.
+            val localKeyBase64 = pairingKeys.publicKeyBase64()
             val request = postJson(
                 peer, "/pair/request",
                 JSONObject()

@@ -38,7 +38,13 @@ final class PairingKeyStore {
     /// Creates a key only when none is stored. A store that can't be read (locked device,
     /// corrupt file) or a stored key that doesn't parse is an error, not a reason to replace
     /// the key and silently break every pairing.
+    /// Process-wide: two first-time callers must not each create a key (seen on Android, where
+    /// the phone then sent one key and did ECDH with the other).
+    private static let lock = NSLock()
+
     private func privateKey() throws -> P256.KeyAgreement.PrivateKey {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
         switch credentials.lookup(account: account) {
         case let .found(stored):
             guard let data = Data(base64Encoded: stored),
