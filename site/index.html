@@ -34,8 +34,8 @@
         <h1>Send files between your Mac and phone over your own Wi-Fi.</h1>
         <p class="lede">LinkBridge moves files straight from one device to the other on your network. No account, no cloud, no cable.</p>
         <div class="ctas">
-          <!-- PLACEHOLDER: test builds go live once the release test confirms them. -->
-          <a class="btn" href="download/LinkBridge-0.2.0-mac.zip">Download for Mac<small>macOS 26 or later</small></a>
+          <!-- Release 0.2.0, verified on device 2026-11-21. -->
+          <a class="btn" href="download/LinkBridge-0.2.0-macOS-arm64.zip">Download for Mac<small>Apple silicon, macOS 26 or later</small></a>
           <a class="btn secondary" href="download/LinkBridge-0.2.0-android.apk">Download for Android<small>Android 12 or later</small></a>
         </div>
         <p class="fine">Free test builds, version 0.2.0. Not in the App Store or Google Play yet, so <a href="#install">a couple of install steps</a> apply.</p>
@@ -138,7 +138,7 @@
       <div class="install">
         <article class="glass">
           <h3>Mac</h3>
-          <p class="req">macOS 26 or later</p>
+          <p class="req">Apple silicon Mac with macOS 26 or later. Intel Macs aren't supported.</p>
           <ol>
             <li>Download the zip and open it, then move LinkBridge to your Applications folder.</li>
             <li>Open LinkBridge. macOS says it can't verify the app. Click <span class="ui">Done</span>.</li>
@@ -146,13 +146,14 @@
             <li>Enter your Mac password, then open LinkBridge again.</li>
             <li>Allow LinkBridge to find devices on your local network when asked.</li>
           </ol>
-          <p class="note">This step is needed because the test build isn't notarized by Apple. The Mac App Store version won't need it.</p>
-          <!-- PLACEHOLDER URL -->
-          <a class="btn" href="download/LinkBridge-0.2.0-mac.zip">Download for Mac</a>
+          <p class="note">LinkBridge lives in the menu bar. Click its icon there to open it.</p>
+          <p class="note">The Open Anyway step is needed because the test build isn't notarized by Apple. The Mac App Store version won't need it.</p>
+          <a class="btn" href="download/LinkBridge-0.2.0-macOS-arm64.zip">Download for Mac</a>
         </article>
         <article class="glass">
           <h3>Android</h3>
           <p class="req">Android 12 or later</p>
+          <p class="note"><strong>Had an earlier test build?</strong> Uninstall it first. This version is signed with a new key, so it can't install over the old one, and you'll need to pair again.</p>
           <ol>
             <li>Download the APK on your phone.</li>
             <li>Open the file. If Android asks, allow your browser or Files app to <span class="ui">install unknown apps</span>, then go back.</li>
@@ -160,7 +161,7 @@
             <li>Allow notifications, so you can accept files while the app is in the background.</li>
           </ol>
           <p class="note">You can turn the unknown-apps setting off again after installing. The Google Play version won't need it.</p>
-          <!-- PLACEHOLDER URL -->
+          
           <a class="btn" href="download/LinkBridge-0.2.0-android.apk">Download for Android</a>
         </article>
       </div>
@@ -184,7 +185,7 @@
         <details><summary>Does it use the internet?</summary><p>No. Your devices need to be on the same Wi-Fi network, and files go directly between them.</p></details>
         <details><summary>Where do received files go?</summary><p>Into a LinkBridge folder inside Downloads, on both the Mac and Android.</p></details>
         <details><summary>How many files can I send at once?</summary><p>Up to 50 in one go.</p></details>
-        <details><summary>Which devices does it run on?</summary><p>Macs with macOS 26 or later, and Android phones with Android 12 or later. An iPhone app (iOS 26 or later) that can send to a Mac is built but not available to download yet.</p></details>
+        <details><summary>Which devices does it run on?</summary><p>Apple silicon Macs with macOS 26 or later (Intel Macs aren't supported), and Android phones with Android 12 or later. An iPhone app (iOS 26 or later) that can send to a Mac is built but not available to download yet.</p></details>
         <details><summary>Can an iPhone and an Android phone send to each other?</summary><p>Not yet. Both pair with a Mac today.</p></details>
         <details><summary>Why does my Mac warn me when I open it?</summary><p>The test build isn't notarized by Apple yet. Follow the Mac install steps above to open it. The App Store version won't show this warning.</p></details>
         <details><summary>When will it be in the App Store and Google Play?</summary><p>After testing. The Google Play closed test comes first, which is where <a href="#testers">testers</a> help.</p></details>
