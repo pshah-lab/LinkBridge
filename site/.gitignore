@@ -1,6 +1,0 @@
-.vercel
-.env*
-public/download/
-node_modules/
-dist/
-dist-ssr/

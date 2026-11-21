@@ -27,6 +27,8 @@ pair with Android yet, because the Android app can only start pairing, not answe
   design specs and screenshots.
 - `scripts/` — build, package and install scripts for Mac and Android.
 
+The website (https://linkbridge.pratham.si) lives in its own repo, `pshah-lab/linkbridge-site`.
+
 ## Local development
 
 ### macOS
