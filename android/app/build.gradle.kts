@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Website APKs only (scripts/build-android-release.sh). See the UPDATE_CHECK field below.
+val websiteBuild = providers.gradleProperty("linkbridge.websiteBuild").orNull == "true"
+
 android {
     namespace = "com.linkbridge.android"
     compileSdk = 36
@@ -16,6 +19,9 @@ android {
         targetSdk = 36
         versionCode = 3
         versionName = "0.2.1"
+        // Website downloads only: scripts/build-android-release.sh passes -Plinkbridge.websiteBuild=true.
+        // Play builds must leave it off: Play bars apps that update themselves outside Play.
+        buildConfigField("boolean", "UPDATE_CHECK", websiteBuild.toString())
     }
 
     val signingStoreFile = providers.gradleProperty("linkbridgeStoreFile").orNull
@@ -104,4 +110,15 @@ dependencies {
     testImplementation("org.json:json:20240303")
     // Virtual time and Dispatchers.setMain for MainViewModel tests; matches coroutines-core.
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+}
+
+// Google Play takes App Bundles; the website ships APKs. A bundle with the update check would break
+// Play's rule against apps updating outside Play, so refuse to build one.
+tasks.matching { it.name == "bundleRelease" || it.name == "bundleDebug" }.configureEach {
+    val refuse = websiteBuild
+    doFirst {
+        if (refuse) throw GradleException(
+            "linkbridge.websiteBuild=true is for website APKs only. Build Play bundles without it."
+        )
+    }
 }

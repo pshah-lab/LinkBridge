@@ -22,8 +22,14 @@ class ControlClient {
             }
 
             connection.inputStream.use { stream ->
-                val json = stream.bufferedReader().readText()
-                JSONObject(json).toDeviceIdentity()
+                val json = JSONObject(stream.bufferedReader().readText())
+                val level = ProtocolLevel.fromJson(
+                    json.optInt("protocol").takeIf { json.has("protocol") }, json.optInt("minProtocol").takeIf { json.has("minProtocol") }
+                )
+                ProtocolCompat.message(ProtocolCompat.check(peer = level), peer.deviceName)?.let {
+                    throw UpdateRequiredException("$it to pair.")
+                }
+                json.toDeviceIdentity()
             }
         }
     }
@@ -44,6 +50,8 @@ class ControlClient {
                     .put("features", JSONArray(localIdentity.features))
                     .put("publicKey", localKeyBase64)
                     .put("pairingVersion", PairingCode.PAIRING_VERSION)
+                    .put("protocol", ProtocolLevel.CURRENT)
+                    .put("minProtocol", ProtocolLevel.MINIMUM)
             )
             val v3 = request.optInt("pairingVersion", 1) >= 3
             val macKeyBase64 = request.optString("publicKey").ifBlank { error("Mac did not provide a public key") }
@@ -94,6 +102,9 @@ class ControlClient {
         return peer.endpoint
     }
 
+    private fun updateRequired(body: String, peer: DiscoveredPeer): UpdateRequiredException? =
+        ProtocolCompat.rejection(body)?.let { UpdateRequiredException("${ProtocolCompat.message(it, peer.deviceName)}.") }
+
     private fun postJson(peer: DiscoveredPeer, path: String, json: JSONObject, readTimeoutMs: Int = 5000): JSONObject {
         val body = json.toString().toByteArray()
         val connection = (URL("http://${localEndpoint(peer)}$path").openConnection() as HttpURLConnection).apply {
@@ -108,6 +119,9 @@ class ControlClient {
         val code = connection.responseCode
         if (code !in 200..299) {
             val detail = connection.errorStream?.use { it.bufferedReader().readText() }.orEmpty()
+            if (code == 426) ProtocolCompat.rejection(detail)?.let { compatibility ->
+                throw UpdateRequiredException("${ProtocolCompat.message(compatibility, peer.deviceName)} to pair.")
+            }
             when {
                 detail.contains("pair_declined") -> error("Pairing was declined on the Mac")
                 detail.contains("no_pending_pairing") -> error("Pairing expired. Start again.")
@@ -128,6 +142,9 @@ class ControlClient {
     ): Result<Unit> {
         return runCatching {
             require(size >= 0) { "Selected file size is unknown; choose a file provider that exposes file size." }
+            ProtocolCompat.message(ProtocolCompat.check(peer = peer.level), peer.deviceName)?.let {
+                throw UpdateRequiredException("$it.")
+            }
             trustedPeer?.authToken
                 ?: error("This Mac must be paired again before secure transfer.")
             val localToken = trustedPeer.authToken
@@ -183,6 +200,8 @@ class ControlClient {
                 "X-LinkBridge-Transfer-Id: $transferId",
                 "X-LinkBridge-Encryption: ${Security.ENCRYPTION_SCHEME}",
                 "X-LinkBridge-Signature: $signature",
+                "X-LinkBridge-Protocol: ${ProtocolLevel.CURRENT}",
+                "X-LinkBridge-Min-Protocol: ${ProtocolLevel.MINIMUM}",
                 "Connection: close",
                 "",
                 ""
@@ -195,9 +214,16 @@ class ControlClient {
                     identity = SecureTransport.identity(localIdentity.deviceId),
                     psk = SecureTransport.psk(localToken)
                 ).use { connection ->
-                    connection.output.write(head.toByteArray())
-                    encryptedFile.inputStream().use { it.copyTo(connection.output, 64 * 1024) }
-                    connection.output.flush()
+                    try {
+                        connection.output.write(head.toByteArray())
+                        encryptedFile.inputStream().use { it.copyTo(connection.output, 64 * 1024) }
+                        connection.output.flush()
+                    } catch (writeError: java.io.IOException) {
+                        // A receiver that refuses early may close before the body is sent; its reply says why.
+                        val early = runCatching { readResponse(connection.input) }.getOrNull()
+                        if (early != null && early.first == 426) updateRequired(early.second, peer)?.let { throw it }
+                        throw writeError
+                    }
                     readResponse(connection.input)
                 }
             } catch (error: java.io.IOException) {
@@ -207,6 +233,7 @@ class ControlClient {
             }
 
             if (status !in 200..299) {
+                if (status == 426) updateRequired(body, peer)?.let { throw it }
                 error("Upload failed: HTTP $status $body")
             }
             val remoteSha256 = JSONObject(body).optString("sha256")

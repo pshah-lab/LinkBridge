@@ -50,6 +50,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.linkbridge.android.BuildConfig
 import com.linkbridge.android.MainViewModel
 import com.linkbridge.android.PairingStep
+import com.linkbridge.android.UpdateChecker
 import com.linkbridge.android.TransferHistoryEntry
 import com.linkbridge.android.UiState
 import com.linkbridge.android.presentation.BannerAction
@@ -111,6 +112,16 @@ class AppActions(
 fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    // Website builds only; null in Play and debug builds.
+    val updates = remember { UpdateChecker.createIfWebsiteBuild(context) }
+    if (updates != null) {
+        LaunchedEffect(updates) {
+            while (true) {
+                updates.checkIfDue()
+                delay(UpdateChecker.TICK_MS)
+            }
+        }
+    }
     val pick = rememberFilePicker(onPicked = vm::stage)
     val actions = remember(vm, pick, context) {
         AppActions(
@@ -146,7 +157,7 @@ fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
             versionName = BuildConfig.VERSION_NAME,
         )
     }
-    AppFrame(state, actions)
+    AppFrame(state, actions, updates)
 }
 
 /**
@@ -155,7 +166,7 @@ fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppFrame(state: UiState, actions: AppActions) {
+fun AppFrame(state: UiState, actions: AppActions, updates: UpdateChecker? = null) {
     // Null until decided: Send if a sendable device turns up shortly after launch, else Devices.
     var chosenTab by rememberSaveable { mutableStateOf<Tab?>(null) }
     var inSettings by rememberSaveable { mutableStateOf(false) }
@@ -212,6 +223,7 @@ fun AppFrame(state: UiState, actions: AppActions) {
                         onUnpair = actions.settings.onUnpair,
                     ),
                     versionName = actions.versionName,
+                    updates = updates,
                 )
             } else {
                 TabsFrame(
@@ -235,6 +247,7 @@ fun AppFrame(state: UiState, actions: AppActions) {
                         },
                         onRetry = actions.onRetry,
                     ),
+                    updates = updates,
                     devicesActions = DevicesActions(
                         onSelect = { id ->
                             actions.devices.onSelect(id)
@@ -301,6 +314,7 @@ private fun TabsFrame(
     sendActions: SendActions,
     historyActions: HistoryActions,
     devicesActions: DevicesActions,
+    updates: UpdateChecker? = null,
 ) {
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     LaunchedEffect(tab) { scrollBehavior.state.contentOffset = 0f }
@@ -327,7 +341,19 @@ private fun TabsFrame(
                 .then(if (hazeState != null) Modifier.hazeSource(hazeState) else Modifier),
         ) {
             when (tab) {
-                Tab.DEVICES -> DevicesScreen(state, devicesActions, contentPadding = padding)
+                Tab.DEVICES -> {
+                    val update = updates?.available?.collectAsStateWithLifecycle()?.value
+                    val context = LocalContext.current
+                    DevicesScreen(
+                        state, devicesActions, contentPadding = padding,
+                        update = update,
+                        onDownloadUpdate = {
+                            // No browser installed: nothing to open, but don't crash.
+                            update?.let { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it.url))) } }
+                        },
+                        onDismissUpdate = { updates?.dismiss() },
+                    )
+                }
                 Tab.SEND -> SendScreen(state, sendActions, contentPadding = padding)
                 Tab.HISTORY -> HistoryScreen(state, historyActions, contentPadding = padding)
             }

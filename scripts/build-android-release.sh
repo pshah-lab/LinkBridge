@@ -10,7 +10,10 @@ source "$ROOT_DIR/scripts/check-android-env.sh"
 : "${LINKBRIDGE_KEY_PASSWORD:?Set LINKBRIDGE_KEY_PASSWORD without committing it}"
 
 cd "$ROOT_DIR/android"
+# -Plinkbridge.websiteBuild=true: this APK goes on the website, so it gets the "new version" check.
+# A Google Play build must not pass it.
 ./gradlew :app:assembleRelease \
+  -Plinkbridge.websiteBuild=true \
   -PlinkbridgeStoreFile="$LINKBRIDGE_KEYSTORE" \
   -PlinkbridgeStorePassword="$LINKBRIDGE_KEYSTORE_PASSWORD" \
   -PlinkbridgeKeyAlias="$LINKBRIDGE_KEY_ALIAS" \

@@ -39,6 +39,8 @@ class ReceiveServer(
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val gate = ConnectionGate()
     private val replayCache = ConcurrentHashMap<String, Long>()
+    /** Last time each sender was told about a protocol mismatch; at most once an hour. */
+    private val incompatibleNoticeAt = ConcurrentHashMap<String, Long>()
     private var serverSocket: ServerSocket? = null
 
     fun start() {
@@ -101,6 +103,11 @@ class ReceiveServer(
             .firstOrNull { SecureTransport.identity(it.deviceId) == identity }
             ?.authToken
             ?.let(SecureTransport::psk)
+
+    /** Only after the TLS identity and signature checks, so strangers can't hold connections open. */
+    private fun drainRefusedBody(input: java.io.InputStream, contentLength: Long) {
+        runCatching { ReceiveLimits.drain(input, contentLength, System.currentTimeMillis() + ReceiveLimits.REFUSAL_DRAIN_MS) }
+    }
 
     /** Checks the header. Returns the body handling, or null after replying with an error. */
     private fun handleRequest(connection: SecureTransport.Connection): (() -> Unit)? {
@@ -167,10 +174,28 @@ class ReceiveServer(
             reply.writeJsonResponse(401, """{"error":"invalid_signature"}""")
             return null
         }
+        // Before any prompt: a sender this build can't work with is told who must update.
+        val compatibility = ProtocolCompat.check(
+            peer = ProtocolLevel.fromJson(
+                request.headers["x-linkbridge-protocol"]?.toIntOrNull(), request.headers["x-linkbridge-min-protocol"]?.toIntOrNull()
+            )
+        )
+        if (compatibility != Compatibility.OK) {
+            drainRefusedBody(input, contentLength)
+            reply.writeJsonResponse(426, ProtocolCompat.rejectionBody(compatibility))
+            val noticeNow = System.currentTimeMillis()
+            val last = incompatibleNoticeAt[senderId]
+            if (last == null || noticeNow - last >= INCOMPATIBLE_NOTICE_INTERVAL_MS) {
+                incompatibleNoticeAt[senderId] = noticeNow
+                ProtocolCompat.receiverNotice(compatibility, trustedPeer.deviceName)?.let { onTransferFailed(null, it) }
+            }
+            return null
+        }
         val replayKey = "$senderId:$transferId"
         val now = System.currentTimeMillis()
         replayCache.entries.removeIf { it.value < now }
         if (replayCache.putIfAbsent(replayKey, now + REPLAY_WINDOW_MS) != null) {
+            drainRefusedBody(input, contentLength)
             reply.writeJsonResponse(409, """{"error":"replayed_transfer"}""")
             return null
         }
@@ -310,6 +335,7 @@ class ReceiveServer(
         private const val MAX_TRANSFER_BYTES = Long.MAX_VALUE - 1024
         private const val TIMESTAMP_WINDOW_MS = 5 * 60 * 1000L
         private const val REPLAY_WINDOW_MS = 10 * 60 * 1000L
+        private const val INCOMPATIBLE_NOTICE_INTERVAL_MS = 60 * 60 * 1000L
         private const val SOCKET_TIMEOUT_MS = 15_000
     }
 }

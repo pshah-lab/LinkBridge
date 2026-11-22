@@ -2,6 +2,11 @@ package com.linkbridge.android.ui.devices
 
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
@@ -30,6 +35,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.linkbridge.android.LatestRelease
 import com.linkbridge.android.UiState
 import com.linkbridge.android.presentation.Banner
 import com.linkbridge.android.presentation.BannerAction
@@ -67,6 +73,9 @@ fun DevicesScreen(
     actions: DevicesActions,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     modifier: Modifier = Modifier,
+    update: LatestRelease? = null,
+    onDownloadUpdate: () -> Unit = {},
+    onDismissUpdate: () -> Unit = {},
 ) {
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(refreshing) {
@@ -110,6 +119,9 @@ fun DevicesScreen(
                     color = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp).semantics { heading() },
                 )
+            }
+            update?.let { release ->
+                item(key = "update") { UpdateBanner(release, onDownloadUpdate, onDismissUpdate) }
             }
             state.banner?.let { banner ->
                 item(key = "banner") { StatusBanner(banner, actions.onBannerAction) }
@@ -204,3 +216,27 @@ private fun DevicesBannerRetryPreview() = DevicesPreview(PreviewData.devices.cop
 @Composable
 private fun DevicesBannerNotificationsPreview() =
     DevicesPreview(PreviewData.devices.copy(banner = PreviewData.banners[2]))
+
+/** Website builds: a newer LinkBridge is on the site. Links there; never downloads by itself. */
+@Composable
+private fun UpdateBanner(release: LatestRelease, onDownload: () -> Unit, onDismiss: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp)) {
+            Text("LinkBridge ${release.version} is available.", style = MaterialTheme.typography.bodyLarge)
+            if (release.notes.isNotEmpty()) {
+                Text(
+                    release.notes, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) { Text("Not now") }
+                TextButton(onClick = onDownload) { Text("Download") }
+            }
+        }
+    }
+}

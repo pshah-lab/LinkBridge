@@ -22,6 +22,7 @@ tags=<comma-separated discovery tags, at most 14>
 deviceName=<human-readable-name>
 platform=macos|android
 protocol=2
+minProtocol=2
 tlsPort=<TLS-PSK port for transfers>
 features=file-transfer,display-send,display-receive
 ```
@@ -34,6 +35,40 @@ unpaired devices learn the ID from `GET /device` when pairing. Scanners still ac
 
 The advertised port is the control server port. The Mac prefers 49152 and picks any
 free port if that one is taken; peers must use the port from discovery.
+
+## Versions
+
+Each device has a **protocol** (what it speaks, now `2`) and a **minimum protocol** (the oldest it
+still works with, now `2`). Two devices work together when each one's protocol is at least the
+other's minimum. Otherwise the device that notices tells its user which device to update:
+
+- peer's protocol below my minimum → "Update LinkBridge on <peer name>"
+- my protocol below the peer's minimum → "Update LinkBridge on this Mac" (Android, iOS: "this device")
+
+Where the numbers travel (all additive, so 0.2.x keeps working):
+
+- TXT: `protocol`, `minProtocol`.
+- `GET /device` and the `/pair/request` body and reply: `"protocol"` and `"minProtocol"`. The older
+  `protocolVersion` field is stale on every platform and is ignored.
+- Uploads: `X-LinkBridge-Protocol` and `X-LinkBridge-Min-Protocol` headers.
+
+Missing values: no `minProtocol` means 2. No `protocol` but a `tlsPort` (TXT), or no fields at all
+(JSON, headers), means protocol 2. No `protocol` and no `tlsPort` means protocol 1 (predates TLS).
+Values that aren't positive integers count as missing.
+
+A receiver that can't work with the requester answers before asking its user:
+
+```text
+426 {"error":"update_required","update":"sender"|"receiver","protocol":2,"minProtocol":2}
+```
+
+`update` names the side that must update. Senders write the whole body before reading the reply, so
+after authenticating the sender a receiver reads and discards the rest of the body (for up to 60 s)
+before answering `426`, `409` or (Mac) `429`; closing with unread data would reset the connection
+and lose the reply. The requester shows the matching message; a Mac or
+Android receiver also tells its own user, at most once per sender per hour. The device list shows
+the message as the device's subtitle and turns Send and Pair off for it. `426 tls_required` on the
+plain port is unchanged.
 
 ## Pairing
 
@@ -119,6 +154,8 @@ X-LinkBridge-Device-Id:   sender device ID (must be a trusted peer)
 X-LinkBridge-Timestamp:   milliseconds since epoch (must be within 5 minutes)
 X-LinkBridge-Transfer-Id: uuid (rejected if seen in the last 10 minutes)
 X-LinkBridge-Encryption:  aes-gcm-chunked-v2
+X-LinkBridge-Protocol:    2 (see Versions; not signed, only used to explain a refusal)
+X-LinkBridge-Min-Protocol: 2
 X-LinkBridge-Signature:   base64 HMAC-SHA256(macKey, "POST\n/transfer/upload\n<deviceId>\n<timestamp>\n<transferId>\n<scheme>\n<contentLength>")
 ```
 

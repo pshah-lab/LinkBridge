@@ -7,8 +7,11 @@ import Testing
 private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
 private func peer(_ name: String, id: UUID? = UUID(), platform: String? = "macos",
-                  host: String = "10.0.0.5", tlsPort: UInt16? = 49162) -> ResolvedPeer {
-    ResolvedPeer(deviceName: name, deviceId: id, platform: platform, host: host, port: 49152, tlsPort: tlsPort)
+                  host: String = "10.0.0.5", tlsPort: UInt16? = 49162, level: ProtocolLevel? = nil) -> ResolvedPeer {
+    // Without an explicit level, read it as a 0.2.x (or, without a TLS port, pre-protocol-2) TXT record.
+    ResolvedPeer(deviceName: name, deviceId: id, platform: platform, host: host, port: 49152, tlsPort: tlsPort,
+                 level: level ?? .fromTXT(protocol: tlsPort == nil ? nil : "2", minProtocol: nil,
+                                          hasTLSPort: tlsPort != nil, hasDeviceId: id != nil))
 }
 
 private func trusted(_ name: String, id: UUID, platform: String = "macos") -> TrustedPeer {
@@ -38,14 +41,22 @@ private func trusted(_ name: String, id: UUID, platform: String = "macos") -> Tr
     let id = UUID()
     let item = DeviceListItem.merge(nearby: [peer("Mac", id: id, tlsPort: nil)], trusted: [trusted("Mac", id: id)],
                                     lastSeen: [:], now: now)[0]
-    #expect(item.subtitle == "Paired · needs a LinkBridge update")
+    #expect(item.subtitle == "Update LinkBridge on Mac")
+    #expect(!item.isSendable)
+}
+
+@Test func peerNeedingNewerProtocolAsksToUpdateThisDevice() {
+    let id = UUID()
+    let item = DeviceListItem.merge(nearby: [peer("Mac", id: id, level: ProtocolLevel(current: 3, minimum: 3))],
+                                    trusted: [trusted("Mac", id: id)], lastSeen: [:], now: now)[0]
+    #expect(item.subtitle == "Update LinkBridge on this device")
     #expect(!item.isSendable)
 }
 
 @Test func peerWithoutDeviceIdOrTLSUsesEndpointIdAndCannotPair() {
     let item = DeviceListItem.merge(nearby: [peer("Old Mac", id: nil, tlsPort: nil)], trusted: [], lastSeen: [:], now: now)[0]
     #expect(item.id == "10.0.0.5:49152")
-    #expect(item.subtitle == "Needs a LinkBridge update")
+    #expect(item.subtitle == "Update LinkBridge on Old Mac")
     #expect(!item.canPair)
     #expect(!item.isSendable)
 }

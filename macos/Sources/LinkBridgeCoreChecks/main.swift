@@ -413,6 +413,8 @@ section("Credentials: an unreadable store is never overwritten or re-keyed") {
     check(keys.publicKeyBase64 == first, "and reused afterwards")
 }
 
+runProtocolCompatChecks()
+runUpdateCheckChecks()
 runPresentationChecks()
 runApprovalChecks()
 runHistoryStoreChecks()
@@ -559,16 +561,57 @@ func request(port: UInt16, parameters: NWParameters, _ text: String) -> String {
     return reply
 }
 
+/// Like a real sender: writes the head and then the whole body, and only then reads the reply.
+/// Returns the reply, or "" if the connection broke first.
+func requestWritingWholeBody(port: UInt16, parameters: NWParameters, head: String, bodySize: Int) -> String {
+    let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: parameters)
+    let ready = DispatchSemaphore(value: 0)
+    var isReady = false
+    connection.stateUpdateHandler = { state in
+        switch state {
+        case .ready: isReady = true; ready.signal()
+        case .failed, .cancelled: ready.signal()
+        default: break
+        }
+    }
+    connection.start(queue: .global())
+    _ = ready.wait(timeout: .now() + 5)
+    defer { connection.cancel() }
+    guard isReady else { return "" }
+    func send(_ data: Data) -> Bool {
+        let sent = DispatchSemaphore(value: 0)
+        var ok = false
+        connection.send(content: data, completion: .contentProcessed { ok = $0 == nil; sent.signal() })
+        return sent.wait(timeout: .now() + 10) == .success && ok
+    }
+    guard send(Data(head.utf8)) else { return "" }
+    let chunk = Data(repeating: 0x5A, count: 256 * 1024)
+    var written = 0
+    while written < bodySize {
+        let piece = chunk.prefix(bodySize - written)
+        guard send(piece) else { return "" }
+        written += piece.count
+    }
+    let done = DispatchSemaphore(value: 0)
+    var reply = ""
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
+        reply = String(decoding: data ?? Data(), as: UTF8.self)
+        done.signal()
+    }
+    _ = done.wait(timeout: .now() + 10)
+    return reply
+}
+
 /// A signed upload head for `deviceId`, with no body.
-func signedUploadHead(deviceId: UUID, secret: String, contentLength: Int = 1000) -> String {
+func signedUploadHead(deviceId: UUID, secret: String, contentLength: Int = 1000, extraHeaders: [String] = []) -> String {
     let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
     let transferId = UUID().uuidString
     let signature = Security.uploadSignature(secret: secret, scheme: Security.encryptionScheme, message: ["POST", "/transfer/upload", deviceId.uuidString, timestamp,
                                                                        transferId, Security.encryptionScheme, String(contentLength)].joined(separator: "\n"))!
-    return ["POST /transfer/upload HTTP/1.1", "Content-Length: \(contentLength)",
+    return (["POST /transfer/upload HTTP/1.1", "Content-Length: \(contentLength)",
             "X-LinkBridge-Device-Id: \(deviceId.uuidString)", "X-LinkBridge-Timestamp: \(timestamp)",
             "X-LinkBridge-Transfer-Id: \(transferId)", "X-LinkBridge-Encryption: \(Security.encryptionScheme)",
-            "X-LinkBridge-Signature: \(signature)", "", ""].joined(separator: "\r\n")
+            "X-LinkBridge-Signature: \(signature)"] + extraHeaders + ["", ""]).joined(separator: "\r\n")
 }
 
 /// Starts a server on the completion-based initializer. `pair` / `transfer` decide how each request is answered.
@@ -790,6 +833,23 @@ DispatchQueue.global().async {
         check(request() == 200, "the same address can still replace its own request")
     }
 
+    section("Pairing refuses incompatible protocols and names who must update") {
+        func pairRequest(_ extra: [String: Any]) -> (Int, [String: Any]) {
+            post(port, "/pair/request", ["deviceId": UUID().uuidString, "deviceName": "Phone", "platform": "android",
+                                         "protocolVersion": 1, "features": [], "pairingVersion": 3,
+                                         "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()]
+                                         .merging(extra) { $1 })
+        }
+        let (old, oldBody) = pairRequest(["protocol": 1, "minProtocol": 1])
+        check(old == 426 && oldBody["error"] as? String == "update_required" && oldBody["update"] as? String == "sender", "too-old phone refused, got \(old) \(oldBody)")
+        let (new, newBody) = pairRequest(["protocol": 3, "minProtocol": 3])
+        check(new == 426 && newBody["update"] as? String == "receiver", "phone needing a newer Mac refused, got \(new) \(newBody)")
+        let (current, currentBody) = pairRequest([:])
+        check(current == 200 && currentBody["protocol"] as? Int == 2 && currentBody["minProtocol"] as? Int == 2, "0.2.x phone still pairs, got \(current) \(currentBody)")
+        let device = rawRequest(port: port, "GET /device HTTP/1.1\r\nHost: x\r\n\r\n")
+        check(device.contains(#""protocol":2"#) && device.contains(#""minProtocol":2"#), "/device reports its protocol levels")
+    }
+
     section("Renaming this Mac updates what pairing shows") {
         let before = IdentityStore().loadOrCreate()
         let renamed = IdentityStore().rename(before, to: "Desk\nMac")
@@ -858,6 +918,31 @@ DispatchQueue.global().async {
         } else {
             check(false, "needs a second paired device")
         }
+        // Senders on an incompatible protocol are refused before anyone is asked, naming who must update.
+        let selfTLS = SecureTransport.clientParameters(identity: SecureTransport.identity(for: identity.deviceId.uuidString),
+                                                       psk: SecureTransport.psk(fromSecret: secret)!)
+        var incompatible: [String] = []
+        DispatchQueue.main.sync { ControlServer.onIncompatibleSender = { name, compatibility in incompatible.append("\(name):\(compatibility)") } }
+        let oldSender = requestWritingWholeBody(port: server.securePort, parameters: selfTLS,
+                                head: signedUploadHead(deviceId: identity.deviceId, secret: secret, extraHeaders: ["X-LinkBridge-Protocol: 1", "X-LinkBridge-Min-Protocol: 1"]),
+                                bodySize: 1000)
+        check(oldSender.hasPrefix("HTTP/1.1 426") && oldSender.contains(#""error":"update_required""#) && oldSender.contains(#""update":"sender""#),
+              "too-old sender refused, got \(oldSender.prefix(80))")
+        let newSender = requestWritingWholeBody(port: server.securePort, parameters: selfTLS,
+                                head: signedUploadHead(deviceId: identity.deviceId, secret: secret, extraHeaders: ["X-LinkBridge-Protocol: 3", "X-LinkBridge-Min-Protocol: 3"]),
+                                bodySize: 1000)
+        check(newSender.contains(#""update":"receiver""#), "sender needing a newer receiver refused, got \(newSender.prefix(80))")
+        // A sender writes its whole body before reading, so the receiver must read it all before closing,
+        // or the reset loses the reply and the sender only sees a broken connection.
+        let bigBody = 24 * 1024 * 1024
+        let bigOld = requestWritingWholeBody(port: server.securePort, parameters: selfTLS,
+                                             head: signedUploadHead(deviceId: identity.deviceId, secret: secret, contentLength: bigBody,
+                                                                    extraHeaders: ["X-LinkBridge-Protocol: 1"]),
+                                             bodySize: bigBody)
+        check(bigOld.contains(#""update":"sender""#), "a large refused upload still gets the update reply, got \(bigOld.prefix(80))")
+        DispatchQueue.main.sync {}
+        check(incompatible == ["Self:peerTooOld"], "receiver told once per sender, got \(incompatible)")
+        DispatchQueue.main.sync { ControlServer.onIncompatibleSender = nil }
         try FileSender.send(filePath: file.path, endpoint: "127.0.0.1:\(server.securePort)", secret: secret)
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LinkBridge").appendingPathComponent(file.lastPathComponent)

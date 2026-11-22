@@ -4,6 +4,10 @@
 #   ./scripts/package-mac-app.sh            # release build for this Mac, ad-hoc signed
 #   ARCHES="arm64 x86_64" ./scripts/package-mac-app.sh   # universal binary
 #   APP_IDENTITY="Apple Development: ..." ./scripts/package-mac-app.sh   # real signing
+#   WEBSITE_BUILD=1 ./scripts/package-mac-app.sh   # website download: adds the "new version" check
+#
+# Builds for the website (DMG/zip on linkbridge.pratham.si) must set WEBSITE_BUILD=1. Leave it unset
+# for App Store builds: without it the app has no update check at all.
 #
 # Based on the macos-spm-app-packaging skill template.
 set -euo pipefail
@@ -75,7 +79,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>LinkBridge finds your phone on this Wi-Fi network and transfers files directly between your devices. Nothing goes through the internet.</string>
+    <string>LinkBridge finds your phone on this Wi-Fi network and transfers files directly between your devices. Your files never go through the internet.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_linkbridge._tcp</string>
@@ -84,6 +88,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+if [[ "${WEBSITE_BUILD:-0}" == "1" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :LBUpdateCheck bool true" "$APP/Contents/Info.plist"
+fi
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 # Strip extended attributes so the code signature seals cleanly.

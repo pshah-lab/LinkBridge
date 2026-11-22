@@ -9,14 +9,18 @@ public struct ResolvedPeer {
     public let port: UInt16
     /// TLS-PSK port for transfers (protocol 2). Nil means the peer runs an older app.
     public let tlsPort: UInt16?
+    /// Protocol versions from the TXT record (`protocol`, `minProtocol`).
+    public let level: ProtocolLevel
 
-    public init(deviceName: String, deviceId: UUID?, platform: String?, host: String, port: UInt16, tlsPort: UInt16?) {
+    public init(deviceName: String, deviceId: UUID?, platform: String?, host: String, port: UInt16, tlsPort: UInt16?,
+                level: ProtocolLevel = .local) {
         self.deviceName = deviceName
         self.deviceId = deviceId
         self.platform = platform
         self.host = host
         self.port = port
         self.tlsPort = tlsPort
+        self.level = level
     }
 
     public var endpoint: String {
@@ -105,7 +109,11 @@ extension PeerResolver: NetServiceDelegate {
                 platform: platform,
                 host: host,
                 port: UInt16(sender.port),
-                tlsPort: tlsPort
+                tlsPort: tlsPort,
+                level: ProtocolLevel.fromTXT(
+                    protocol: txt["protocol"].map { String(decoding: $0, as: UTF8.self) },
+                    minProtocol: txt["minProtocol"].map { String(decoding: $0, as: UTF8.self) },
+                    hasTLSPort: tlsPort != nil, hasDeviceId: deviceId != nil)
             )
         )
 

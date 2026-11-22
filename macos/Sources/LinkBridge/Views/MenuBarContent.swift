@@ -45,6 +45,10 @@ struct MenuBarContent: View {
                 }
 
                 Divider()
+                if let updates = model.updates, let release = updates.available {
+                    Button("Update available: LinkBridge \(release.version)…") { updates.openDownload() }
+                        .buttonStyle(.link)
+                }
                 HStack {
                     Button("Open LinkBridge") {
                         openWindow(id: "main")
