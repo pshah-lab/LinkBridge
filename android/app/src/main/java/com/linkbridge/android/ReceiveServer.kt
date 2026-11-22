@@ -104,6 +104,11 @@ class ReceiveServer(
             ?.authToken
             ?.let(SecureTransport::psk)
 
+    /** Only after the TLS identity and signature checks, so strangers can't hold connections open. */
+    private fun drainRefusedBody(input: java.io.InputStream, contentLength: Long) {
+        runCatching { ReceiveLimits.drain(input, contentLength, System.currentTimeMillis() + ReceiveLimits.REFUSAL_DRAIN_MS) }
+    }
+
     /** Checks the header. Returns the body handling, or null after replying with an error. */
     private fun handleRequest(connection: SecureTransport.Connection): (() -> Unit)? {
         val reply = connection.output
@@ -176,6 +181,7 @@ class ReceiveServer(
             )
         )
         if (compatibility != Compatibility.OK) {
+            drainRefusedBody(input, contentLength)
             reply.writeJsonResponse(426, ProtocolCompat.rejectionBody(compatibility))
             val noticeNow = System.currentTimeMillis()
             val last = incompatibleNoticeAt[senderId]
@@ -189,6 +195,7 @@ class ReceiveServer(
         val now = System.currentTimeMillis()
         replayCache.entries.removeIf { it.value < now }
         if (replayCache.putIfAbsent(replayKey, now + REPLAY_WINDOW_MS) != null) {
+            drainRefusedBody(input, contentLength)
             reply.writeJsonResponse(409, """{"error":"replayed_transfer"}""")
             return null
         }

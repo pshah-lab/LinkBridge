@@ -62,7 +62,10 @@ A receiver that can't work with the requester answers before asking its user:
 426 {"error":"update_required","update":"sender"|"receiver","protocol":2,"minProtocol":2}
 ```
 
-`update` names the side that must update. The requester shows the matching message; a Mac or
+`update` names the side that must update. Senders write the whole body before reading the reply, so
+after authenticating the sender a receiver reads and discards the rest of the body (for up to 60 s)
+before answering `426`, `409` or (Mac) `429`; closing with unread data would reset the connection
+and lose the reply. The requester shows the matching message; a Mac or
 Android receiver also tells its own user, at most once per sender per hour. The device list shows
 the message as the device's subtitle and turns Send and Pair off for it. `426 tls_required` on the
 plain port is unchanged.

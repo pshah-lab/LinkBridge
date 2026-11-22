@@ -20,10 +20,12 @@ object UpdateCheck {
     /** `platform` is "android" (build from `versionCode`) or "mac" (from `build`). Null for anything malformed. */
     fun parse(json: String, platform: String): LatestRelease? {
         val entry = runCatching { JSONObject(json) }.getOrNull()?.optJSONObject(platform) ?: return null
-        val version = entry.optString("version").takeIf { it.isNotEmpty() } ?: return null
+        // `opt(...) as? String`, not optString: that turns null and objects into text like "null".
+        fun text(key: String): String? = entry.opt(key) as? String
+        val version = text("version")?.takeIf { it.isNotEmpty() } ?: return null
         val build = entry.opt(if (platform == "android") "versionCode" else "build") as? Number ?: return null
-        val notes = entry.optString("notes").lineSequence().firstOrNull().orEmpty().take(MAX_NOTES)
-        return LatestRelease(version.take(20), build.toInt(), safeUrl(entry.optString("url").ifEmpty { null }), notes)
+        val notes = text("notes").orEmpty().lineSequence().firstOrNull().orEmpty().take(MAX_NOTES)
+        return LatestRelease(version.take(20), build.toInt(), safeUrl(text("url")), notes)
     }
 
     /** Only `https` links on the LinkBridge site are opened; anything else opens the site's home page. */

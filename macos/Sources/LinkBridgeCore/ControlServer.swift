@@ -685,7 +685,8 @@ public final class ControlServer {
                                                  minProtocol: head.headers["x-linkbridge-min-protocol"].flatMap { Int($0) })
         let compatibility = ProtocolCompat.check(peer: senderLevel)
         guard compatibility == .ok else {
-            sendJSON(connection: connection, status: "426 Upgrade Required", body: ProtocolCompat.rejectionBody(compatibility))
+            refuseAfterBody(connection: connection, head: head, status: "426 Upgrade Required",
+                            body: ProtocolCompat.rejectionBody(compatibility))
             let name = peer.deviceName
             DispatchQueue.main.async {
                 let now = Date()
@@ -697,13 +698,13 @@ public final class ControlServer {
         }
 
         if let refusal = approvalRefusal(sender: senderUUID) {
-            sendJSON(connection: connection, status: "429 Too Many Requests", body: Data(#"{"error":"\#(refusal)"}"#.utf8))
+            refuseAfterBody(connection: connection, head: head, status: "429 Too Many Requests", body: Data(#"{"error":"\#(refusal)"}"#.utf8))
             return
         }
 
         let replayKey = "\(senderId):\(transferId)"
         guard Self.replayCache.reserve(replayKey) else {
-            sendJSON(connection: connection, status: "409 Conflict", body: #"{"error":"replayed_transfer"}"#.data(using: .utf8)!)
+            refuseAfterBody(connection: connection, head: head, status: "409 Conflict", body: #"{"error":"replayed_transfer"}"#.data(using: .utf8)!)
             return
         }
 
@@ -952,6 +953,29 @@ public final class ControlServer {
             print("Receive failed: \(error)")
             sendJSON(connection: connection, status: "500 Internal Server Error", body: #"{"error":"save_failed"}"#.data(using: .utf8)!)
         }
+    }
+
+    /// How long a refused, authenticated sender may keep streaming before the connection is closed.
+    static var refusalDrainDeadline: TimeInterval = 60
+
+    /// Refuses a paired, authenticated sender after reading and discarding its body. Senders write the
+    /// whole body before reading, and closing with unread data resets the connection, which loses the
+    /// reply. Only used after the TLS identity and signature checks, so strangers can't hold connections.
+    private static func refuseAfterBody(connection: NWConnection, head: HTTPRequestHead, status: String, body: Data) {
+        var remaining = Int64(head.contentLength ?? 0) - Int64(head.initialBody.count)
+        let deadline = Date().addingTimeInterval(refusalDrainDeadline)
+        func drain() {
+            guard remaining > 0, Date() < deadline else {
+                sendJSON(connection: connection, status: status, body: body)
+                return
+            }
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { data, _, isComplete, error in
+                remaining -= Int64(data?.count ?? 0)
+                if error != nil || isComplete { remaining = 0 }
+                drain()
+            }
+        }
+        drain()
     }
 
     private static func sendJSON(connection: NWConnection, status: String, body responseBody: Data) {

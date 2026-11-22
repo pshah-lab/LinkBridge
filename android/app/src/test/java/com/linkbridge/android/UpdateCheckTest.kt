@@ -28,6 +28,16 @@ class UpdateCheckTest {
         assertNull(UpdateCheck.parse("""{"android": {"version": "0.3.0", "versionCode": "4"}}""", "android"))
         assertNull(UpdateCheck.parse("<html>Not found</html>", "android"))
         assertNull(UpdateCheck.parse("""{"android": {"version": "", "versionCode": 4}}""", "android"))
+        assertNull(UpdateCheck.parse("""{"android": {"version": null, "versionCode": 4}}""", "android"))
+        assertNull(UpdateCheck.parse("""{"android": {"version": {"a": 1}, "versionCode": 4}}""", "android"))
+    }
+
+    @Test
+    fun nullOrOddOptionalFieldsAreDropped() {
+        val release = UpdateCheck.parse("""{"android": {"version": "0.3.0", "versionCode": 4, "url": null, "notes": null}}""", "android")
+        assertEquals(LatestRelease("0.3.0", 4, home, ""), release)
+        val objectNotes = UpdateCheck.parse("""{"android": {"version": "0.3.0", "versionCode": 4, "notes": {"x": 1}}}""", "android")
+        assertEquals("", objectNotes?.notes)
     }
 
     @Test
