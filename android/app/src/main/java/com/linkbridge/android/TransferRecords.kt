@@ -60,7 +60,8 @@ object TransferRecords {
         message: String,
         uri: String,
         persistable: Boolean,
-        now: Long
+        now: Long,
+        deviceId: String?
     ) = TransferHistoryEntry(
         fileName = fileName,
         bytes = bytes,
@@ -69,6 +70,7 @@ object TransferRecords {
         completedAt = now,
         succeeded = false,
         detail = message,
-        contentUri = if (persistable) uri else null
+        contentUri = if (persistable) uri else null,
+        deviceId = deviceId
     )
 }

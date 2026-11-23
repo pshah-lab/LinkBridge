@@ -214,8 +214,36 @@ class MainViewModelStateTest {
 
     private val failedSend = TransferHistoryEntry(
         fileName = "a.txt", bytes = 100, peerName = "Studio", isOutgoing = true, completedAt = now,
-        succeeded = false, detail = "refused", contentUri = "content://docs/a.txt"
+        succeeded = false, detail = "refused", contentUri = "content://docs/a.txt", deviceId = MAC_ID
     )
+
+    @Test
+    fun retryIgnoresAnotherPeerAdvertisingTheSameName() = runTest(dispatcher) {
+        val air = TrustedPeer("7f9619ff-8b86-d011-b42d-00cf4fc964ff", "Air", "macos", "192.168.1.6", 52000, "t")
+        stores.trustedPeers = listOf(macTrust, air)
+        // Studio is away; paired Air advertises Studio's name over Bonjour.
+        hub.peers.value = listOf(pairedMac.copy(serviceName = "LinkBridge-Air", deviceId = air.deviceId, deviceName = "Studio"))
+        val vm = viewModel()
+
+        vm.retry(failedSend)
+        advanceUntilIdle()
+
+        assertTrue(hub.sends.isEmpty())
+        assertEquals("Studio isn't available — pair it or bring it nearby, then retry.", vm.state.value.notice)
+    }
+
+    @Test
+    fun retryRefusedForAnEntryWithoutADeviceId() = runTest(dispatcher) {
+        stores.trustedPeers = listOf(macTrust)
+        hub.peers.value = listOf(pairedMac)
+        val vm = viewModel()
+
+        vm.retry(failedSend.copy(deviceId = null))
+        advanceUntilIdle()
+
+        assertTrue(hub.sends.isEmpty())
+        assertEquals("Studio isn't available — pair it or bring it nearby, then retry.", vm.state.value.notice)
+    }
 
     @Test
     fun retrySendsToThePeerItFailedOn() = runTest(dispatcher) {

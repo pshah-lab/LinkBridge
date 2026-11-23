@@ -51,7 +51,11 @@ public final class PairingClient {
         let keys = PairingKeyStore()
         // The stored key, not the cached one: the key in the code must be the one ECDH uses.
         let localKey = try PairingKeyStore.parsePublicKey(keys.publicKeyBase64).x963Representation
-        let v3 = (reply.pairingVersion ?? 1) >= 3
+        // The reply is plain HTTP and the version isn't covered by the code, so a missing or
+        // lower version may be an on-path downgrade. Every released build speaks v3: refuse v1.
+        guard let replyVersion = reply.pairingVersion, replyVersion >= PairingCode.pairingVersion else {
+            throw PairingClientError.peerNeedsUpdate
+        }
         let shared = try keys.sharedSecret(peerPublicKeyBase64: reply.publicKey)
 
         let nonce = PairingCode.randomNonce()
@@ -64,17 +68,10 @@ public final class PairingClient {
             throw PairingClientError.commitmentMismatch
         }
 
-        let code: String
-        let secret: String
-        if v3 {
-            code = PairingCode.code(initiatorKey: localKey, responderKey: peerKey, initiatorNonce: nonce, responderNonce: peerNonce,
+        let code = PairingCode.code(initiatorKey: localKey, responderKey: peerKey, initiatorNonce: nonce, responderNonce: peerNonce,
                                     initiatorId: identity.deviceId, responderId: peer.deviceId)
-            secret = PairingCode.secret(sharedSecret: shared, initiatorNonce: nonce, responderNonce: peerNonce,
+        let secret = PairingCode.secret(sharedSecret: shared, initiatorNonce: nonce, responderNonce: peerNonce,
                                         initiatorId: identity.deviceId, responderId: peer.deviceId)
-        } else {
-            code = PairingCode.code(initiatorKey: localKey, responderKey: peerKey, initiatorNonce: nonce, responderNonce: peerNonce)
-            secret = Data(SHA256.hash(data: shared)).base64EncodedString()
-        }
         pending = (peer, secret)
         return Started(code: code, peerName: DeviceNames.sanitize(peer.deviceName))
     }

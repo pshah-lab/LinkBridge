@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The keystore and anything this script creates are readable by the owner only.
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KEYSTORE_DIR="${LINKBRIDGE_KEYSTORE_DIR:-$HOME/.linkbridge}"
@@ -11,17 +13,19 @@ if [[ -e "$KEYSTORE_PATH" ]]; then
   exit 0
 fi
 
-mkdir -p "$(dirname "$KEYSTORE_PATH")"
+mkdir -p -m 700 "$(dirname "$KEYSTORE_PATH")"
 printf 'Create a private Android release keystore. Passwords are not saved in the repository.\n'
 read -r -s -p 'Keystore password: ' STORE_PASSWORD
 printf '\n'
 read -r -s -p 'Key password: ' KEY_PASSWORD
 printf '\n'
 
-keytool -genkeypair \
+# Passwords go through the environment of this one command, not argv: arguments are visible
+# to every local user in `ps` while the key is generated.
+LINKBRIDGE_STOREPASS="$STORE_PASSWORD" LINKBRIDGE_KEYPASS="$KEY_PASSWORD" keytool -genkeypair \
   -keystore "$KEYSTORE_PATH" \
-  -storepass "$STORE_PASSWORD" \
-  -keypass "$KEY_PASSWORD" \
+  -storepass:env LINKBRIDGE_STOREPASS \
+  -keypass:env LINKBRIDGE_KEYPASS \
   -alias "$KEY_ALIAS" \
   -keyalg RSA \
   -keysize 3072 \

@@ -250,14 +250,16 @@ class MainViewModel(
     }
 
     /**
-     * Re-sends a failed outgoing transfer to the device it failed on: the sendable device named
-     * [TransferHistoryEntry.peerName]. If none is sendable, nothing is sent and [UiState.notice] says why.
+     * Re-sends a failed outgoing transfer to the device it failed on: the sendable device with
+     * [TransferHistoryEntry.deviceId]. Never matched by name, which any peer can advertise.
+     * If none is sendable (or the entry predates device IDs), nothing is sent and [UiState.notice] says why.
      */
     fun retry(entry: TransferHistoryEntry) {
         if (!entry.isOutgoing || entry.succeeded) return
         val uri = entry.contentUri ?: return
         if (sendPhase.value is SendPhase.Sending) return
-        val target = devices.value.firstOrNull { it.isSendable && it.name == entry.peerName }
+        val deviceId = entry.deviceId
+        val target = deviceId?.let { id -> devices.value.firstOrNull { it.isSendable && it.deviceId == id } }
         if (target == null) {
             notice.value = "${entry.peerName} isn't available — pair it or bring it nearby, then retry."
             return

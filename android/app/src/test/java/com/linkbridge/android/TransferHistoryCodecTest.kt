@@ -14,12 +14,13 @@ class TransferHistoryCodecTest {
         assertTrue(entry.succeeded)
         assertNull(entry.detail)
         assertNull(entry.contentUri)
+        assertNull(entry.deviceId)
     }
 
     @Test
     fun roundTripsNewFields() {
         val entries = listOf(
-            TransferHistoryEntry("a.pdf", 10, "Mac mini", true, 1L, succeeded = false, detail = "Connection lost", contentUri = "content://x/1"),
+            TransferHistoryEntry("a.pdf", 10, "Mac mini", true, 1L, succeeded = false, detail = "Connection lost", contentUri = "content://x/1", deviceId = MAC_ID),
             TransferHistoryEntry("b.jpg", 20, "Mac mini", false, 2L)
         )
         assertEquals(entries, TransferHistoryCodec.decode(TransferHistoryCodec.encode(entries)))

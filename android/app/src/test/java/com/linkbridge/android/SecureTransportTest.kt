@@ -1,7 +1,10 @@
 package com.linkbridge.android
 
 import org.junit.Assert.assertEquals
+import org.bouncycastle.tls.AlertDescription
+import org.bouncycastle.tls.TlsFatalAlertReceived
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.net.ServerSocket
@@ -45,11 +48,27 @@ class SecureTransportTest {
         assertRejected(clientIdentity = "stranger", clientPsk = psk) { id -> if (id == "phone-1") psk else null }
     }
 
-    private fun assertRejected(clientIdentity: String, clientPsk: ByteArray, pskFor: (String) -> ByteArray?) {
+    @Test
+    fun unknownIdentityFailsLikeAWrongKey() {
+        // An immediate unknown_psk_identity alert would reveal which device IDs are paired.
+        val psk = SecureTransport.psk(secret)
+        val pskFor = { id: String -> if (id == "phone-1") psk else null }
+        val wrongKey = assertRejected(clientIdentity = "phone-1", clientPsk = ByteArray(32) { 9 }, pskFor = pskFor)
+        val unknown = assertRejected(clientIdentity = "stranger", clientPsk = psk, pskFor = pskFor)
+        assertTrue("got $wrongKey", wrongKey is TlsFatalAlertReceived)
+        assertTrue("got $unknown", unknown is TlsFatalAlertReceived)
+        assertEquals((wrongKey as TlsFatalAlertReceived).alertDescription, (unknown as TlsFatalAlertReceived).alertDescription)
+        assertEquals(AlertDescription.bad_record_mac, unknown.alertDescription)
+    }
+
+    /** Returns the client-side exception the failed handshake threw. */
+    private fun assertRejected(clientIdentity: String, clientPsk: ByteArray, pskFor: (String) -> ByteArray?): Exception {
         try {
             val (reply, identity) = roundTrip(clientIdentity, clientPsk, pskFor)
             fail("handshake should fail, got reply=$reply identity=$identity")
+            throw AssertionError()
         } catch (expected: Exception) {
+            return expected
         }
     }
 

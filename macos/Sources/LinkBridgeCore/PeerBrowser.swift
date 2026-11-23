@@ -91,7 +91,7 @@ public final class PeerBrowser: NSObject {
         if let deviceId, deviceId == localDeviceId { return }
 
         peers[name] = ResolvedPeer(
-            deviceName: value("deviceName") ?? name,
+            deviceName: DeviceNames.sanitize(value("deviceName") ?? name),
             deviceId: deviceId,
             platform: value("platform"),
             host: record.host,
@@ -110,16 +110,54 @@ public final class PeerBrowser: NSObject {
 extension PeerBrowser: NetServiceDelegate {
     public func netServiceDidResolveAddress(_ sender: NetService) {
         guard services[sender.name] === sender, let host = sender.hostName, sender.port > 0 else { return }
-        let txt = sender.txtRecordData().map(NetService.dictionary(fromTXTRecord:)) ?? [:]
+        let txt = sender.txtRecordData().map(TXTRecord.parse) ?? [:]
         ingest(name: sender.name, host: host, port: UInt16(sender.port), txt: txt)
     }
 
     public func netService(_ sender: NetService, didUpdateTXTRecord data: Data) {
         guard services[sender.name] === sender, let record = records[sender.name] else { return }
-        ingest(name: sender.name, host: record.host, port: record.port, txt: NetService.dictionary(fromTXTRecord: data))
+        ingest(name: sender.name, host: record.host, port: record.port, txt: TXTRecord.parse(data))
     }
 
     public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
-        print("Could not resolve \(sender.name): \(errorDict)")
+        print("Could not resolve \(DeviceNames.sanitize(sender.name)): \(errorDict)")
+    }
+}
+
+/// Parses DNS-SD TXT record bytes (RFC 6763 section 6) into key/value pairs.
+///
+/// Used instead of `NetService.dictionary(fromTXTRecord:)`, which bridges a
+/// value-less key (a boolean attribute such as `flag` with no `=`) as NSNull
+/// and traps when Swift casts it to `Data`. TXT records come from any host on
+/// the LAN, so this never traps: a value-less key maps to empty `Data`, the
+/// first occurrence of a key wins, and malformed entries are skipped.
+enum TXTRecord {
+    static func parse(_ data: Data) -> [String: Data] {
+        let bytes = [UInt8](data)
+        var result: [String: Data] = [:]
+        var index = 0
+        while index < bytes.count {
+            let length = Int(bytes[index])
+            index += 1
+            guard length > 0 else { continue }
+            guard index + length <= bytes.count else { break } // truncated entry
+            let entry = bytes[index..<(index + length)]
+            index += length
+
+            let keyBytes: ArraySlice<UInt8>
+            let value: Data
+            if let equals = entry.firstIndex(of: UInt8(ascii: "=")) {
+                keyBytes = entry[entry.startIndex..<equals]
+                value = Data(entry[(equals + 1)...])
+            } else {
+                keyBytes = entry
+                value = Data()
+            }
+            guard !keyBytes.isEmpty,
+                  let key = String(bytes: keyBytes, encoding: .utf8),
+                  result[key] == nil else { continue }
+            result[key] = value
+        }
+        return result
     }
 }
