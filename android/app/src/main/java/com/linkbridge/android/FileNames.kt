@@ -15,9 +15,11 @@ object FileNames {
         var name = fileName
             .replace(separators, "-")
             .replace(invisible, "")
-            .trim()
-            .trimStart('.')
-            .trim()
+        // Strip dots and whitespace until stable: a single pass of each would turn ". .x" into ".x".
+        do {
+            val previous = name
+            name = name.trim().trimStart('.')
+        } while (name != previous)
         if (name.utf8Size() > MAX_BYTES) {
             val ext = name.substringAfterLast('.', "")
             val keep = if (ext.isEmpty() || ext.utf8Size() > 20 || ext == name) "" else ".$ext"

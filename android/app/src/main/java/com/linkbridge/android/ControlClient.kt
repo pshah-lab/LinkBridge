@@ -53,7 +53,11 @@ class ControlClient {
                     .put("protocol", ProtocolLevel.CURRENT)
                     .put("minProtocol", ProtocolLevel.MINIMUM)
             )
-            val v3 = request.optInt("pairingVersion", 1) >= 3
+            // The reply is plain HTTP and the version isn't covered by the code, so a missing or
+            // lower version may be an on-path downgrade. Every released build speaks v3: refuse v1.
+            if (request.optInt("pairingVersion", 1) < PairingCode.PAIRING_VERSION) {
+                error("Mac is running an older LinkBridge; update it to pair")
+            }
             val macKeyBase64 = request.optString("publicKey").ifBlank { error("Mac did not provide a public key") }
             val commitment = Base64.decode(request.optString("commitment").ifBlank { error("Mac is running an older LinkBridge; update it to pair") }, Base64.NO_WRAP)
             val macKey = pairingKeys.normalizePublicKey(macKeyBase64)
@@ -72,19 +76,12 @@ class ControlClient {
                 error("Pairing check failed: the Mac's reply doesn't match its commitment. Someone may be intercepting this connection.")
             }
 
-            if (v3) {
-                PairingSession(
-                    code = PairingCode.code(localKey, macKey, localNonce, macNonce, localIdentity.deviceId, responderId),
-                    authToken = android.util.Base64.encodeToString(
-                        PairingCode.secret(shared, localNonce, macNonce, localIdentity.deviceId, responderId), Base64.NO_WRAP
-                    )
+            PairingSession(
+                code = PairingCode.code(localKey, macKey, localNonce, macNonce, localIdentity.deviceId, responderId),
+                authToken = android.util.Base64.encodeToString(
+                    PairingCode.secret(shared, localNonce, macNonce, localIdentity.deviceId, responderId), Base64.NO_WRAP
                 )
-            } else {
-                PairingSession(
-                    code = PairingCode.code(localKey, macKey, localNonce, macNonce),
-                    authToken = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(shared), Base64.NO_WRAP)
-                )
-            }
+            )
         }
     }
 

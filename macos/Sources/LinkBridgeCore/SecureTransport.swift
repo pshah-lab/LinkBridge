@@ -41,21 +41,38 @@ public enum SecureTransport {
         // given the client's identity during the handshake. Answering with that identity picks
         // its key as usual (a wrong key still fails); remembering it lets the upload handler
         // check the device ID it claims. Runs on the main queue, like request handling.
+        //
+        // An unknown identity is answered with a decoy key instead of failing right away: an
+        // immediate `unknown_psk_identity` alert would tell anyone on the LAN which device IDs
+        // are paired. With the decoy, it fails at Finished (bad_record_mac) like a wrong key.
+        let known = Set(keys.map(\.identity))
+        let decoy = decoyKey
         sec_protocol_options_set_pre_shared_key_selection_block(options, { metadata, identity, complete in
             if let identity {
                 let name = String(decoding: Data(identity as DispatchData), as: UTF8.self)
-                negotiatedIdentities.setObject(name as NSString, forKey: metadata as AnyObject)
+                if known.contains(name) {
+                    negotiatedIdentities.setObject(name as NSString, forKey: metadata as AnyObject)
+                    complete(identity)
+                    return
+                }
             }
-            complete(identity)
+            complete(dispatchData(Data(decoy.identity.utf8)))
         }, .main)
-        // With no paired devices, still install one random key so the listener is valid;
-        // nobody can complete a handshake with it.
-        let entries = keys.isEmpty ? [(identity: UUID().uuidString, psk: SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) })] : keys
+        // The decoy also keeps the listener valid with no paired devices; nobody can complete
+        // a handshake with it.
+        let entries = keys + [decoy]
         for entry in entries {
             sec_protocol_options_add_pre_shared_key(options, dispatchData(entry.psk), dispatchData(Data(entry.identity.utf8)))
         }
         return NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
     }
+
+    /// Random identity and key, fixed for the process, used for identities that aren't paired.
+    /// The identity is never sent by a real client, and the key never leaves this process.
+    private static let decoyKey: (identity: String, psk: Data) = (
+        identity: "decoy-" + UUID().uuidString.lowercased(),
+        psk: SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+    )
 
     /// Metadata object -> PSK identity, dropped with the connection. Main queue only.
     private static let negotiatedIdentities = NSMapTable<AnyObject, NSString>(keyOptions: .weakMemory, valueOptions: .strongMemory)

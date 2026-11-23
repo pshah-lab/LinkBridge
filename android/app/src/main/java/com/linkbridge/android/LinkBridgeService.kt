@@ -166,7 +166,7 @@ class LinkBridgeService : Service() {
                     if (total > 0) updateNotification("Sending ${info.name} to ${peer.deviceName}", progress = (sent * 100 / total).toInt())
                 }.onSuccess {
                     LinkBridgeHub.recordHistory(
-                        this, TransferHistoryEntry(info.name, info.size, peer.deviceName, isOutgoing = true)
+                        this, TransferHistoryEntry(info.name, info.size, peer.deviceName, isOutgoing = true, deviceId = trustedPeer.deviceId)
                     )
                     LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Done(info.name, info.size, peer.deviceName))
                 }.onFailure { error ->
@@ -176,7 +176,7 @@ class LinkBridgeService : Service() {
                         this,
                         TransferRecords.failedSend(
                             info.name, info.size, peer.deviceName, message, uri.toString(), persistable,
-                            System.currentTimeMillis()
+                            System.currentTimeMillis(), deviceId = trustedPeer.deviceId
                         )
                     )
                     LinkBridgeHub.publishSendState(LinkBridgeHub.SendState.Failed(info.name, message))

@@ -30,6 +30,14 @@ object SecureTransport {
     private const val CIPHER_SUITE = CipherSuite.TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256
     private val random = SecureRandom()
 
+    /**
+     * Key for identities that aren't paired, random per process. Returning null from getPSK makes
+     * BouncyCastle send `unknown_psk_identity` at once, which tells anyone on the LAN which device
+     * IDs are paired; with this key the handshake fails at Finished, exactly like a wrong key
+     * (RFC 4279 section 5.1).
+     */
+    private val decoyPsk = ByteArray(32).also { random.nextBytes(it) }
+
     /** HKDF-SHA256(secret, salt "linkbridge-tls-v1", info "psk"), 32 bytes. */
     fun psk(fromSecret: String): ByteArray {
         val ikm = Base64.getDecoder().decode(fromSecret)
@@ -52,7 +60,8 @@ object SecureTransport {
 
     /**
      * Server side of an accepted socket. [pskFor] returns the key for a client identity, or
-     * null to reject it. Throws if the handshake fails (unknown identity, wrong key).
+     * null to reject it. Throws if the handshake fails (unknown identity, wrong key); both fail
+     * the same way and at the same point.
      */
     fun accept(socket: Socket, pskFor: (identity: String) -> ByteArray?): Connection {
         var authenticated: String? = null
@@ -60,7 +69,9 @@ object SecureTransport {
             override fun getHint(): ByteArray? = null
             override fun getPSK(identity: ByteArray): ByteArray? {
                 val name = String(identity, Charsets.UTF_8)
-                return pskFor(name)?.also { authenticated = name }
+                val psk = pskFor(name) ?: return decoyPsk.copyOf()
+                authenticated = name
+                return psk
             }
         }) {
             override fun getSupportedCipherSuites() = intArrayOf(CIPHER_SUITE)
@@ -77,7 +88,12 @@ object SecureTransport {
         }
         val protocol = TlsServerProtocol(socket.getInputStream(), socket.getOutputStream())
         protocol.accept(server)
-        return Connection(protocol, socket, authenticated)
+        // Unreachable without the decoy key, which never leaves this process; checked anyway.
+        val peer = authenticated ?: run {
+            runCatching { protocol.close() }
+            throw java.io.IOException("TLS handshake completed without a known PSK identity")
+        }
+        return Connection(protocol, socket, peer)
     }
 
     fun connect(host: String, port: Int, identity: String, psk: ByteArray, timeoutMs: Int = 5000): Connection {

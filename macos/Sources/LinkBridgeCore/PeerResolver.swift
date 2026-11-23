@@ -86,10 +86,12 @@ extension PeerResolver: NetServiceDelegate {
             return
         }
 
-        let txt = sender.txtRecordData().map(NetService.dictionary(fromTXTRecord:)) ?? [:]
+        let txt = sender.txtRecordData().map(TXTRecord.parse) ?? [:]
         let platform = txt["platform"].map { String(decoding: $0, as: UTF8.self) }
         let tlsPort = txt["tlsPort"].flatMap { UInt16(String(decoding: $0, as: UTF8.self)) }
-        let deviceName = txt["deviceName"].map { String(decoding: $0, as: UTF8.self) } ?? sender.name
+        // Any LAN host can advertise, and the CLI prints this name: drop control characters
+        // (terminal escape sequences), bidi overrides and newlines before it goes anywhere.
+        let deviceName = DeviceNames.sanitize(txt["deviceName"].map { String(decoding: $0, as: UTF8.self) } ?? sender.name)
         let deviceId = txt["deviceId"]
             .map { String(decoding: $0, as: UTF8.self) }
             .flatMap(UUID.init(uuidString:))
@@ -123,6 +125,6 @@ extension PeerResolver: NetServiceDelegate {
     }
 
     public func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
-        print("Could not resolve \(sender.name): \(errorDict)")
+        print("Could not resolve \(DeviceNames.sanitize(sender.name)): \(errorDict)")
     }
 }

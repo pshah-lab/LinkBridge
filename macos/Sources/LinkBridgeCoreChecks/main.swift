@@ -270,6 +270,9 @@ section("File names can't hide their extension, be hidden, or run long") {
         ("nul\u{0}and\ttab\n.txt", "nulandtab.txt"),
         (".hidden", "hidden"),
         ("...env", "env"),
+        (". .x", "x"),
+        (" . . .DS_Store", "DS_Store"),
+        (".\u{2003}.localized", "localized"),
         ("../../etc/passwd", "-..-etc-passwd"),
         ("a:b\\c", "a-b-c"),
         ("  .  ", "received-file"),
@@ -293,6 +296,7 @@ section("Device names are one short line with no hidden characters") {
         ("A\u{200B}B", "A B"),
         ("\n\n\u{202E}", DeviceNames.fallback),
         ("Priya’s Mac 🍎", "Priya’s Mac 🍎"),
+        ("Pixel\u{1B}]52;c;aGk=\u{07}\u{1B}[2J", "Pixel ]52;c;aGk= [2J"),  // terminal escapes lose their ESC/BEL
     ]
     for (input, expected) in cases {
         check(DeviceNames.sanitize(input) == expected, "\(input.debugDescription) -> \(DeviceNames.sanitize(input).debugDescription)")
@@ -302,6 +306,27 @@ section("Device names are one short line with no hidden characters") {
     check(DeviceNames.withoutOwner("Sam's Mac mini") == "Mac mini", "straight possessive dropped")
     check(DeviceNames.withoutOwner("James’ iMac") == "iMac", "plural-style possessive dropped")
     check(DeviceNames.withoutOwner("Studio Mac") == "Studio Mac", "names without an owner kept")
+}
+
+section("Bonjour TXT records parse without trapping on hostile input") {
+    func record(_ entries: [[UInt8]]) -> Data { Data(entries.flatMap { [UInt8($0.count)] + $0 }) }
+    let txt = TXTRecord.parse(record([
+        Array("deviceName=Pixel".utf8),
+        Array("flag".utf8),                 // boolean attribute: no '='
+        Array("empty=".utf8),
+        Array("eq=a=b".utf8),               // split on the first '=' only
+        Array("=novalue".utf8),             // empty key: skipped
+        Array("deviceName=Second".utf8),    // duplicate: first wins
+        [0xFF, 0xFE, 0x3D, 0x41],           // non-UTF-8 key: skipped
+    ]))
+    check(txt["deviceName"] == Data("Pixel".utf8), "plain key/value")
+    check(txt["flag"] == Data(), "value-less key becomes empty Data")
+    check(txt["empty"] == Data(), "empty value kept")
+    check(txt["eq"] == Data("a=b".utf8), "split on first '='")
+    check(txt.count == 4, "malformed entries skipped, got \(txt.keys.sorted())")
+    check(TXTRecord.parse(Data([0x00, 0x00])).isEmpty, "zero-length entries ignored")
+    check(TXTRecord.parse(Data([0x09]) + Data("short".utf8)).isEmpty, "truncated entry dropped")
+    check(TXTRecord.parse(Data()).isEmpty, "empty record")
 }
 
 // MARK: - Credential storage
@@ -632,8 +657,8 @@ func startDecisionServer(
 }
 
 /// Plays the phone's side of the three-step pairing protocol.
-/// `pairingVersion` nil plays an older phone (v1); 3 plays a current one.
-func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = nil) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
+/// Plays a current (v3) phone; the Mac refuses older pairing versions.
+func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = 3) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
     let phone = P256.KeyAgreement.PrivateKey()
     let phoneKey = phone.publicKey.x963Representation
     var requestBody: [String: Any] = ["deviceId": id.uuidString, "deviceName": "Check Phone", "platform": "android",
@@ -726,6 +751,18 @@ DispatchQueue.global().async {
         check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3again.phoneSecret, "Mac keeps only the new secret")
     }
 
+    section("Pairing: a request without v3 is refused, not downgraded") {
+        for version in [nil, 1, 2] as [Int?] {
+            var body: [String: Any] = ["deviceId": UUID().uuidString, "deviceName": "Old Phone", "platform": "android",
+                                       "protocolVersion": 1, "features": [],
+                                       "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()]
+            if let version { body["pairingVersion"] = version }
+            let (status, reply) = post(port, "/pair/request", body)
+            check(status == 426 && reply["error"] as? String == "update_required" && reply["commitment"] == nil,
+                  "pairingVersion \(String(describing: version)) refused with 426, got \(status)")
+        }
+    }
+
     section("Pairing: an unpaired v3 Mac (no device ID in Bonjour) pairs via /device") {
         // What PeerBrowser reports for a protocol 3 Mac the phone has never paired with.
         let discovered = ResolvedPeer(deviceName: "Check Mac", deviceId: nil, platform: "macos",
@@ -782,7 +819,7 @@ DispatchQueue.global().async {
         let id = UUID()
         let phone = P256.KeyAgreement.PrivateKey()
         let (status, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Phone", "platform": "android",
-                                                       "protocolVersion": 2, "features": [],
+                                                       "protocolVersion": 2, "features": [], "pairingVersion": 3,
                                                        "publicKey": phone.publicKey.x963Representation.base64EncodedString()])
         check(status == 200, "request accepted")
         let nonce = PairingCode.randomNonce().base64EncodedString()
@@ -791,7 +828,7 @@ DispatchQueue.global().async {
         let (own, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce])
         check(own == 200, "phone's own confirm still works, got \(own)")
         let (replace, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Evil", "platform": "android",
-                                                        "protocolVersion": 2, "features": [],
+                                                        "protocolVersion": 2, "features": [], "pairingVersion": 3,
                                                         "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()],
                                 host: "[::1]")
         check(replace == 429, "confirmed pairing can't be replaced, got \(replace)")
@@ -807,7 +844,7 @@ DispatchQueue.global().async {
             request.httpMethod = "POST"
             request.timeoutInterval = 10
             request.httpBody = try! JSONSerialization.data(withJSONObject: [
-                "deviceId": UUID().uuidString, "deviceName": name, "platform": "android", "protocolVersion": 2,
+                "deviceId": UUID().uuidString, "deviceName": name, "platform": "android", "protocolVersion": 2, "pairingVersion": 3,
                 "features": features, "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()])
             let done = DispatchSemaphore(value: 0)
             var status = 0

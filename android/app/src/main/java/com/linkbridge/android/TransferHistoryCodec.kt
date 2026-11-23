@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /**
  * JSON for [TransferHistoryStore], kept free of Android so it can be tested on the JVM.
- * Entries written before `succeeded`, `detail` and `contentUri` existed load with their defaults;
+ * Entries written before `succeeded`, `detail`, `contentUri` and `deviceId` existed load with their defaults;
  * anything unreadable loads as an empty history rather than crashing.
  */
 object TransferHistoryCodec {
@@ -29,6 +29,7 @@ object TransferHistoryCodec {
         .put("succeeded", succeeded)
         .put("detail", detail)
         .put("contentUri", contentUri)
+        .put("deviceId", deviceId)
 
     private fun JSONObject.toEntry() = TransferHistoryEntry(
         fileName = getString("fileName"),
@@ -38,8 +39,10 @@ object TransferHistoryCodec {
         completedAt = getLong("completedAt"),
         succeeded = optBoolean("succeeded", true),
         detail = optionalString("detail"),
-        contentUri = optionalString("contentUri")
+        contentUri = optionalString("contentUri"),
+        deviceId = optionalString("deviceId")
     )
 
+    // isNull is true for a missing key too, so older entries load with null.
     private fun JSONObject.optionalString(key: String): String? = if (isNull(key)) null else getString(key)
 }

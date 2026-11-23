@@ -13,7 +13,12 @@ data class TransferHistoryEntry(
     /** The error message on a failed transfer. */
     val detail: String? = null,
     /** A content URI the app can still read: the received file, or a send it can retry. */
-    val contentUri: String? = null
+    val contentUri: String? = null,
+    /**
+     * The trusted device ID a send went to. Retry matches on this, never on [peerName]: names
+     * come from unauthenticated Bonjour TXT records, so another paired device could claim one.
+     */
+    val deviceId: String? = null
 )
 
 /** Where the encoded history lives; SharedPreferences in the app, a plain field in tests. */

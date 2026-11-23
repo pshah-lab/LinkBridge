@@ -61,12 +61,13 @@ class TransferRecordsTest {
 
     @Test
     fun failedSendKeepsUriOnlyWhenPersistable() {
-        val kept = TransferRecords.failedSend("a.jpg", 10, "Mac", "refused", "content://x", persistable = true, now = now)
+        val kept = TransferRecords.failedSend("a.jpg", 10, "Mac", "refused", "content://x", persistable = true, now = now, deviceId = MAC_ID)
         assertTrue(kept.isOutgoing)
         assertFalse(kept.succeeded)
         assertEquals("refused", kept.detail)
         assertEquals("content://x", kept.contentUri)
-        val dropped = TransferRecords.failedSend("a.jpg", 10, "Mac", "refused", "content://x", persistable = false, now = now)
+        assertEquals(MAC_ID, kept.deviceId)
+        val dropped = TransferRecords.failedSend("a.jpg", 10, "Mac", "refused", "content://x", persistable = false, now = now, deviceId = MAC_ID)
         assertNull(dropped.contentUri)
     }
 }

@@ -491,6 +491,12 @@ public final class ControlServer {
         guard compatibility == .ok else {
             return HTTPResponse(status: "426 Upgrade Required", body: ProtocolCompat.rejectionBody(compatibility))
         }
+        // The version arrives over plain HTTP and isn't covered by the code, so an on-path
+        // attacker could strip it to force v1 (no device IDs in the code, no secret rotation).
+        // Every released build speaks v3, so refuse anything older instead of falling back.
+        guard let requestedVersion = peerIdentity.pairingVersion, requestedVersion >= PairingCode.pairingVersion else {
+            return HTTPResponse(status: "426 Upgrade Required", body: ProtocolCompat.rejectionBody(.peerTooOld))
+        }
         guard let peerPublicKey = peerIdentity.publicKey,
               let peerKey = try? PairingKeyStore.parsePublicKey(peerPublicKey),
               let sharedSecret = try? PairingKeyStore().sharedSecret(peerPublicKeyBase64: peerPublicKey),
@@ -501,7 +507,7 @@ public final class ControlServer {
 
         let nonce = PairingCode.randomNonce()
         let macKeyData = macKey.x963Representation
-        let version = min(peerIdentity.pairingVersion ?? 1, PairingCode.pairingVersion)
+        let version = min(requestedVersion, PairingCode.pairingVersion)
         let started = pendingPairings.begin(PendingPairing(
             peer: peerIdentity,
             source: source,
@@ -549,9 +555,8 @@ public final class ControlServer {
             secret = PairingCode.secret(sharedSecret: pending.sharedSecret, initiatorNonce: peerNonce, responderNonce: pending.nonce,
                                         initiatorId: pending.peer.deviceId, responderId: identity.deviceId)
         } else {
-            code = PairingCode.code(initiatorKey: pending.peerKey, responderKey: pending.macKey,
-                                    initiatorNonce: peerNonce, responderNonce: pending.nonce)
-            secret = Data(SHA256.hash(data: pending.sharedSecret)).base64EncodedString()
+            // Unreachable: handlePairRequest refuses versions below 3.
+            return jsonError("409 Conflict", "no_pending_pairing")
         }
         let request = IncomingPairRequest(
             id: UUID(),
@@ -1015,9 +1020,14 @@ public final class ControlServer {
             default: return scalar
             }
         }
-        var name = String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
-        while name.hasPrefix(".") { name.removeFirst() }
-        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var name = String(String.UnicodeScalarView(scalars))
+        // Strip dots and whitespace until stable: a single pass of each would turn ". .x" into ".x".
+        var previous: String
+        repeat {
+            previous = name
+            name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            while name.hasPrefix(".") { name.removeFirst() }
+        } while name != previous
         if name.utf8.count > maxFileNameBytes {
             let ext = (name as NSString).pathExtension
             let keep = ext.isEmpty || ext.utf8.count > 20 ? "" : "." + ext
