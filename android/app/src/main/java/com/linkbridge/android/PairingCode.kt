@@ -22,8 +22,40 @@ object PairingCode {
         return "%06d".format(value % 1_000_000)
     }
 
-    /** Pairing protocol this build speaks; see the Mac's `PairingCode.pairingVersion`. */
-    const val PAIRING_VERSION = 3
+    /** Pairing protocol this build speaks; see the Mac's `PairingCode.pairingVersion`. Both sides refuse older. */
+    const val PAIRING_VERSION = 4
+
+    private val CONFIRM_LABEL = "linkbridge-confirm-v4".toByteArray()
+
+    /**
+     * Pairing v4: what the Mac's `/pair/finalize` reply must carry as `confirm`:
+     * HMAC-SHA256(Kc, label || version || keys || nonces || ids), Kc = HKDF(secret, info = label).
+     * Binds "paired" to this key exchange and version. It can't stop a MITM, who holds this
+     * side's secret: the user confirming that the Mac lists this phone as paired does that.
+     */
+    fun confirmation(
+        secret: ByteArray, version: Int, initiatorKey: ByteArray, responderKey: ByteArray,
+        initiatorNonce: ByteArray, responderNonce: ByteArray, initiatorId: String, responderId: String
+    ): ByteArray {
+        require(version in 0..255)
+        // An empty HKDF salt is HashLen zero bytes (RFC 5869); JCA refuses an empty HMAC key.
+        val key = Hkdf.sha256(secret, ByteArray(32), CONFIRM_LABEL)
+        val transcript = CONFIRM_LABEL + byteArrayOf(version.toByte()) + initiatorKey + responderKey +
+            initiatorNonce + responderNonce + uuidBytes(initiatorId) + uuidBytes(responderId)
+        return Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }.doFinal(transcript)
+    }
+
+    /** Constant-time check; a missing, empty or wrong-length value never matches. */
+    fun isValidConfirmation(received: ByteArray?, expected: ByteArray?): Boolean =
+        received != null && expected != null && expected.isNotEmpty() && MessageDigest.isEqual(received, expected)
+
+    /** Checks the `confirm` field of a `/pair/finalize` reply. */
+    fun isValidFinalizeReply(reply: org.json.JSONObject, expected: ByteArray?): Boolean {
+        val received = reply.optString("confirm").takeIf { it.isNotBlank() }?.let {
+            runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull()
+        }
+        return isValidConfirmation(received, expected)
+    }
 
     /** Pairing v3: the code also covers both device IDs. */
     fun code(

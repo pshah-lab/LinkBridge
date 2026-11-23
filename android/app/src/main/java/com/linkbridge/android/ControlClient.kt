@@ -54,8 +54,10 @@ class ControlClient {
                     .put("minProtocol", ProtocolLevel.MINIMUM)
             )
             // The reply is plain HTTP and the version isn't covered by the code, so a missing or
-            // lower version may be an on-path downgrade. Every released build speaks v3: refuse v1.
-            if (request.optInt("pairingVersion", 1) < PairingCode.PAIRING_VERSION) {
+            // lower version may be an on-path downgrade. Refuse anything older than ours; the
+            // version is also inside the confirmation MAC, so a rewritten one fails there.
+            val replyVersion = request.optInt("pairingVersion", 1)
+            if (replyVersion < PairingCode.PAIRING_VERSION) {
                 error("Mac is running an older LinkBridge; update it to pair")
             }
             val macKeyBase64 = request.optString("publicKey").ifBlank { error("Mac did not provide a public key") }
@@ -76,20 +78,31 @@ class ControlClient {
                 error("Pairing check failed: the Mac's reply doesn't match its commitment. Someone may be intercepting this connection.")
             }
 
+            val secret = PairingCode.secret(shared, localNonce, macNonce, localIdentity.deviceId, responderId)
             PairingSession(
                 code = PairingCode.code(localKey, macKey, localNonce, macNonce, localIdentity.deviceId, responderId),
-                authToken = android.util.Base64.encodeToString(
-                    PairingCode.secret(shared, localNonce, macNonce, localIdentity.deviceId, responderId), Base64.NO_WRAP
+                authToken = Base64.encodeToString(secret, Base64.NO_WRAP),
+                peerKey = Base64.encodeToString(macKey, Base64.NO_WRAP),
+                expectedConfirmation = Base64.encodeToString(
+                    PairingCode.confirmation(
+                        secret, replyVersion, localKey, macKey, localNonce, macNonce, localIdentity.deviceId, responderId
+                    ), Base64.NO_WRAP
                 )
             )
         }
     }
 
-    /** Step 3: wait for the Mac user to accept or decline. */
-    fun finalizePairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity): Result<Unit> {
+    /**
+     * Step 3: wait for the Mac user to accept or decline, and check the Mac's confirmation.
+     * Saves nothing: the caller asks the user whether the Mac lists this phone as paired.
+     */
+    fun finalizePairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity, session: PairingSession): Result<Unit> {
         return runCatching {
-            postJson(peer, "/pair/finalize", JSONObject().put("deviceId", localIdentity.deviceId), readTimeoutMs = Timeouts.PAIR_FINALIZE_READ_TIMEOUT_MS)
-            Unit
+            val reply = postJson(peer, "/pair/finalize", JSONObject().put("deviceId", localIdentity.deviceId), readTimeoutMs = Timeouts.PAIR_FINALIZE_READ_TIMEOUT_MS)
+            val expected = runCatching { Base64.decode(session.expectedConfirmation, Base64.NO_WRAP) }.getOrNull()
+            if (!PairingCode.isValidFinalizeReply(reply, expected)) {
+                error("Pairing check failed: the Mac's confirmation doesn't match. Someone may be intercepting this connection.")
+            }
         }
     }
 
@@ -274,4 +287,13 @@ private fun ByteArray.toHexString(): String {
     return joinToString(separator = "") { byte -> "%02x".format(byte) }
 }
 
-data class PairingSession(val code: String, val authToken: String)
+/**
+ * [peerKey]: the Mac's pairing key (x9.63, base64), saved with the peer to spot a changed key.
+ * [expectedConfirmation]: the `confirm` value (base64) the Mac's finalize reply must carry.
+ */
+data class PairingSession(
+    val code: String,
+    val authToken: String,
+    val peerKey: String = "",
+    val expectedConfirmation: String = ""
+)

@@ -4,8 +4,11 @@ package com.linkbridge.android
 interface PairingClient {
     fun fetchDevice(peer: DiscoveredPeer): Result<DeviceIdentity>
     fun beginPairing(peer: DiscoveredPeer, device: DeviceIdentity): Result<PairingSession>
-    /** Blocks until the Mac user confirms, up to `Timeouts.PAIR_FINALIZE_READ_TIMEOUT_MS`. */
-    fun finalizePairing(peer: DiscoveredPeer): Result<Unit>
+    /**
+     * Blocks until the Mac user confirms, up to `Timeouts.PAIR_FINALIZE_READ_TIMEOUT_MS`, and
+     * fails unless the Mac's reply carries [session]'s expected confirmation.
+     */
+    fun finalizePairing(peer: DiscoveredPeer, session: PairingSession): Result<Unit>
 }
 
 /** [ControlClient] with this phone's identity, loaded on first use. */
@@ -20,5 +23,6 @@ class ControlPairingClient(
     override fun beginPairing(peer: DiscoveredPeer, device: DeviceIdentity): Result<PairingSession> =
         control.beginPairing(peer, identity, device.deviceId)
 
-    override fun finalizePairing(peer: DiscoveredPeer): Result<Unit> = control.finalizePairing(peer, identity)
+    override fun finalizePairing(peer: DiscoveredPeer, session: PairingSession): Result<Unit> =
+        control.finalizePairing(peer, identity, session)
 }

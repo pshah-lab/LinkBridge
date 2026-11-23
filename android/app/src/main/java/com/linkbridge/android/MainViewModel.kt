@@ -78,6 +78,9 @@ class MainViewModel(
 
     private class PendingPair(val peer: DiscoveredPeer, val device: DeviceIdentity, val session: PairingSession)
 
+    /** Set while ConfirmOnMac shows: the Mac approved with a valid confirmation. */
+    private var approvedPair: PendingPair? = null
+
     init {
         viewModelScope.launch {
             val (identity, peers) = withContext(io) { stores.identity() to stores.trusted() }
@@ -128,7 +131,8 @@ class MainViewModel(
         selection.value = DeviceSelection.resolve(selection.value, prefs.selectedId, items, isSending)
     }
 
-    // ---- Pairing: fetchDevice → beginPairing → show code → Continue → finalizePairing ----
+    // ---- Pairing: fetchDevice → beginPairing → show code → Continue → finalizePairing →
+    // ---- "Does the Mac list this phone?" → Yes → save. Nothing is saved before Yes. ----
 
     fun pair(id: String) {
         val item = devices.value.firstOrNull { it.id == id } ?: return
@@ -136,6 +140,7 @@ class MainViewModel(
         if (!item.canPair || pairing.value.isRunning()) return
         val generation = ++pairingGeneration
         pendingPair = null
+        approvedPair = null
         pairing.value = PairingStep.Connecting(item.name)
         viewModelScope.launch {
             val result = withContext(io) {
@@ -147,7 +152,10 @@ class MainViewModel(
             result
                 .onSuccess { (device, session) ->
                     pendingPair = PendingPair(peer, device, session)
-                    pairing.value = PairingStep.Code(device.deviceName, PairingCode.display(session.code))
+                    val known = trusted.value.firstOrNull { it.deviceId == device.deviceId }
+                    pairing.value = PairingStep.Code(
+                        device.deviceName, PairingCode.display(session.code), ExistingPairing.of(known, session.peerKey)
+                    )
                 }
                 .onFailure { pairing.value = PairingStep.Failed(item.name, it.reason(), id) }
         }
@@ -160,10 +168,30 @@ class MainViewModel(
         val generation = pairingGeneration
         val device = pending.device
         pairing.value = PairingStep.Waiting(device.deviceName)
-        // The finalize and the save run in appScope: if the Mac pairs, the phone must trust it
-        // even when the user cancelled or left the screen meanwhile.
+        // Nothing is saved here. A Cancel, or leaving the screen, drops the result: the Mac's
+        // approval alone doesn't prove it was the Mac, since a MITM holds this phone's secret.
+        viewModelScope.launch {
+            val approved = withContext(io) { pairingClient.finalizePairing(pending.peer, pending.session) }
+            if (generation != pairingGeneration) return@launch
+            approved
+                .onSuccess {
+                    approvedPair = pending
+                    pairing.value = PairingStep.ConfirmOnMac(device.deviceName)
+                }
+                .onFailure { pairing.value = PairingStep.Failed(device.deviceName, it.reason(), pending.peer.idOf()) }
+        }
+    }
+
+    /** The user says the Mac lists this phone as paired: trust the Mac. */
+    fun confirmPairedOnMac() {
+        val pending = approvedPair ?: return
+        if (pairing.value !is PairingStep.ConfirmOnMac) return
+        approvedPair = null
+        val generation = pairingGeneration
+        val device = pending.device
+        // The save runs in appScope so it finishes even if the screen goes away right after Yes.
         appScope.launch(io) {
-            val saved = pairingClient.finalizePairing(pending.peer).mapCatching {
+            val saved = runCatching {
                 stores.saveTrusted(
                     TrustedPeer(
                         deviceId = device.deviceId,
@@ -172,7 +200,8 @@ class MainViewModel(
                         host = pending.peer.host,
                         port = pending.peer.port,
                         authToken = pending.session.authToken,
-                        pairedAt = clock()
+                        pairedAt = clock(),
+                        pairingKey = pending.session.peerKey.ifBlank { null }
                     )
                 )
                 trusted.value = stores.trusted()
@@ -192,11 +221,25 @@ class MainViewModel(
         }
     }
 
-    /** Closes the sheet. A finalize already running keeps going and is handled silently. */
+    /** The user says the Mac doesn't list this phone: save nothing. */
+    fun denyPairedOnMac() {
+        val pending = approvedPair ?: return
+        if (pairing.value !is PairingStep.ConfirmOnMac) return
+        approvedPair = null
+        pairingGeneration += 1
+        pairing.value = PairingStep.Failed(
+            pending.device.deviceName,
+            "the Mac didn't list this phone. Someone may be intercepting the connection; try again on a network you trust.",
+            pending.peer.idOf()
+        )
+    }
+
+    /** Closes the sheet. A finalize already running is ignored when it returns: nothing is saved. */
     fun cancelPairing() {
         if (!pairing.value.isRunning()) return
         pairingGeneration += 1
         pendingPair = null
+        approvedPair = null
         pairing.value = null
     }
 
@@ -206,7 +249,8 @@ class MainViewModel(
     }
 
     private fun PairingStep?.isRunning() =
-        this is PairingStep.Connecting || this is PairingStep.Code || this is PairingStep.Waiting
+        this is PairingStep.Connecting || this is PairingStep.Code || this is PairingStep.Waiting ||
+            this is PairingStep.ConfirmOnMac
 
     private fun DiscoveredPeer.idOf() = deviceId ?: serviceName
 

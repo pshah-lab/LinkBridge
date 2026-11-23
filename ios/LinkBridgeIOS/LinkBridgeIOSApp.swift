@@ -42,9 +42,16 @@ struct LinkBridgeRootView: View {
             if model.pairingItemId != nil && !confirmingPairing { model.cancelPairing() }
             confirmingPairing = false
         }) { prompt in
-            PairingSheet(prompt: prompt,
-                         onConfirm: { confirmingPairing = true; model.confirmPairing() },
-                         onCancel: { model.cancelPairing() })
+            switch prompt.stage {
+            case .code:
+                PairingSheet(prompt: prompt,
+                             onConfirm: { confirmingPairing = true; model.confirmPairing() },
+                             onCancel: { model.cancelPairing() })
+            case .confirmOnPeer:
+                PairingConfirmSheet(peerName: prompt.peerName,
+                                    onYes: { confirmingPairing = true; model.acceptPairing() },
+                                    onNo: { confirmingPairing = true; model.rejectPairing() })
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { model.startDiscovery() } else if phase == .background { model.stopDiscovery() }

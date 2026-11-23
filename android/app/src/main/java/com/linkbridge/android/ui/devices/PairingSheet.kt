@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -30,7 +32,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -42,6 +47,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.linkbridge.android.ExistingPairing
 import com.linkbridge.android.PairingStep
 import com.linkbridge.android.ui.isDismissible
 import com.linkbridge.android.ui.spokenCode
@@ -51,7 +57,11 @@ import com.linkbridge.android.ui.theme.LocalAccents
 /** What the pairing sheet can ask for. */
 class PairingActions(
     val onContinue: () -> Unit,
-    /** Cancels a running step (Connecting, Code, Waiting). */
+    /** "Yes" to "Does the Mac list this phone as paired?": saves the pairing. */
+    val onConfirmPaired: () -> Unit,
+    /** "No" to that question: saves nothing. */
+    val onDenyPaired: () -> Unit,
+    /** Cancels a running step (Connecting, Code, Waiting, ConfirmOnMac). */
     val onCancel: () -> Unit,
     val onTryAgain: (itemId: String) -> Unit,
     /** Closes a finished sheet; also what swipe, back and the scrim do when allowed. */
@@ -112,15 +122,48 @@ fun PairingSheetContent(step: PairingStep, actions: PairingActions, modifier: Mo
                         modifier = Modifier.clearAndSetSemantics { contentDescription = spokenCode(current.code) },
                     )
                     Body("If the Mac won't accept the code, cancel — someone may be intercepting the connection.")
+                    var acknowledged by remember { mutableStateOf(false) }
+                    when (current.existing) {
+                        ExistingPairing.NONE -> Unit
+                        ExistingPairing.SAME_PEER -> Body("${current.name} is already paired. Pairing again replaces it.")
+                        ExistingPairing.KEY_CHANGED -> {
+                            Text(
+                                "${current.name}'s identity changed since you paired. If you didn't reset or reinstall " +
+                                    "LinkBridge on it, cancel: another device may be posing as it.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = TextAlign.Center,
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = acknowledged, onCheckedChange = { acknowledged = it })
+                                Text(
+                                    "I reset or reinstalled LinkBridge on ${current.name}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
+                    }
                     Buttons {
                         TextButton(onClick = actions.onCancel) { Text("Cancel") }
-                        Button(onClick = actions.onContinue) { Text("Continue") }
+                        Button(
+                            onClick = actions.onContinue,
+                            enabled = current.existing != ExistingPairing.KEY_CHANGED || acknowledged,
+                        ) { Text("Continue") }
                     }
                 }
                 is PairingStep.Waiting -> {
                     LoadingIndicator()
                     Title("Waiting for you to confirm on ${current.name}…")
                     TextButton(onClick = actions.onCancel) { Text("Cancel") }
+                }
+                is PairingStep.ConfirmOnMac -> {
+                    Title("Does ${current.name} list this phone as paired?")
+                    Body("Check the device list on ${current.name}. If you couldn't enter the code there, or it was declined, tap No.")
+                    Buttons {
+                        OutlinedButton(onClick = actions.onDenyPaired) { Text("No") }
+                        Button(onClick = actions.onConfirmPaired) { Text("Yes, it's paired") }
+                    }
                 }
                 is PairingStep.Paired -> {
                     Icon(
@@ -185,7 +228,7 @@ private fun Buttons(content: @Composable () -> Unit) {
 
 // ---- Previews ----
 
-private val previewActions = PairingActions({}, {}, {}, {})
+private val previewActions = PairingActions({}, {}, {}, {}, {}, {})
 
 @Composable
 private fun SheetPreview(step: PairingStep) {

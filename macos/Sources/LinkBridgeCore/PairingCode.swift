@@ -59,9 +59,35 @@ public enum PairingCode {
         return key.withUnsafeBytes { Data($0) }.base64EncodedString()
     }
 
-    /// Pairing protocol this build speaks. Sent in /pair/request; a responder that also speaks
-    /// it echoes it back, otherwise both sides use v1.
-    public static let pairingVersion = 3
+    /// Pairing v4: the responder's `/pair/finalize` reply carries
+    /// HMAC-SHA256(Kc, transcript), with Kc = HKDF(pairing secret, info "linkbridge-confirm-v4").
+    /// It binds the "paired" answer to this key exchange and to the version, so a spoofed reply
+    /// or a stripped version fails. It can't stop a MITM, who holds the initiator's secret:
+    /// the initiator's user confirming that the responder listed it as paired does that.
+    static func confirmation(secret: String, version: Int, initiatorKey: Data, responderKey: Data,
+                             initiatorNonce: Data, responderNonce: Data, initiatorId: UUID, responderId: UUID) -> Data? {
+        guard let secretBytes = Data(base64Encoded: secret), (0...255).contains(version) else { return nil }
+        let key = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: secretBytes), salt: Data(),
+            info: Data(confirmLabel.utf8), outputByteCount: 32
+        )
+        var transcript = Data(confirmLabel.utf8)
+        transcript.append(UInt8(version))
+        transcript += initiatorKey + responderKey + initiatorNonce + responderNonce + initiatorId.bytes + responderId.bytes
+        return Data(HMAC<SHA256>.authenticationCode(for: transcript, using: key))
+    }
+
+    /// Constant-time check of a responder's confirmation.
+    static func isValidConfirmation(_ received: Data?, expected: Data?) -> Bool {
+        guard let received, let expected, received.count == expected.count else { return false }
+        return zip(received, expected).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    private static let confirmLabel = "linkbridge-confirm-v4"
+
+    /// Pairing protocol this build speaks. Sent in /pair/request and echoed back; both sides
+    /// refuse anything older, since the version arrives over plain HTTP.
+    public static let pairingVersion = 4
 
     static func randomNonce() -> Data {
         SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }

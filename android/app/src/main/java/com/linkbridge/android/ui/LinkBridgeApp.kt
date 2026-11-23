@@ -139,6 +139,8 @@ fun LinkBridgeApp(vm: MainViewModel, onRequestNotifications: () -> Unit) {
             ),
             pairing = PairingActions(
                 onContinue = vm::continuePairing,
+                onConfirmPaired = vm::confirmPairedOnMac,
+                onDenyPaired = vm::denyPairedOnMac,
                 onCancel = vm::cancelPairing,
                 onTryAgain = vm::pair,
                 onDismiss = vm::dismissPairing,
@@ -267,6 +269,8 @@ fun AppFrame(state: UiState, actions: AppActions, updates: UpdateChecker? = null
             pairing,
             PairingActions(
                 onContinue = actions.pairing.onContinue,
+                onConfirmPaired = actions.pairing.onConfirmPaired,
+                onDenyPaired = actions.pairing.onDenyPaired,
                 onCancel = actions.pairing.onCancel,
                 onTryAgain = actions.pairing.onTryAgain,
                 onDismiss = {
@@ -399,7 +403,7 @@ private fun FramePreview() {
     LinkBridgeTheme(dynamicColor = false) {
         AppFrame(
             PreviewData.devices,
-            AppActions(PreviewData.noActions, PairingActions({}, {}, {}, {}), clearNotice = {}),
+            AppActions(PreviewData.noActions, PairingActions({}, {}, {}, {}, {}, {}), clearNotice = {}),
         )
     }
 }

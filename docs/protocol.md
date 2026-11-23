@@ -76,11 +76,12 @@ Each device holds a P-256 key-agreement key (Keychain on macOS, AndroidKeyStore 
 Android). Public keys are sent as base64 of the 65-byte uncompressed X9.63 point
 (`0x04 || X || Y`).
 
-Pairing version 3 (current): the initiator sends `pairingVersion: 3` in `/pair/request` and a
-v3 responder echoes it. The shared secret is then
+Pairing version 4 (current): the initiator sends `pairingVersion: 4` in `/pair/request` and the
+responder echoes it. Both sides refuse anything lower (`426` on the Mac), since the version
+travels over plain HTTP. v4 is v3 plus the finalize confirmation in step 4. The shared secret is
 `HKDF-SHA256(ECDH x-coordinate, salt = phoneNonce || macNonce, info = "linkbridge-pair-v3" || phoneId(16) || macId(16), 32)`,
 so each pairing of the same two devices gives a new secret. Device IDs are the 16 UUID bytes in
-RFC 4122 order. Without v3 on both sides, the v1 secret `SHA-256(ECDH x-coordinate)` is used.
+RFC 4122 order.
 
 The phone initiates. The Mac commits to a random nonce before it sees the phone's
 nonce, so an attacker in the middle cannot try keys offline until the codes match:
@@ -99,7 +100,15 @@ its only option is a one-in-a-million guess.
    with `macId` taken from `GET /device`. The phone shows the code; the Mac user types it, and
    the Mac's Pair button stays disabled until it matches.
 4. `POST /pair/finalize` with `{deviceId}` blocks until the Mac user decides:
-   `200 {status: "paired"}` or `403 {error: "pair_declined"}`.
+   `200 {status: "paired", confirm}` or `403 {error: "pair_declined"}`, where
+   `confirm = base64(HMAC-SHA256(Kc, "linkbridge-confirm-v4" || u8 version || phoneKey || macKey || phoneNonce || macNonce || phoneId || macId))`
+   and `Kc = HKDF-SHA256(secret, salt = empty, info = "linkbridge-confirm-v4", 32)`. The phone
+   checks `confirm` in constant time and fails pairing if it is missing or wrong.
+5. The phone saves nothing yet. It asks the user whether the Mac lists the phone as paired,
+   and saves the Mac only on yes. `confirm` can't prove that on its own: a MITM holds the
+   phone-side secret and can compute it. Cancel or No at any point saves nothing. If the
+   phone already trusts the Mac's device ID, it warns that pairing replaces it, and warns
+   more strongly (with a second confirmation) when the Mac's pairing key changed.
 
 Confirm and finalize must come from the address that sent the request. At most one
 unconfirmed pairing per address and 8 in total are kept (`429` beyond that). Device names are

@@ -547,15 +547,18 @@ public final class ControlServer {
             return jsonError("409 Conflict", "no_pending_pairing")
         }
 
-        let code: String
-        let secret: String
-        if pending.version >= 3 {
-            code = PairingCode.code(initiatorKey: pending.peerKey, responderKey: pending.macKey, initiatorNonce: peerNonce,
+        // handlePairRequest refuses older versions; checked again because the MAC needs v4.
+        guard pending.version >= PairingCode.pairingVersion else {
+            return jsonError("409 Conflict", "no_pending_pairing")
+        }
+        let code = PairingCode.code(initiatorKey: pending.peerKey, responderKey: pending.macKey, initiatorNonce: peerNonce,
                                     responderNonce: pending.nonce, initiatorId: pending.peer.deviceId, responderId: identity.deviceId)
-            secret = PairingCode.secret(sharedSecret: pending.sharedSecret, initiatorNonce: peerNonce, responderNonce: pending.nonce,
+        let secret = PairingCode.secret(sharedSecret: pending.sharedSecret, initiatorNonce: peerNonce, responderNonce: pending.nonce,
                                         initiatorId: pending.peer.deviceId, responderId: identity.deviceId)
-        } else {
-            // Unreachable: handlePairRequest refuses versions below 3.
+        guard let confirmation = PairingCode.confirmation(
+            secret: secret, version: pending.version, initiatorKey: pending.peerKey, responderKey: pending.macKey,
+            initiatorNonce: peerNonce, responderNonce: pending.nonce, initiatorId: pending.peer.deviceId, responderId: identity.deviceId
+        ) else {
             return jsonError("409 Conflict", "no_pending_pairing")
         }
         let request = IncomingPairRequest(
@@ -591,7 +594,7 @@ public final class ControlServer {
                 )
                 onPaired()
             }
-            pendingPairings.decide(deviceId: pending.peer.deviceId, approved: approved)
+            pendingPairings.decide(deviceId: pending.peer.deviceId, confirmation: approved ? confirmation : nil)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, pending.expiresAt.timeIntervalSinceNow)) { decide(false) }
         DispatchQueue.main.async {
@@ -609,10 +612,10 @@ public final class ControlServer {
             completion(jsonError("400 Bad Request", "invalid_pair_finalize"))
             return
         }
-        let waiting = pendingPairings.awaitDecision(deviceId: finalize.deviceId, source: source) { approved in
-            completion(approved
-                ? HTTPResponse(status: "200 OK", body: Data(#"{"status":"paired"}"#.utf8))
-                : jsonError("403 Forbidden", "pair_declined"))
+        let waiting = pendingPairings.awaitDecision(deviceId: finalize.deviceId, source: source) { confirmation in
+            completion(confirmation.map {
+                HTTPResponse(status: "200 OK", body: Data(#"{"status":"paired","confirm":"\#($0.base64EncodedString())"}"#.utf8))
+            } ?? jsonError("403 Forbidden", "pair_declined"))
         }
         if !waiting {
             completion(jsonError("409 Conflict", "no_pending_pairing"))
@@ -1238,11 +1241,12 @@ private struct PendingPairing {
     /// Raw ECDH output; the stored secret is derived from it once both nonces are known.
     let sharedSecret: Data
     let nonce: Data
-    /// Pairing protocol both sides speak (1 or 3).
+    /// Pairing protocol both sides speak (4).
     let version: Int
     var peerNonce: Data?
-    var decision: Bool?
-    var waiters: [(Bool) -> Void] = []
+    /// Set once the user decides: the confirmation MAC if they paired, nil inside if they declined.
+    var decision: Data??
+    var waiters: [(Data?) -> Void] = []
     var expiresAt = Date().addingTimeInterval(ControlServer.pairingLifetime)
 
     init(peer: PairRequestIdentity, source: String, peerKey: Data, macKey: Data, sharedSecret: Data, nonce: Data, version: Int) {
@@ -1289,18 +1293,19 @@ private final class PendingPairings {
         return entry
     }
 
-    func decide(deviceId: UUID, approved: Bool) {
+    /// `confirmation` is the MAC sent with "paired", or nil when the user declined.
+    func decide(deviceId: UUID, confirmation: Data?) {
         guard var entry = entries[deviceId] else { return }
-        entry.decision = approved
+        entry.decision = .some(confirmation)
         let waiters = entry.waiters
         entry.waiters = []
         entries[deviceId] = entry
-        waiters.forEach { $0(approved) }
+        waiters.forEach { $0(confirmation) }
         if !waiters.isEmpty { entries[deviceId] = nil }
     }
 
     /// Returns false if there is no confirmed pairing to wait on.
-    func awaitDecision(deviceId: UUID, source: String, completion: @escaping (Bool) -> Void) -> Bool {
+    func awaitDecision(deviceId: UUID, source: String, completion: @escaping (Data?) -> Void) -> Bool {
         prune()
         guard var entry = entries[deviceId], entry.peerNonce != nil, entry.source == source else { return false }
         if let decision = entry.decision {
