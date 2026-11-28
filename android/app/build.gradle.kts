@@ -17,8 +17,8 @@ android {
         minSdk = 31
         // Google Play requires API 36 for new apps and updates since 2026-08-31.
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.2.2"
+        versionCode = 5
+        versionName = "0.2.3"
         // Website downloads only: scripts/build-android-release.sh passes -Plinkbridge.websiteBuild=true.
         // Play builds must leave it off: Play bars apps that update themselves outside Play.
         buildConfigField("boolean", "UPDATE_CHECK", websiteBuild.toString())
