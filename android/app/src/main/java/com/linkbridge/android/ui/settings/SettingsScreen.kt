@@ -342,7 +342,7 @@ private fun SettingsPreview() {
                 notificationsOn = false,
             ),
             SettingsActions(),
-            versionName = "0.2.3",
+            versionName = "0.2.4",
         )
     }
 }
