@@ -132,6 +132,7 @@ class MainViewModelPairingTest {
         assertNull(vm.state.value.pairing)
 
         settle()
+        assertTrue("Cancel while waiting withdraws the Mac's dialog", "cancel:${unpairedMac.serviceName}" in pairing.calls)
         assertNull(vm.state.value.pairing)
         assertTrue(stores.trustedPeers.isEmpty())
         assertEquals(0, hub.rescans)
@@ -194,6 +195,8 @@ class MainViewModelPairingTest {
 
         assertNull(vm.state.value.pairing)
         assertTrue(stores.trustedPeers.isEmpty())
+        // The Mac already answered, so there is no dialog left to withdraw.
+        assertTrue(pairing.calls.none { it.startsWith("cancel:") })
     }
 
     @Test

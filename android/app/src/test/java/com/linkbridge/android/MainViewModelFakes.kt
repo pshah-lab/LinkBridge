@@ -83,6 +83,9 @@ internal class FakePairing : PairingClient {
         calls += "begin:${device.deviceId}"
         return session
     }
+    override fun cancelPairing(peer: DiscoveredPeer) {
+        calls += "cancel:${peer.serviceName}"
+    }
     override fun finalizePairing(peer: DiscoveredPeer, session: PairingSession): Result<Unit> {
         calls += "finalize:${peer.serviceName}"
         return finalize

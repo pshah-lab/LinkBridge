@@ -109,6 +109,10 @@ its only option is a one-in-a-million guess.
    phone-side secret and can compute it. Cancel or No at any point saves nothing. If the
    phone already trusts the Mac's device ID, it warns that pairing replaces it, and warns
    more strongly (with a second confirmation) when the Mac's pairing key changed.
+6. If the phone cancels while it waits in step 4, it sends `POST /pair/cancel` with
+   `{deviceId}` (best effort). The Mac declines that pairing, drops it, and closes its dialog,
+   so the phone can pair again at once. Only the address and device that started the pairing
+   can cancel it; the reply is always `200 {status: "cancelled"}`, so it reveals nothing.
 
 Confirm and finalize must come from the address that sent the request. At most one
 unconfirmed pairing per address and 8 in total are kept (`429` beyond that). Device names are
@@ -149,6 +153,7 @@ GET  /device
 POST /pair/request
 POST /pair/confirm
 POST /pair/finalize
+POST /pair/cancel
 POST /transfer/upload   (TLS-PSK port only)
 ```
 

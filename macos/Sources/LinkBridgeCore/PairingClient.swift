@@ -118,7 +118,14 @@ public final class PairingClient {
         guard pending != nil else { throw PairingClientError.notStarted }
         let identity = IdentityStore().loadOrCreate()
         let body = try JSONSerialization.data(withJSONObject: ["deviceId": identity.deviceId.uuidString])
-        let data = try await request("POST", "/pair/finalize", body: body, timeout: 150)
+        let data: Data
+        do {
+            data = try await request("POST", "/pair/finalize", body: body, timeout: 150)
+        } catch {
+            // Cancel declines on the other device too; report the cancel, not that decline.
+            if pending == nil { throw PairingClientError.cancelled }
+            throw error
+        }
         // Cancelled while waiting: stay cancelled.
         guard var current = pending else { throw PairingClientError.cancelled }
         let reply = try? JSONDecoder().decode(PairFinalizeReply.self, from: data)
@@ -147,9 +154,14 @@ public final class PairingClient {
         return peer
     }
 
-    /// Forgets the pairing: nothing is saved, even if an approval arrives later.
+    /// Forgets the pairing: nothing is saved, even if an approval arrives later. Also tells the
+    /// other device, so its dialog closes and a new pairing isn't refused while it waits.
     public func cancel() {
+        guard pending != nil else { return }
         pending = nil
+        let deviceId = IdentityStore().loadOrCreate().deviceId
+        guard let body = try? JSONSerialization.data(withJSONObject: ["deviceId": deviceId.uuidString]) else { return }
+        Task { _ = try? await request("POST", "/pair/cancel", body: body, timeout: 5) }
     }
 
     private func request(_ method: String, _ path: String, body: Data? = nil, timeout: TimeInterval = 15) async throws -> Data {
@@ -170,7 +182,7 @@ public final class PairingClient {
             let detail = String(decoding: data, as: UTF8.self)
             if detail.contains("pair_declined") { throw PairingClientError.declined }
             if detail.contains("no_pending_pairing") { throw PairingClientError.expired }
-            if detail.contains("pairing_busy") { throw PairingClientError.busy }
+            if detail.contains("pairing_busy") || detail.contains("pairing_unavailable") { throw PairingClientError.busy }
             throw PairingClientError.httpStatus(status)
         }
         return data
@@ -207,8 +219,8 @@ public enum PairingClientError: Error, LocalizedError {
         case .cancelled: return "Pairing was cancelled."
         case .declined: return "Pairing was declined on the other device."
         case .expired: return "Pairing expired. Start again."
-        case .busy: return "The other device is already showing a pairing request."
-        case let .httpStatus(status): return "Pairing failed (HTTP \(status))."
+        case .busy: return "The other device is still showing an earlier pairing request. Decline it there, or try again in two minutes."
+        case let .httpStatus(status): return "The other device refused the request (error \(status)). Try again."
         case let .updateRequired(message): return message + " to pair."
         }
     }

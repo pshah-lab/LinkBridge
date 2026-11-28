@@ -9,6 +9,9 @@ interface PairingClient {
      * fails unless the Mac's reply carries [session]'s expected confirmation.
      */
     fun finalizePairing(peer: DiscoveredPeer, session: PairingSession): Result<Unit>
+
+    /** Tells the Mac this phone gave up, so its dialog closes. Best effort; never throws. */
+    fun cancelPairing(peer: DiscoveredPeer) {}
 }
 
 /** [ControlClient] with this phone's identity, loaded on first use. */
@@ -25,4 +28,8 @@ class ControlPairingClient(
 
     override fun finalizePairing(peer: DiscoveredPeer, session: PairingSession): Result<Unit> =
         control.finalizePairing(peer, identity, session)
+
+    override fun cancelPairing(peer: DiscoveredPeer) {
+        control.cancelPairing(peer, identity)
+    }
 }

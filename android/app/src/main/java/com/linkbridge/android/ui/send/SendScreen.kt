@@ -128,7 +128,7 @@ fun SendScreen(
             )
             if (phase is SendPhase.Failed) {
                 Text(
-                    sendFailureText(macName),
+                    sendFailureText(macName, phase.message),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier

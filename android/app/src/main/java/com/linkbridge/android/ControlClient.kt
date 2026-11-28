@@ -106,6 +106,11 @@ class ControlClient {
         }
     }
 
+    /** Withdraws a pairing the Mac is still asking about. Best effort: errors are ignored. */
+    fun cancelPairing(peer: DiscoveredPeer, localIdentity: DeviceIdentity) {
+        runCatching { postJson(peer, "/pair/cancel", JSONObject().put("deviceId", localIdentity.deviceId)) }
+    }
+
     /** Cleartext is allowed app-wide, so refuse anything that isn't on the local network. */
     private fun localEndpoint(peer: DiscoveredPeer): String {
         require(LanAddress.isLocal(peer.host)) { "Refusing plain HTTP to a non-local address" }
@@ -135,7 +140,9 @@ class ControlClient {
             when {
                 detail.contains("pair_declined") -> error("Pairing was declined on the Mac")
                 detail.contains("no_pending_pairing") -> error("Pairing expired. Start again.")
-                else -> error("$path failed: HTTP $code $detail")
+                detail.contains("pairing_unavailable") || detail.contains("pairing_busy") ->
+                    error("the Mac is still showing an earlier pairing request. Decline it there, or try again in two minutes.")
+                else -> error("the Mac refused the request (error $code). Try again.")
             }
         }
         return connection.inputStream.use { JSONObject(it.bufferedReader().readText()) }

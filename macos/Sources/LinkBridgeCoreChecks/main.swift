@@ -884,6 +884,46 @@ DispatchQueue.global().async {
         check(finalize == 200 || finalize == 403, "phone's own finalize gets the decision, got \(finalize)")
     }
 
+    section("The phone's Cancel withdraws the Mac's pairing dialog") {
+        var prompts: [UUID] = []
+        var withdrawn: [UUID] = []
+        // Never answers, like a Mac user who walked away.
+        let (server, cancelPort) = startDecisionServer(pair: { request, _ in prompts.append(request.id) },
+                                                       withdrawn: { withdrawn.append($0) })
+        defer { DispatchQueue.main.sync { server.stop() } }
+        func startPairing(_ id: UUID) -> Int {
+            let key = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
+            let (request, _) = post(cancelPort, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Phone", "platform": "android",
+                                                                  "protocolVersion": 2, "features": [], "pairingVersion": PairingCode.pairingVersion,
+                                                                  "publicKey": key])
+            guard request == 200 else { return request }
+            return post(cancelPort, "/pair/confirm", ["deviceId": id.uuidString, "nonce": PairingCode.randomNonce().base64EncodedString()]).0
+        }
+        let id = UUID()
+        check(startPairing(id) == 200, "pairing reaches the Mac's dialog")
+        check(startPairing(id) != 200, "while the dialog shows, the same phone can't start again")
+
+        let (otherCancel, _) = post(cancelPort, "/pair/cancel", ["deviceId": id.uuidString], host: "[::1]")
+        check(otherCancel == 200, "cancel from another address gets the same reply, got \(otherCancel)")
+        DispatchQueue.main.sync {}
+        check(withdrawn.isEmpty, "another address can't withdraw the dialog")
+        let (wrongDevice, _) = post(cancelPort, "/pair/cancel", ["deviceId": UUID().uuidString])
+        check(wrongDevice == 200, "cancel for another device gets the same reply")
+        DispatchQueue.main.sync {}
+        check(withdrawn.isEmpty, "another device ID can't withdraw the dialog")
+
+        let (cancel, _) = post(cancelPort, "/pair/cancel", ["deviceId": id.uuidString])
+        check(cancel == 200, "phone's cancel accepted, got \(cancel)")
+        DispatchQueue.main.sync {}
+        check(withdrawn == prompts, "the dialog is withdrawn, got \(withdrawn) for \(prompts)")
+        let (finalize, _) = post(cancelPort, "/pair/finalize", ["deviceId": id.uuidString])
+        check(finalize == 403 || finalize == 409, "a cancelled pairing isn't approved, got \(finalize)")
+        check(TrustedPeerStore().find(deviceId: id) == nil, "a cancelled pairing saves nothing")
+        check(startPairing(id) == 200, "after cancelling, the phone can pair again straight away")
+        _ = post(cancelPort, "/pair/cancel", ["deviceId": id.uuidString])
+        DispatchQueue.main.sync {}
+    }
+
     section("Pairing spam can't grow pending pairings without bound") {
         func request(_ host: String = "127.0.0.1", name: String = "Spam", features: [String] = []) -> Int {
             var request = URLRequest(url: URL(string: "http://\(host):\(port)/pair/request")!)

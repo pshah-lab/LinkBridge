@@ -73,10 +73,21 @@ class AppLogicTest {
         assertEquals("Sending…", pickZoneText(SendPhase.Sending("a", 0.1f), "Studio"))
     }
 
-    @Test fun failureCopy() = assertEquals(
-        "Couldn't reach Studio — check it's on the same Wi-Fi, then retry.",
-        sendFailureText("Studio"),
-    )
+    @Test fun failureCopy() {
+        assertEquals(
+            "Couldn't reach Studio — check it's on the same Wi-Fi, then retry.",
+            sendFailureText("Studio", "Secure connection to Studio failed. If this keeps happening, pair again."),
+        )
+        assertEquals(
+            "Studio refused the file (error 413). Check LinkBridge on the Mac, then retry.",
+            sendFailureText("Studio", "Upload failed: HTTP 413 {\"error\":\"too_large\"}"),
+        )
+        // Not a network problem, so it doesn't blame the Wi-Fi.
+        assertEquals(
+            "Couldn't send: Selected file size is unknown; choose a file provider that exposes file size.",
+            sendFailureText("Studio", "Selected file size is unknown; choose a file provider that exposes file size."),
+        )
+    }
 
     @Test fun percentIsWholeAndClamped() {
         assertEquals("0%", percentText(0f))

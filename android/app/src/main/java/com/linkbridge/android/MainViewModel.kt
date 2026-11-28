@@ -81,6 +81,9 @@ class MainViewModel(
     /** Set while ConfirmOnMac shows: the Mac approved with a valid confirmation. */
     private var approvedPair: PendingPair? = null
 
+    /** The Mac this phone is waiting on in Waiting, so Cancel can withdraw the Mac's dialog. */
+    private var waitingPeer: DiscoveredPeer? = null
+
     init {
         viewModelScope.launch {
             val (identity, peers) = withContext(io) { stores.identity() to stores.trusted() }
@@ -168,11 +171,13 @@ class MainViewModel(
         val generation = pairingGeneration
         val device = pending.device
         pairing.value = PairingStep.Waiting(device.deviceName)
+        waitingPeer = pending.peer
         // Nothing is saved here. A Cancel, or leaving the screen, drops the result: the Mac's
         // approval alone doesn't prove it was the Mac, since a MITM holds this phone's secret.
         viewModelScope.launch {
             val approved = withContext(io) { pairingClient.finalizePairing(pending.peer, pending.session) }
             if (generation != pairingGeneration) return@launch
+            waitingPeer = null
             approved
                 .onSuccess {
                     approvedPair = pending
@@ -240,6 +245,9 @@ class MainViewModel(
         pairingGeneration += 1
         pendingPair = null
         approvedPair = null
+        // Best effort: closes the Mac's dialog, so pairing again isn't refused while it waits.
+        waitingPeer?.let { peer -> viewModelScope.launch { withContext(io) { pairingClient.cancelPairing(peer) } } }
+        waitingPeer = null
         pairing.value = null
     }
 
