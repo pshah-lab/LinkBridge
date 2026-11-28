@@ -70,7 +70,9 @@ internal class FakeStores(
 internal class FakePairing : PairingClient {
     val calls = mutableListOf<String>()
     var device: Result<DeviceIdentity> = Result.success(macIdentity)
-    var session: Result<PairingSession> = Result.success(PairingSession(code = "123456", authToken = "session-token"))
+    var session: Result<PairingSession> = Result.success(
+        PairingSession(code = "123456", authToken = "session-token", peerKey = "MAC-KEY", expectedConfirmation = "confirm")
+    )
     var finalize: Result<Unit> = Result.success(Unit)
 
     override fun fetchDevice(peer: DiscoveredPeer): Result<DeviceIdentity> {
@@ -81,7 +83,10 @@ internal class FakePairing : PairingClient {
         calls += "begin:${device.deviceId}"
         return session
     }
-    override fun finalizePairing(peer: DiscoveredPeer): Result<Unit> {
+    override fun cancelPairing(peer: DiscoveredPeer) {
+        calls += "cancel:${peer.serviceName}"
+    }
+    override fun finalizePairing(peer: DiscoveredPeer, session: PairingSession): Result<Unit> {
         calls += "finalize:${peer.serviceName}"
         return finalize
     }

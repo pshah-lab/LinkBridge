@@ -19,8 +19,11 @@ sealed interface PairingStep {
     val name: String
 
     data class Connecting(override val name: String) : PairingStep
-    data class Code(override val name: String, val code: String) : PairingStep
+    /** [existing]: whether this phone already trusts the Mac's device ID, and under which key. */
+    data class Code(override val name: String, val code: String, val existing: ExistingPairing = ExistingPairing.NONE) : PairingStep
     data class Waiting(override val name: String) : PairingStep
+    /** The Mac approved; ask whether it lists this phone as paired. Nothing is saved until yes. */
+    data class ConfirmOnMac(override val name: String) : PairingStep
     data class Paired(override val name: String) : PairingStep
     /** [itemId] is the Devices row, so Try again can call `pair(itemId)`. */
     data class Failed(override val name: String, val message: String, val itemId: String) : PairingStep

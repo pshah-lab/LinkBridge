@@ -57,9 +57,19 @@ const val NO_TARGET_ACTION = "Go to Devices"
 fun pickZoneText(phase: SendPhase, macName: String): String =
     if (phase is SendPhase.Sending) "Sending…" else "Choose files to send to $macName"
 
-/** Shown under the pick zone after a failed send. */
-fun sendFailureText(macName: String): String =
-    "Couldn't reach $macName — check it's on the same Wi-Fi, then retry."
+/**
+ * Shown under the pick zone after a failed send. Only a failed connection blames the Wi-Fi;
+ * anything else (an unreadable file, a refusal from the Mac) says what actually went wrong.
+ */
+fun sendFailureText(macName: String, message: String = ""): String {
+    val status = Regex("^Upload failed: HTTP (\\d+)").find(message)?.groupValues?.get(1)
+    return when {
+        message.isBlank() || message.startsWith("Secure connection") ->
+            "Couldn't reach $macName — check it's on the same Wi-Fi, then retry."
+        status != null -> "$macName refused the file (error $status). Check LinkBridge on the Mac, then retry."
+        else -> "Couldn't send: ${message.trimEnd('.')}."
+    }
+}
 
 /** Whole percent of [progress] (0..1), e.g. "42%". */
 fun percentText(progress: Float): String = "${(progress.coerceIn(0f, 1f) * 100).toInt()}%"

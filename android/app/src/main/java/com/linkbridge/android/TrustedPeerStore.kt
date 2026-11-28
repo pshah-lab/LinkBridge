@@ -55,8 +55,27 @@ data class TrustedPeer(
     val port: Int,
     val authToken: String?,
     /** When pairing finished; null for peers paired before this was recorded. */
-    val pairedAt: Long? = null
+    val pairedAt: Long? = null,
+    /** The Mac's pairing key (x9.63, base64) at pairing time; null for older entries. */
+    val pairingKey: String? = null
 )
+
+/** Whether this phone already trusts a device ID it is pairing with. */
+enum class ExistingPairing {
+    NONE,
+    /** Same key as before, or an older entry without one: pairing again replaces it. */
+    SAME_PEER,
+    /** Trusted under a different key: a reinstall, or another device posing as it. */
+    KEY_CHANGED;
+
+    companion object {
+        fun of(trusted: TrustedPeer?, peerKey: String): ExistingPairing = when {
+            trusted == null -> NONE
+            trusted.pairingKey == null || trusted.pairingKey == peerKey -> SAME_PEER
+            else -> KEY_CHANGED
+        }
+    }
+}
 
 private fun TrustedPeer.toJson(): JSONObject {
     return JSONObject()
@@ -67,6 +86,7 @@ private fun TrustedPeer.toJson(): JSONObject {
         .put("port", port)
         .put("authToken", authToken)
         .put("pairedAt", pairedAt)
+        .put("pairingKey", pairingKey)
 }
 
 private fun JSONObject.toTrustedPeer(): TrustedPeer {
@@ -77,6 +97,7 @@ private fun JSONObject.toTrustedPeer(): TrustedPeer {
         host = getString("host"),
         port = getInt("port"),
         authToken = optString("authToken").ifBlank { null },
-        pairedAt = if (isNull("pairedAt")) null else getLong("pairedAt")
+        pairedAt = if (isNull("pairedAt")) null else getLong("pairedAt"),
+        pairingKey = optString("pairingKey").ifBlank { null }
     )
 }

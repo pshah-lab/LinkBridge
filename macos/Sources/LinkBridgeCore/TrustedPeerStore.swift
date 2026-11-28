@@ -8,9 +8,13 @@ public struct TrustedPeer: Codable {
     public let features: [String]
     public let pairedAt: Date
     public let authToken: String?
+    /// The peer's P-256 pairing key (x9.63, base64) when this side initiated the pairing, so a
+    /// later re-pairing can tell whether the device's key changed. Nil for older entries.
+    public let pairingKey: String?
 
     public init(deviceId: UUID, deviceName: String, platform: String, protocolVersion: Int,
-                features: [String], pairedAt: Date, authToken: String?) {
+                features: [String], pairedAt: Date, authToken: String?, pairingKey: String? = nil) {
+        self.pairingKey = pairingKey
         self.deviceId = deviceId
         self.deviceName = deviceName
         self.platform = platform
@@ -104,8 +108,10 @@ private struct PersistedTrustedPeer: Codable {
     let protocolVersion: Int
     let features: [String]
     let pairedAt: Date
+    let pairingKey: String?
 
     init(_ peer: TrustedPeer) {
+        pairingKey = peer.pairingKey
         deviceId = peer.deviceId
         deviceName = peer.deviceName
         platform = peer.platform
@@ -117,6 +123,6 @@ private struct PersistedTrustedPeer: Codable {
     func peer(authToken: String) -> TrustedPeer {
         TrustedPeer(deviceId: deviceId, deviceName: deviceName, platform: platform,
                     protocolVersion: protocolVersion, features: features, pairedAt: pairedAt,
-                    authToken: authToken)
+                    authToken: authToken, pairingKey: pairingKey)
     }
 }

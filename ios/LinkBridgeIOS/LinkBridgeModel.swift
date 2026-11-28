@@ -3,9 +3,17 @@ import Foundation
 import LinkBridgeCore
 
 struct PairingPrompt: Identifiable {
+    enum Stage {
+        /// Show the code to type on the peer, with any warning about an existing pairing.
+        case code(PairingClient.ExistingPairing)
+        /// The peer approved; ask whether it now lists this device as paired.
+        case confirmOnPeer
+    }
+
     let id = UUID()
     let peerName: String
     let code: String
+    let stage: Stage
 }
 
 @MainActor
@@ -88,35 +96,62 @@ final class LinkBridgeModel: ObservableObject {
         Task {
             do {
                 let started = try await client.begin()
-                pairingPrompt = PairingPrompt(peerName: started.peerName, code: PairingCode.display(started.code))
+                guard pairingClient === client else { return }
+                pairingPrompt = PairingPrompt(peerName: started.peerName, code: PairingCode.display(started.code),
+                                              stage: .code(started.existing))
             } catch {
                 pairingFinished(error: error.localizedDescription)
             }
         }
     }
 
-    /// The user confirmed the codes match; wait for approval on the other device.
+    /// The user typed the code on the other device; wait for its approval, then ask the user
+    /// whether that device lists this one as paired. Nothing is saved until they say yes.
     func confirmPairing() {
-        guard let client = pairingClient else { return }
+        guard let client = pairingClient, let prompt = pairingPrompt else { return }
         pairingPrompt = nil
         Task {
             do {
-                let peer = try await client.finish()
-                trusted = trustedStore.load()
-                // The Mac was discovered before it was paired; its tags only match now.
-                browser.refresh()
-                selectedPeerId = peer.deviceId
-                preferredPeerId = peer.deviceId
-                pairingFinished(error: nil)
+                try await client.awaitApproval()
+                // Cancelled or restarted while waiting: ignore the late approval.
+                guard pairingClient === client else { return }
+                pairingPrompt = PairingPrompt(peerName: prompt.peerName, code: prompt.code, stage: .confirmOnPeer)
             } catch {
+                guard pairingClient === client else { return }
                 pairingFinished(error: error.localizedDescription)
             }
         }
     }
 
+    /// The user said the other device lists this one as paired: trust it.
+    func acceptPairing() {
+        guard let client = pairingClient else { return }
+        pairingPrompt = nil
+        do {
+            let peer = try client.save()
+            trusted = trustedStore.load()
+            // The Mac was discovered before it was paired; its tags only match now.
+            browser.refresh()
+            selectedPeerId = peer.deviceId
+            preferredPeerId = peer.deviceId
+            pairingFinished(error: nil)
+        } catch {
+            pairingFinished(error: error.localizedDescription)
+        }
+    }
+
+    /// Cancel, or "No" to "does it list this device as paired?": nothing is saved.
     func cancelPairing() {
+        pairingClient?.cancel()
         pairingPrompt = nil
         pairingFinished(error: nil)
+    }
+
+    /// The user said the other device doesn't list this one as paired.
+    func rejectPairing() {
+        pairingClient?.cancel()
+        pairingPrompt = nil
+        pairingFinished(error: "Not paired. If the other device didn't accept the code, someone may be intercepting this connection. Try again on a network you trust.")
     }
 
     private func pairingFinished(error: String?) {

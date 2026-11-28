@@ -81,6 +81,48 @@ section("Pairing v3 code and secret match the independently computed vectors") {
     check(secret == "OZz4QmGDcBBB5/OUZlU/RFzGim/W7N18MKq9UM1A5Ow=", "v3 secret vector, got \(secret)")
 }
 
+section("Pairing v4 confirmation: vector, wrong, missing and downgraded MACs") {
+    // Python hmac/hashlib over the v3 vector inputs; the same vector is in Android's PairingCodeTest.
+    let initiatorKey = Data([4] + Array(1...64))
+    let responderKey = Data([4] + Array(101...164))
+    let initiatorNonce = Data(repeating: 0xAA, count: 32)
+    let responderNonce = Data(repeating: 0x55, count: 32)
+    let initiatorId = UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!
+    let responderId = UUID(uuidString: "FFEEDDCC-BBAA-9988-7766-554433221100")!
+    let secret = "OZz4QmGDcBBB5/OUZlU/RFzGim/W7N18MKq9UM1A5Ow="
+    func mac(version: Int = 4, secret: String = secret, initiatorId: UUID = initiatorId) -> Data? {
+        PairingCode.confirmation(secret: secret, version: version, initiatorKey: initiatorKey, responderKey: responderKey,
+                                 initiatorNonce: initiatorNonce, responderNonce: responderNonce,
+                                 initiatorId: initiatorId, responderId: responderId)
+    }
+    let expected = mac()
+    check(expected?.map { String(format: "%02x", $0) }.joined() == "3ee83e71775e875d51fca77a13b55422ec7df3741e17c90a681fe173784ce819",
+          "v4 confirmation vector")
+    check(PairingCode.isValidConfirmation(expected, expected: mac()), "valid confirmation accepted")
+    check(!PairingCode.isValidConfirmation(nil, expected: expected), "missing confirmation rejected")
+    check(!PairingCode.isValidConfirmation(Data(), expected: expected), "empty confirmation rejected")
+    check(!PairingCode.isValidConfirmation(expected?.prefix(16), expected: expected), "truncated confirmation rejected")
+    var flipped = expected ?? Data()
+    flipped[flipped.startIndex] ^= 1
+    check(!PairingCode.isValidConfirmation(flipped, expected: expected), "altered confirmation rejected")
+    check(!PairingCode.isValidConfirmation(mac(version: 3), expected: expected), "confirmation made for v3 rejected (downgrade)")
+    check(!PairingCode.isValidConfirmation(mac(secret: Data(repeating: 7, count: 32).base64EncodedString()), expected: expected),
+          "confirmation under another secret rejected (spoofed finalize)")
+    check(!PairingCode.isValidConfirmation(mac(initiatorId: UUID()), expected: expected), "confirmation for another device rejected")
+    check(!PairingCode.isValidConfirmation(nil, expected: nil), "no expected value never validates")
+}
+
+section("PairingClient flags a re-pairing and a changed key") {
+    let known = TrustedPeer(deviceId: UUID(), deviceName: "Mac", platform: "macos", protocolVersion: 4, features: [],
+                            pairedAt: Date(), authToken: "s", pairingKey: "KEY-A")
+    let legacy = TrustedPeer(deviceId: UUID(), deviceName: "Mac", platform: "macos", protocolVersion: 3, features: [],
+                             pairedAt: Date(), authToken: "s")
+    check(PairingClient.existing(nil, peerKey: "KEY-A") == .none, "new device")
+    check(PairingClient.existing(known, peerKey: "KEY-A") == .samePeer, "same key: re-pairing")
+    check(PairingClient.existing(known, peerKey: "KEY-B") == .keyChanged, "different key flagged")
+    check(PairingClient.existing(legacy, peerKey: "KEY-B") == .samePeer, "entry without a key: plain re-pairing warning")
+}
+
 section("Discovery tags: only a paired device can recognize the advertiser") {
     let secret = Data((1...32).map { UInt8($0) }).base64EncodedString()
     // Python hashlib/hmac; the same vector is in Android's DiscoveryTagsTest.
@@ -656,17 +698,18 @@ func startDecisionServer(
     return (server, bound ?? 0)
 }
 
-/// Plays the phone's side of the three-step pairing protocol.
-/// Plays a current (v3) phone; the Mac refuses older pairing versions.
-func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = 3) -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int) {
+/// Plays the phone's side of the three-step pairing protocol, as a current (v4) phone.
+/// `confirmValid`: the finalize reply's confirmation MAC matches what the phone expects.
+func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = PairingCode.pairingVersion)
+    -> (finalizeStatus: Int, phoneCode: String, phoneSecret: String, deviceId: UUID, retryStatus: Int, confirmValid: Bool) {
     let phone = P256.KeyAgreement.PrivateKey()
     let phoneKey = phone.publicKey.x963Representation
     var requestBody: [String: Any] = ["deviceId": id.uuidString, "deviceName": "Check Phone", "platform": "android",
                                       "protocolVersion": 1, "features": [], "publicKey": phoneKey.base64EncodedString()]
     if let pairingVersion { requestBody["pairingVersion"] = pairingVersion }
     let (_, r1) = post(port, "/pair/request", requestBody)
-    let v3 = (r1["pairingVersion"] as? Int ?? 1) >= 3
-    check(v3 == ((pairingVersion ?? 1) >= 3), "Mac agrees on pairing version \(pairingVersion ?? 1)")
+    let replyVersion = r1["pairingVersion"] as? Int ?? 1
+    check(replyVersion == PairingCode.pairingVersion, "Mac agrees on pairing version \(replyVersion)")
     let macKey = Data(base64Encoded: r1["publicKey"] as? String ?? "") ?? Data()
     let commitment = Data(base64Encoded: r1["commitment"] as? String ?? "") ?? Data()
     let shared = try! phone.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: macKey))
@@ -676,16 +719,17 @@ func pairAsPhone(port: UInt16, id: UUID = UUID(), pairingVersion: Int? = 3) -> (
     let macNonce = Data(base64Encoded: r2["nonce"] as? String ?? "") ?? Data()
     check(PairingCode.commitment(publicKey: macKey, nonce: macNonce) == commitment, "Mac nonce matches its commitment")
     let macId = IdentityStore().loadOrCreate().deviceId
-    let code = v3
-        ? PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce,
-                           initiatorId: id, responderId: macId)
-        : PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce)
-    let phoneSecret = v3
-        ? PairingCode.secret(sharedSecret: rawShared, initiatorNonce: nonce, responderNonce: macNonce, initiatorId: id, responderId: macId)
-        : Data(SHA256.hash(data: rawShared)).base64EncodedString()
+    let code = PairingCode.code(initiatorKey: phoneKey, responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce,
+                                initiatorId: id, responderId: macId)
+    let phoneSecret = PairingCode.secret(sharedSecret: rawShared, initiatorNonce: nonce, responderNonce: macNonce,
+                                         initiatorId: id, responderId: macId)
     let (retry, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce.base64EncodedString()])
-    let (status, _) = post(port, "/pair/finalize", ["deviceId": id.uuidString])
-    return (status, code, phoneSecret, id, retry)
+    let (status, r3) = post(port, "/pair/finalize", ["deviceId": id.uuidString])
+    let expected = PairingCode.confirmation(secret: phoneSecret, version: PairingCode.pairingVersion, initiatorKey: phoneKey,
+                                            responderKey: macKey, initiatorNonce: nonce, responderNonce: macNonce,
+                                            initiatorId: id, responderId: macId)
+    let received = (r3["confirm"] as? String).flatMap { Data(base64Encoded: $0) }
+    return (status, code, phoneSecret, id, retry, PairingCode.isValidConfirmation(received, expected: expected))
 }
 
 DispatchQueue.global().async {
@@ -721,6 +765,7 @@ DispatchQueue.global().async {
         check(result.retryStatus == 409, "second confirm refused")
         check(result.finalizeStatus == 200, "finalize 200, got \(result.finalizeStatus)")
         check(result.phoneCode == macCode, "phone and Mac show the same code")
+        check(result.confirmValid, "finalize reply carries a valid v4 confirmation")
         check(TrustedPeerStore().find(deviceId: result.deviceId)?.authToken == result.phoneSecret, "Mac stored the same secret")
         check(lastRequest?.replacesExisting == false, "first pairing is not flagged as replacing a device")
 
@@ -741,18 +786,18 @@ DispatchQueue.global().async {
         check(again.finalizeStatus == 200, "re-pairing the same device succeeds when approved")
         check(lastRequest?.replacesExisting == true, "re-pairing is flagged as replacing the existing device")
 
-        // Pairing v3: same code on both sides, and re-pairing gives a new secret.
-        let v3 = pairAsPhone(port: port, pairingVersion: 3)
-        check(v3.finalizeStatus == 200 && v3.phoneCode == macCode, "v3 pairing: same code on both sides")
-        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3.phoneSecret, "v3 pairing: Mac stored the same secret")
-        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.protocolVersion == 3, "v3 peer recorded as protocol 3")
-        let v3again = pairAsPhone(port: port, id: v3.deviceId, pairingVersion: 3)
-        check(v3again.finalizeStatus == 200 && v3again.phoneSecret != v3.phoneSecret, "v3 re-pairing rotates the secret")
-        check(TrustedPeerStore().find(deviceId: v3.deviceId)?.authToken == v3again.phoneSecret, "Mac keeps only the new secret")
+        // Re-pairing gives a new secret.
+        let first = pairAsPhone(port: port)
+        check(first.finalizeStatus == 200 && first.phoneCode == macCode, "v4 pairing: same code on both sides")
+        check(TrustedPeerStore().find(deviceId: first.deviceId)?.protocolVersion == PairingCode.pairingVersion,
+              "v4 peer recorded as protocol 4")
+        let again2 = pairAsPhone(port: port, id: first.deviceId)
+        check(again2.finalizeStatus == 200 && again2.phoneSecret != first.phoneSecret, "re-pairing rotates the secret")
+        check(TrustedPeerStore().find(deviceId: first.deviceId)?.authToken == again2.phoneSecret, "Mac keeps only the new secret")
     }
 
-    section("Pairing: a request without v3 is refused, not downgraded") {
-        for version in [nil, 1, 2] as [Int?] {
+    section("Pairing: a request below v4 is refused, not downgraded") {
+        for version in [nil, 1, 2, 3] as [Int?] {
             var body: [String: Any] = ["deviceId": UUID().uuidString, "deviceName": "Old Phone", "platform": "android",
                                        "protocolVersion": 1, "features": [],
                                        "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()]
@@ -783,7 +828,8 @@ DispatchQueue.global().async {
         Task {
             do {
                 phoneCode = try await client.begin().code
-                paired = try await client.finish()
+                try await client.awaitApproval()
+                paired = try client.save()
             } catch { failure = error }
             done.signal()
         }
@@ -819,7 +865,7 @@ DispatchQueue.global().async {
         let id = UUID()
         let phone = P256.KeyAgreement.PrivateKey()
         let (status, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Phone", "platform": "android",
-                                                       "protocolVersion": 2, "features": [], "pairingVersion": 3,
+                                                       "protocolVersion": 2, "features": [], "pairingVersion": PairingCode.pairingVersion,
                                                        "publicKey": phone.publicKey.x963Representation.base64EncodedString()])
         check(status == 200, "request accepted")
         let nonce = PairingCode.randomNonce().base64EncodedString()
@@ -828,7 +874,7 @@ DispatchQueue.global().async {
         let (own, _) = post(port, "/pair/confirm", ["deviceId": id.uuidString, "nonce": nonce])
         check(own == 200, "phone's own confirm still works, got \(own)")
         let (replace, _) = post(port, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Evil", "platform": "android",
-                                                        "protocolVersion": 2, "features": [], "pairingVersion": 3,
+                                                        "protocolVersion": 2, "features": [], "pairingVersion": PairingCode.pairingVersion,
                                                         "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()],
                                 host: "[::1]")
         check(replace == 429, "confirmed pairing can't be replaced, got \(replace)")
@@ -838,13 +884,53 @@ DispatchQueue.global().async {
         check(finalize == 200 || finalize == 403, "phone's own finalize gets the decision, got \(finalize)")
     }
 
+    section("The phone's Cancel withdraws the Mac's pairing dialog") {
+        var prompts: [UUID] = []
+        var withdrawn: [UUID] = []
+        // Never answers, like a Mac user who walked away.
+        let (server, cancelPort) = startDecisionServer(pair: { request, _ in prompts.append(request.id) },
+                                                       withdrawn: { withdrawn.append($0) })
+        defer { DispatchQueue.main.sync { server.stop() } }
+        func startPairing(_ id: UUID) -> Int {
+            let key = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
+            let (request, _) = post(cancelPort, "/pair/request", ["deviceId": id.uuidString, "deviceName": "Phone", "platform": "android",
+                                                                  "protocolVersion": 2, "features": [], "pairingVersion": PairingCode.pairingVersion,
+                                                                  "publicKey": key])
+            guard request == 200 else { return request }
+            return post(cancelPort, "/pair/confirm", ["deviceId": id.uuidString, "nonce": PairingCode.randomNonce().base64EncodedString()]).0
+        }
+        let id = UUID()
+        check(startPairing(id) == 200, "pairing reaches the Mac's dialog")
+        check(startPairing(id) != 200, "while the dialog shows, the same phone can't start again")
+
+        let (otherCancel, _) = post(cancelPort, "/pair/cancel", ["deviceId": id.uuidString], host: "[::1]")
+        check(otherCancel == 200, "cancel from another address gets the same reply, got \(otherCancel)")
+        DispatchQueue.main.sync {}
+        check(withdrawn.isEmpty, "another address can't withdraw the dialog")
+        let (wrongDevice, _) = post(cancelPort, "/pair/cancel", ["deviceId": UUID().uuidString])
+        check(wrongDevice == 200, "cancel for another device gets the same reply")
+        DispatchQueue.main.sync {}
+        check(withdrawn.isEmpty, "another device ID can't withdraw the dialog")
+
+        let (cancel, _) = post(cancelPort, "/pair/cancel", ["deviceId": id.uuidString])
+        check(cancel == 200, "phone's cancel accepted, got \(cancel)")
+        DispatchQueue.main.sync {}
+        check(withdrawn == prompts, "the dialog is withdrawn, got \(withdrawn) for \(prompts)")
+        let (finalize, _) = post(cancelPort, "/pair/finalize", ["deviceId": id.uuidString])
+        check(finalize == 403 || finalize == 409, "a cancelled pairing isn't approved, got \(finalize)")
+        check(TrustedPeerStore().find(deviceId: id) == nil, "a cancelled pairing saves nothing")
+        check(startPairing(id) == 200, "after cancelling, the phone can pair again straight away")
+        _ = post(cancelPort, "/pair/cancel", ["deviceId": id.uuidString])
+        DispatchQueue.main.sync {}
+    }
+
     section("Pairing spam can't grow pending pairings without bound") {
         func request(_ host: String = "127.0.0.1", name: String = "Spam", features: [String] = []) -> Int {
             var request = URLRequest(url: URL(string: "http://\(host):\(port)/pair/request")!)
             request.httpMethod = "POST"
             request.timeoutInterval = 10
             request.httpBody = try! JSONSerialization.data(withJSONObject: [
-                "deviceId": UUID().uuidString, "deviceName": name, "platform": "android", "protocolVersion": 2, "pairingVersion": 3,
+                "deviceId": UUID().uuidString, "deviceName": name, "platform": "android", "protocolVersion": 2, "pairingVersion": PairingCode.pairingVersion,
                 "features": features, "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()])
             let done = DispatchSemaphore(value: 0)
             var status = 0
@@ -873,7 +959,7 @@ DispatchQueue.global().async {
     section("Pairing refuses incompatible protocols and names who must update") {
         func pairRequest(_ extra: [String: Any]) -> (Int, [String: Any]) {
             post(port, "/pair/request", ["deviceId": UUID().uuidString, "deviceName": "Phone", "platform": "android",
-                                         "protocolVersion": 1, "features": [], "pairingVersion": 3,
+                                         "protocolVersion": 1, "features": [], "pairingVersion": PairingCode.pairingVersion,
                                          "publicKey": P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()]
                                          .merging(extra) { $1 })
         }
@@ -1166,7 +1252,8 @@ DispatchQueue.global().async {
             do {
                 let client = PairingClient(endpoint: "127.0.0.1:\(pairPort)")
                 let started = try await client.begin()
-                result = .success((started, try await client.finish()))
+                try await client.awaitApproval()
+                result = .success((started, try client.save()))
             } catch {
                 result = .failure(error)
             }
@@ -1176,6 +1263,56 @@ DispatchQueue.global().async {
         let (started, peer) = try result!.get()
         check(started.code.count == 6 && started.code == macCode, "both sides show the same code")
         check(TrustedPeerStore().find(deviceId: peer.deviceId)?.authToken == peer.authToken, "peer saved with its secret")
+    }
+
+    section("PairingClient saves nothing until save(), and nothing after cancel") {
+        // The Mac is both sides here and its server saves the same device ID on approval
+        // without a pairing key; only PairingClient.save() records one.
+        let macId = IdentityStore().loadOrCreate().deviceId
+        TrustedPeerStore().remove(deviceId: macId)
+        let (slowServer, slowPort) = startDecisionServer(pair: { _, done in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { done(true) }
+        })
+        defer { DispatchQueue.main.sync { slowServer.stop() } }
+
+        // Approved, but the user hasn't confirmed on this side: nothing saved by the client.
+        var outcome: Error?
+        var approvedOnly = false
+        let first = DispatchSemaphore(value: 0)
+        Task.detached {
+            do {
+                let client = PairingClient(endpoint: "127.0.0.1:\(slowPort)")
+                _ = try await client.begin()
+                try await client.awaitApproval()
+                approvedOnly = true
+                client.cancel() // the user answered No
+                do { try client.save() } catch { outcome = error }
+            } catch { outcome = error }
+            first.signal()
+        }
+        check(first.wait(timeout: .now() + 20) == .success, "approval finished in time")
+        check(approvedOnly, "approval with a valid confirmation succeeds")
+        if case .cancelled? = outcome as? PairingClientError {} else { check(false, "save after No throws cancelled, got \(String(describing: outcome))") }
+        check(TrustedPeerStore().find(deviceId: macId)?.pairingKey == nil, "answering No saves nothing on this side")
+        TrustedPeerStore().remove(deviceId: macId)
+
+        // Cancelled while waiting for the Mac user: the late approval is ignored.
+        var waitError: Error?
+        let second = DispatchSemaphore(value: 0)
+        let client = PairingClient(endpoint: "127.0.0.1:\(slowPort)")
+        Task.detached {
+            do {
+                _ = try await client.begin()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { client.cancel() }
+                try await client.awaitApproval()
+            } catch { waitError = error }
+            second.signal()
+        }
+        check(second.wait(timeout: .now() + 20) == .success, "cancelled pairing finished in time")
+        if case .cancelled? = waitError as? PairingClientError {} else { check(false, "cancel while waiting throws cancelled, got \(String(describing: waitError))") }
+        check((try? client.save()) == nil, "save after cancel fails")
+        check(TrustedPeerStore().find(deviceId: macId)?.pairingKey == nil, "cancel saves nothing on this side")
+        TrustedPeerStore().remove(deviceId: macId)
     }
 
     DispatchQueue.main.sync { server.stop() }

@@ -56,7 +56,7 @@ class MainViewModelPairingTest {
     }
 
     @Test
-    fun pairWalksConnectingCodeWaitingPaired() = runTest(dispatcher) {
+    fun pairWalksConnectingCodeWaitingConfirmPaired() = runTest(dispatcher) {
         val vm = viewModel()
 
         vm.pair(unpairedMac.serviceName)
@@ -71,10 +71,16 @@ class MainViewModelPairingTest {
         assertEquals(PairingStep.Waiting("Studio"), vm.state.value.pairing)
 
         settle()
+        assertEquals(PairingStep.ConfirmOnMac("Studio"), vm.state.value.pairing)
+        assertTrue("nothing saved before the user confirms", stores.trustedPeers.isEmpty())
+        assertEquals(0, hub.rescans)
+
+        vm.confirmPairedOnMac()
+        settle()
         assertEquals(PairingStep.Paired("Studio"), vm.state.value.pairing)
         assertEquals(listOf("fetch:LinkBridge-Studio", "begin:$MAC_ID", "finalize:LinkBridge-Studio"), pairing.calls)
         assertEquals(
-            listOf(macTrust.copy(authToken = "session-token", pairedAt = 1_000L)),
+            listOf(macTrust.copy(authToken = "session-token", pairedAt = 1_000L, pairingKey = "MAC-KEY")),
             stores.trustedPeers
         )
         assertEquals(1, hub.rescans)
@@ -114,7 +120,7 @@ class MainViewModelPairingTest {
     }
 
     @Test
-    fun lateSuccessAfterCancelStillSavesTrust() = runTest(dispatcher) {
+    fun lateSuccessAfterCancelSavesNothing() = runTest(dispatcher) {
         val vm = viewModel()
         vm.pair(unpairedMac.serviceName)
         settle()
@@ -126,13 +132,17 @@ class MainViewModelPairingTest {
         assertNull(vm.state.value.pairing)
 
         settle()
+        assertTrue("Cancel while waiting withdraws the Mac's dialog", "cancel:${unpairedMac.serviceName}" in pairing.calls)
         assertNull(vm.state.value.pairing)
-        assertEquals(listOf(macTrust.copy(authToken = "session-token", pairedAt = 1_000L)), stores.trustedPeers)
-        assertEquals(1, hub.rescans)
+        assertTrue(stores.trustedPeers.isEmpty())
+        assertEquals(0, hub.rescans)
+        vm.confirmPairedOnMac()
+        settle()
+        assertTrue("a stray Yes after cancel saves nothing", stores.trustedPeers.isEmpty())
     }
 
     @Test
-    fun lateSuccessAfterViewModelClearedStillSavesTrust() = runTest(dispatcher) {
+    fun lateSuccessAfterViewModelClearedSavesNothing() = runTest(dispatcher) {
         val store = ViewModelStore()
         val built = MainViewModel(hub, stores, pairing, prefs, appScope, io, clock = { 1_000L })
         val vm = ViewModelProvider(store, object : ViewModelProvider.Factory {
@@ -145,12 +155,77 @@ class MainViewModelPairingTest {
         vm.continuePairing()
         runCurrent()
 
-        vm.cancelPairing()
         store.clear()
         settle()
 
-        assertEquals(listOf(macTrust.copy(authToken = "session-token", pairedAt = 1_000L)), stores.trustedPeers)
-        assertEquals(1, hub.rescans)
+        assertTrue(stores.trustedPeers.isEmpty())
+        assertEquals(0, hub.rescans)
+    }
+
+    @Test
+    fun answeringNoSavesNothing() = runTest(dispatcher) {
+        val vm = viewModel()
+        vm.pair(unpairedMac.serviceName)
+        settle()
+        vm.continuePairing()
+        settle()
+        assertEquals(PairingStep.ConfirmOnMac("Studio"), vm.state.value.pairing)
+
+        vm.denyPairedOnMac()
+        settle()
+
+        assertTrue(vm.state.value.pairing is PairingStep.Failed)
+        assertTrue(stores.trustedPeers.isEmpty())
+        vm.confirmPairedOnMac()
+        settle()
+        assertTrue("Yes after No saves nothing", stores.trustedPeers.isEmpty())
+    }
+
+    @Test
+    fun cancelAtConfirmSavesNothing() = runTest(dispatcher) {
+        val vm = viewModel()
+        vm.pair(unpairedMac.serviceName)
+        settle()
+        vm.continuePairing()
+        settle()
+
+        vm.dismissPairing()
+        vm.confirmPairedOnMac()
+        settle()
+
+        assertNull(vm.state.value.pairing)
+        assertTrue(stores.trustedPeers.isEmpty())
+        // The Mac already answered, so there is no dialog left to withdraw.
+        assertTrue(pairing.calls.none { it.startsWith("cancel:") })
+    }
+
+    @Test
+    fun failedConfirmationShowsFailedAndSavesNothing() = runTest(dispatcher) {
+        pairing.finalize = Result.failure(IllegalStateException("Pairing check failed"))
+        val vm = viewModel()
+        vm.pair(unpairedMac.serviceName)
+        settle()
+        vm.continuePairing()
+        settle()
+
+        assertEquals("Pairing check failed", (vm.state.value.pairing as PairingStep.Failed).message)
+        assertTrue(stores.trustedPeers.isEmpty())
+    }
+
+    @Test
+    fun rePairingFlagsSamePeerOrChangedKey() = runTest(dispatcher) {
+        stores.trustedPeers = listOf(macTrust.copy(pairingKey = "MAC-KEY"))
+        var vm = viewModel()
+        vm.pair(unpairedMac.serviceName)
+        settle()
+        assertEquals(ExistingPairing.SAME_PEER, (vm.state.value.pairing as PairingStep.Code).existing)
+        vm.cancelPairing()
+
+        stores.trustedPeers = listOf(macTrust.copy(pairingKey = "OTHER-KEY"))
+        vm = viewModel()
+        vm.pair(unpairedMac.serviceName)
+        settle()
+        assertEquals(ExistingPairing.KEY_CHANGED, (vm.state.value.pairing as PairingStep.Code).existing)
     }
 
     @Test
