@@ -59,6 +59,9 @@ if [[ -f "$MACOS_DIR/Resources/AppIcon.icns" ]]; then
   cp "$MACOS_DIR/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# App Store requires the privacy manifest in Contents/Resources (required-reason APIs).
+cp "$MACOS_DIR/Resources/PrivacyInfo.xcprivacy" "$APP/Contents/Resources/PrivacyInfo.xcprivacy"
+
 GIT_COMMIT=$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 cat > "$APP/Contents/Info.plist" <<PLIST
